@@ -1,4 +1,5 @@
 @echo off
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":5183" ^| findstr "LISTENING"') do taskkill /PID %%p /T /F >nul 2>&1
 title TagSim Steering Simulator - Dev Server
 cd /d "%~dp0"
 
