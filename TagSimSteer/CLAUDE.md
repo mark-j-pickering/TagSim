@@ -8,7 +8,7 @@ visualises Ackermann-style steering geometry, swept turning paths, off-tracking,
 tail swing, and front-overhang "mowing the grass" for a tag-axle bus — modelled
 loosely on Brisbane City Council's Volvo/Scania 6x2 tag-axle fleet.
 
-Single file: `bus-steering-simulator.jsx` — a self-contained React component
+Single file: `tag-steering-simulator.jsx` — a self-contained React component
 (default export, no required props), originally built and iterated as a
 Claude.ai artifact. It was published from claude.ai and is being transferred
 here for further development in Claude Code.
@@ -28,7 +28,7 @@ but be aware the current code deliberately avoids all of the above, so don't
 assume it needs to stay that way.
 
 To run standalone: drop the component into any Vite/CRA/Next React app,
-`import BusSteeringSimulator from './bus-steering-simulator'`, render it. It
+`import BusSteeringSimulator from './tag-steering-simulator'`, render it. It
 imports only `react` (useState/useEffect/useRef/useMemo). The Google Fonts
 `@import` (Barlow Condensed, Space Mono) is inlined via a `<style>` tag inside
 the component.
