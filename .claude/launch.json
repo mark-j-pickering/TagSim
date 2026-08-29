@@ -5,7 +5,7 @@
       "name": "tagsimsteer",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["--prefix", "TagSimSteer", "run", "dev"],
-      "port": 5173,
+      "port": 5183,
       "autoPort": true
     }
   ]
