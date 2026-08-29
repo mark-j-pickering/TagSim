@@ -42,8 +42,8 @@ function computeGeometry(params) {
 
   let C = null, outerRadius = 0, radii = {}, offTracking = null, turningDiameter = null, frontOuterWheelRadius = 0;
   let mow1 = 0, mow2 = 0, tailSwing7 = 0, tailSwing8 = 0;
-  const w3Center = { x: 0, y: halfT + DUAL_GAP / 2 }; // leftmost (kerbside outer)
-  const w4Center = { x: 0, y: halfT - DUAL_GAP / 2 }; // kerbside inner
+  const w3Center = { x: 0, y: halfT + DUAL_GAP / 2 }; // leftmost (nearside outer)
+  const w4Center = { x: 0, y: halfT - DUAL_GAP / 2 }; // nearside inner
   const w6Center = { x: 0, y: -halfT - DUAL_GAP / 2 }; // rightmost (offside outer)
   if (!isStraight) {
     C = { x: 0, y: R };
@@ -78,7 +78,7 @@ function computeGeometry(params) {
     mow1 = radii.frontL - radii.FL;
     mow2 = radii.frontR - radii.FR;
     // Tail swing distance: how far each rear corner sits from its own same-side tag wheel's path
-    // (RL vs #7 kerbside, RR vs #8 offside) — whichever side is currently outside the curve reads
+    // (RL vs #7 nearside, RR vs #8 offside) — whichever side is currently outside the curve reads
     // as the meaningful "swing" figure; the other reads the inside corner's tuck-in instead.
     tailSwing7 = radii.RL - radii.tagL;
     tailSwing8 = radii.RR - radii.tagR;
@@ -271,7 +271,7 @@ export default function BusSteeringSimulator() {
   const [Ro, setRo] = useState(1.9);
   const [Wb, setWb] = useState(2.55);
   const [Tw, setTw] = useState(2.1);
-  // steerInput: positive = steer right (offside), negative = steer left (kerbside) — reversed vs. the raw geometry angle
+  // steerInput: positive = steer right (offside), negative = steer left (nearside) — reversed vs. the raw geometry angle
   const [steerInput, setSteerInput] = useState(-22);
   const deltaFdeg = -steerInput;
   const [tagRatio, setTagRatio] = useState(1.0);
@@ -673,8 +673,8 @@ export default function BusSteeringSimulator() {
           <LegendDot color={COL.front} label="Front · steers (1–2)" />
           <LegendDot color={COL.drive} label="Drive · fixed, dual (3–6)" />
           <LegendDot color={COL.tag} label="Tag · counter-steers (7–8)" />
-          <LegendDot color={COL.w3} label="Wheel 3 path — kerbside" />
-          <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>Kerbside = left (1, 3, 4, 7)</div>
+          <LegendDot color={COL.w3} label="Wheel 3 path — nearside" />
+          <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>Nearside = left (1, 3, 4, 7)</div>
         </div>
         <div style={{ position: "absolute", right: 10, top: 10, display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end", background: "rgba(10,26,44,0.72)", borderRadius: 4, padding: "8px 10px", fontSize: 11, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.4, textAlign: "right" }}>
           <LegendDot color={COL.w6} label="Wheel 6 path — offside" />
@@ -736,9 +736,9 @@ export default function BusSteeringSimulator() {
       <div style={{ padding: "0 16px" }}>
         <Collapsible title="Radius grid" open={gridOpen} onToggle={() => setGridOpen((v) => !v)}>
           <div style={{ border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", background: COL.panel }}>
-            <ReadCell label="Wheel 3 path radius (kerbside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w3) + " m"} accent={COL.w3} />
+            <ReadCell label="Wheel 3 path radius (nearside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w3) + " m"} accent={COL.w3} />
             <ReadCell label="Wheel 6 path radius (offside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w6) + " m"} accent={COL.w6} />
-            <ReadCell label="Front steer δf" value={geom.isStraight ? "0.0° straight" : fmt(Math.abs(geom.deltaFdeg)) + "° " + (geom.deltaFdeg > 0 ? "→ kerbside" : "→ offside")} accent={COL.front} />
+            <ReadCell label="Front steer δf" value={geom.isStraight ? "0.0° straight" : fmt(Math.abs(geom.deltaFdeg)) + "° " + (geom.deltaFdeg > 0 ? "→ nearside" : "→ offside")} accent={COL.front} />
             <ReadCell label="Tag steer (applied)" value={geom.isStraight ? "0.0°" : fmt(geom.appliedDeltaT ? toDeg(geom.appliedDeltaT) : 0) + "°"} accent={COL.tag} />
             <ReadCell label="Pivot radius (drive axle)" value={geom.isStraight ? "∞" : fmt(Math.abs(geom.R)) + " m"} />
             <ReadCell label="Turning circle ⌀" value={geom.isStraight ? "∞" : fmt(geom.turningDiameter) + " m"} />
@@ -787,7 +787,7 @@ export default function BusSteeringSimulator() {
       </div>
 
       <div style={{ padding: "0 16px", fontSize: 11.5, color: COL.textDim, lineHeight: 1.5 }}>
-        Wheels numbered 1–8: 1–2 front (kerbside/offside), 3–4 drive-axle kerbside pair (3 leftmost/outer, 4 inner), 5–6 drive-axle offside pair (5 inner, 6 rightmost/outer), 7–8 tag axle. Model: steady-state circular turn, no tyre slip. Tag axle angle set for zero-scrub rolling at the current ratio; when locked straight (ratio 0, or above the speed lockout), the dashed ghost outline shows the ideal angle it's deviating from — the "tag scrub angle" readout is that gap. The shaded band spans from the drive axle's inner wheel (3 or 6, whichever is tighter) out to the front axle's outer wheel (2 or 1) — the corridor the vehicle actually occupies through the turn. The outer tail-swing circle (rear corner) is shown as a plain dashed reference only.
+        Wheels numbered 1–8: 1–2 front (nearside/offside), 3–4 drive-axle nearside pair (3 leftmost/outer, 4 inner), 5–6 drive-axle offside pair (5 inner, 6 rightmost/outer), 7–8 tag axle. Model: steady-state circular turn, no tyre slip. Tag axle angle set for zero-scrub rolling at the current ratio; when locked straight (ratio 0, or above the speed lockout), the dashed ghost outline shows the ideal angle it's deviating from — the "tag scrub angle" readout is that gap. The shaded band spans from the drive axle's inner wheel (3 or 6, whichever is tighter) out to the front axle's outer wheel (2 or 1) — the corridor the vehicle actually occupies through the turn. The outer tail-swing circle (rear corner) is shown as a plain dashed reference only.
       </div>
     </div>
   );

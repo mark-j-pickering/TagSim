@@ -40,7 +40,7 @@ third axle), **not** a dynamic/slip model — no tyre forces, no inertia, no
 speed-dependent understeer. This is deliberate; the project is about geometry
 and swept paths, not vehicle dynamics.
 
-- **Chassis-local coordinate frame**: `x` = forward, `y` = left (kerbside
+- **Chassis-local coordinate frame**: `x` = forward, `y` = left (nearside
   positive, offside negative). This convention is used *everywhere* — every
   geometry function takes/returns points in this frame unless explicitly
   transformed to world or screen space.
@@ -72,13 +72,13 @@ and swept paths, not vehicle dynamics.
 ## Wheel numbering convention (load-bearing — don't renumber)
 
 ```
-1, 2   = front axle (kerbside, offside) — steer
-3, 4   = drive axle kerbside dual pair — 3 is leftmost/outermost, 4 is inboard
+1, 2   = front axle (nearside, offside) — steer
+3, 4   = drive axle nearside dual pair — 3 is leftmost/outermost, 4 is inboard
 5, 6   = drive axle offside dual pair  — 5 is inboard, 6 is rightmost/outermost
-7, 8   = tag axle (kerbside, offside) — counter-steer
+7, 8   = tag axle (nearside, offside) — counter-steer
 ```
 
-**Odd = kerbside = left. Even = offside = right.** This holds everywhere:
+**Odd = nearside = left. Even = offside = right.** This holds everywhere:
 label placement, colour coding, dimension-line references. Wheels 3 and 6 are
 treated as "hero" wheels throughout (bolder path circles, bigger badges) —
 they're the outermost points of the drive axle and the ones most relevant to
@@ -146,7 +146,7 @@ shipping — this bit us twice during development.
 to the geometry angle — `deltaFdeg = -steerInput` — so that dragging the
 slider right steers the bus right, which was a deliberate late fix (the raw
 geometry angle has the opposite, more "mathematical" sign convention: positive
-= steer toward kerbside). Don't remove this indirection.
+= steer toward nearside). Don't remove this indirection.
 
 ## Key metrics reported (all in `computeGeometry`'s return value)
 
@@ -158,7 +158,7 @@ geometry angle has the opposite, more "mathematical" sign convention: positive
   local terminology from the person driving these buses for real — keep the
   label as-is.
 - `tailSwing7` / `tailSwing8` — how far each rear body corner (RL/RR) sits
-  from its *own same-side* tag wheel's path (7 = kerbside, 8 = offside).
+  from its *own same-side* tag wheel's path (7 = nearside, 8 = offside).
   Whichever side is currently on the outside of the curve reads as the
   meaningful "swing" figure; the other reads the inside corner's tuck-in.
   This was iterated a few times (first against wheels 3/4, then corrected to
@@ -191,7 +191,7 @@ branches (circular vs straight-line versions).
 
 ## Layout structure
 
-- Legend split into two overlay panels, top-left (kerbside-associated) and
+- Legend split into two overlay panels, top-left (nearside-associated) and
   top-right (offside-associated), directly on the map canvas.
 - Floating "Drive the turn" / Stop button, bottom-right of the map.
 - Bus/Circle toggle, bottom-left of the map.
