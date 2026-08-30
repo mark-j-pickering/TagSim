@@ -8,10 +8,12 @@ visualises Ackermann-style steering geometry, swept turning paths, off-tracking,
 tail swing, and front-overhang "mowing the grass" for a tag-axle bus — modelled
 loosely on Brisbane City Council's Volvo/Scania 6x2 tag-axle fleet.
 
-Single file: `tag-steering-simulator.jsx` — a self-contained React component
-(default export, no required props), originally built and iterated as a
-Claude.ai artifact. It was published from claude.ai and is being transferred
-here for further development in Claude Code.
+Mainly one file: `tag-steering-simulator.jsx` — a React component (default
+export, no required props), originally built and iterated as a Claude.ai
+artifact. It was published from claude.ai and is being transferred here for
+further development in Claude Code. It also imports one asset,
+`bcc-tag-bus-5054.png` (see "Running it" below) — no longer a fully
+self-contained single file.
 
 **Read the whole file before making changes.** It's ~830 lines but it's one
 component with a handful of module-level helper functions — there's no other
@@ -29,9 +31,13 @@ assume it needs to stay that way.
 
 To run standalone: drop the component into any Vite/CRA/Next React app,
 `import BusSteeringSimulator from './tag-steering-simulator'`, render it. It
-imports only `react` (useState/useEffect/useRef/useMemo). The Google Fonts
-`@import` (Barlow Condensed, Space Mono) is inlined via a `<style>` tag inside
-the component.
+imports `react` (useState/useEffect/useRef/useMemo) plus one local asset,
+`bcc-tag-bus-5054.png` (a reference photo of the real bus, fleet #5054, with
+its confirmed axle dimensions annotated — shown in the side panel below the
+steering/throttle controls) — that PNG (~900KB) must be copied alongside the
+`.jsx` file for the import to resolve; it's the one thing keeping this from
+being a true single-file drop-in. The Google Fonts `@import` (Barlow
+Condensed, Space Mono) is inlined via a `<style>` tag inside the component.
 
 ## Domain model — the physics
 
@@ -129,7 +135,8 @@ in place (harmless, just unused). Feel free to remove it.
 ## Steering input resolution (non-uniform, deliberately)
 
 `STEER_STEPS` (module-level, built once) is **not** a uniform step — it's
-0.15° resolution from −3° to 3°, then 0.5° steps out to full lock (±38°).
+0.15° resolution from −3° to 3°, then 0.5° steps out to full lock (±50°, the
+confirmed max front steer angle for this vehicle).
 This went through several iterations (0.25° → 0.1° → skip-first-two-steps →
 0.2° → 0.15°) chasing a "something going on" floating-point complaint; the
 current implementation builds fine values via integer arithmetic
@@ -215,9 +222,9 @@ branches (circular vs straight-line versions).
 - No persistence — refreshing the page resets everything to defaults. Would
   be a reasonable thing to add now that we're off the artifact platform
   (localStorage was off-limits there).
-- Vehicle geometry defaults (`Lfd=6.0, Ldt=2.3, Fo=2.6, Ro=1.9, Wb=2.55,
-  Tw=2.1`) are an illustrative approximation of a ~12.8m tag-axle bus, not
-  a confirmed spec for any specific real vehicle — the person using this
-  drives BCC Volvo/Scania 6x2 tag-axle buses but we never got exact
-  compliance-plate figures, so these are adjustable estimates, clearly
-  labelled as such in the UI copy. Don't present them as authoritative.
+- Vehicle geometry defaults (`Lfd=7.0, Ldt=1.4, Fo=2.75, Ro=3.35, Wb=2.48,
+  Tw=2.1`) reflect the confirmed dimensions of the person's actual BCC
+  Volvo/Scania 6x2 tag-axle bus: overall length 14.5m (2.75 + 7.0 + 1.4 +
+  3.35), body width 2.48m excluding mirrors. `Tw` (axle track width) still
+  has no compliance-plate figure and remains an adjustable estimate — don't
+  present it as authoritative like the others.

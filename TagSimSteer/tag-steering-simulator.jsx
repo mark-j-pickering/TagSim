@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
+import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
 
 // ---------- constants ----------
 const VB = 1000;
@@ -207,9 +208,9 @@ function ptsToPath(pts) {
 // where the extra precision doesn't matter.
 const STEER_STEPS = (() => {
   const vals = [];
-  for (let i = -76; i <= -7; i++) vals.push(i * 0.5); // -38.0 to -3.5, 0.5° steps
+  for (let i = -100; i <= -7; i++) vals.push(i * 0.5); // -50.0 to -3.5, 0.5° steps
   for (let i = -20; i <= 20; i++) vals.push(Math.round(i * 15) / 100); // -3.0 to 3.0, 0.15° steps
-  for (let i = 7; i <= 76; i++) vals.push(i * 0.5); // 3.5 to 38.0, 0.5° steps
+  for (let i = 7; i <= 100; i++) vals.push(i * 0.5); // 3.5 to 50.0, 0.5° steps
   return vals;
 })();
 
@@ -265,11 +266,10 @@ function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber
   );
 }
 
-// Purely decorative — rotates to visualise the steering slider's angle. The rotation is
-// exaggerated relative to the actual road-wheel angle (real steering-wheel-to-road-wheel
-// ratios are much higher than would look good in a small graphic) purely so small slider
-// moves are visible on the wheel.
-const STEERING_WHEEL_RATIO = 4;
+// Rotates to visualise the steering slider's angle. Ratio reflects the real steering
+// box: ~4 turns lock-to-lock over the ±50° front steer range, i.e. 1440° of wheel
+// rotation across 100° of road-wheel angle = 14.4:1.
+const STEERING_WHEEL_RATIO = 14.4;
 function SteeringWheel({ angleDeg, size = 216 }) {
   return (
     <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
@@ -309,25 +309,27 @@ function ReadCell({ label, value, accent }) {
 
 // ---------- main component ----------
 export default function BusSteeringSimulator() {
-  const [Lfd, setLfd] = useState(6.0);
-  const [Ldt, setLdt] = useState(2.3);
-  const [Fo, setFo] = useState(2.6);
-  const [Ro, setRo] = useState(1.9);
-  const [Wb, setWb] = useState(2.55);
+  const [Lfd, setLfd] = useState(7.0);
+  const [Ldt, setLdt] = useState(1.4);
+  const [Fo, setFo] = useState(2.75);
+  const [Ro, setRo] = useState(3.35);
+  const [Wb, setWb] = useState(2.48);
   const [Tw, setTw] = useState(2.1);
   // steerInput: positive = steer right (offside), negative = steer left (nearside) — reversed vs. the raw geometry angle
-  const [steerInput, setSteerInput] = useState(-22);
+  const [steerInput, setSteerInput] = useState(0);
   const deltaFdeg = -steerInput;
   const [tagRatio, setTagRatio] = useState(1.0);
   const [lockoutOn, setLockoutOn] = useState(true);
   const [lockoutSpeed, setLockoutSpeed] = useState(25);
-  const [speed, setSpeed] = useState(12);
+  const [speed, setSpeed] = useState(0);
   const [showBand, setShowBand] = useState(true);
-  const [animating, setAnimating] = useState(false);
+  // "Driving" is just speed > 0 — not independent state — so dragging the throttle slider
+  // itself starts/stops the animation and keeps the Drive/Stop button in sync, not only the button.
+  const animating = speed > 0;
   const [showGeom, setShowGeom] = useState(false);
   const [showDims, setShowDims] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [viewMode, setViewMode] = useState("circle");
+  const [viewMode, setViewMode] = useState("bus");
 
   const [pose, setPose] = useState({ x: 0, y: 0, theta: 0 });
   const rafRef = useRef(null);
@@ -603,7 +605,7 @@ export default function BusSteeringSimulator() {
         <div style={{ fontSize: 14, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
         <div style={{ fontSize: 29, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
         <div style={{ fontSize: 16, color: COL.textDim, marginTop: 2, lineHeight: 1.4 }}>
-          Front axle steers, drive axle fixed (pivot reference), tag axle counter-steers. Default dimensions are an illustrative approximation of a ~12.8 m tag-axle bus — adjust the geometry sliders to match a real spec if you have one.
+          Front axle steers, drive axle fixed (pivot reference), tag axle counter-steers. Default dimensions match a 14.5 m tag-axle bus (2.48 m wide, excl. mirrors) — adjust the geometry sliders for a different spec.
         </div>
       </div>
 
@@ -702,8 +704,8 @@ export default function BusSteeringSimulator() {
               <line x1={Cscreen.x - 9} y1={Cscreen.y} x2={Cscreen.x + 9} y2={Cscreen.y} stroke={COL.dim} strokeWidth="1.4" />
               <line x1={Cscreen.x} y1={Cscreen.y - 9} x2={Cscreen.x} y2={Cscreen.y + 9} stroke={COL.dim} strokeWidth="1.4" />
               <circle cx={Cscreen.x} cy={Cscreen.y} r="3" fill={COL.dim} />
-              <text x={Cscreen.x + 12} y={Cscreen.y - 10} fontFamily="'Space Mono',monospace" fontSize="12" fill={COL.dim}>
-                C · R {fmt(Math.abs(geom.R))}m
+              <text x={Cscreen.x + 12} y={Cscreen.y - 10} fontFamily="'Space Mono',monospace" fontSize="12" fill={geom.radii.w3 <= geom.radii.w6 ? COL.w3 : COL.w6}>
+                C · R {fmt(Math.min(geom.radii.w3, geom.radii.w6))}m
               </text>
             </>
           )}
@@ -859,7 +861,7 @@ export default function BusSteeringSimulator() {
         </div>
         <button
           className={"btn" + (animating ? " btnOn" : "")}
-          onClick={() => setAnimating((v) => !v)}
+          onClick={() => setSpeed(animating ? 0 : 12)}
           style={{ position: "absolute", right: 10, bottom: 10, boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
         >
           {animating ? "■ Stop" : "▶ Drive the turn"}
@@ -881,9 +883,9 @@ export default function BusSteeringSimulator() {
             <SectionLabel>Vehicle geometry (m)</SectionLabel>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 20 }}>
               <Slider label="Front–drive wheelbase" unit="m" value={Lfd} min={4} max={8} step={0.1} onChange={setLfd} />
-              <Slider label="Drive–tag wheelbase" unit="m" value={Ldt} min={1.5} max={3.5} step={0.1} onChange={setLdt} />
+              <Slider label="Drive–tag wheelbase" unit="m" value={Ldt} min={1} max={3.5} step={0.1} onChange={setLdt} />
               <Slider label="Front overhang" unit="m" value={Fo} min={1.5} max={3.5} step={0.1} onChange={setFo} />
-              <Slider label="Rear overhang" unit="m" value={Ro} min={1} max={3} step={0.1} onChange={setRo} />
+              <Slider label="Rear overhang" unit="m" value={Ro} min={1} max={4} step={0.1} onChange={setRo} />
               <Slider label="Body width" unit="m" value={Wb} min={2.3} max={2.6} step={0.01} onChange={setWb} />
               <Slider label="Track width" unit="m" value={Tw} min={1.8} max={2.3} step={0.01} onChange={setTw} />
             </div>
@@ -906,7 +908,6 @@ export default function BusSteeringSimulator() {
             <ReadCell label="Turning circle ⌀" value={geom.isStraight ? "∞" : fmt(geom.turningDiameter) + " m"} />
             <ReadCell label="Drive axle swept width (3↔6)" value={geom.isStraight ? "0.0 m" : fmt(geom.offTracking) + " m"} accent={COL.pathInner} />
             <ReadCell label="Tail swing radius (rear outer)" value={geom.isStraight ? "∞" : fmt(R_tailSwing_px / displayedView.scale) + " m"} accent={COL.tailSwing} />
-            <ReadCell label="Tag scrub angle" value={fmt(Math.abs(geom.scrubDeg)) + "°" + (geom.tagLocked ? " (locked)" : "")} accent={Math.abs(geom.scrubDeg) > 0.4 ? COL.tag : COL.text} />
             <ReadCell label="Mowing the grass — #1" value={geom.isStraight ? "0.0 m" : fmt(geom.mow1) + " m"} accent={COL.front} />
             <ReadCell label="Mowing the grass — #2" value={geom.isStraight ? "0.0 m" : fmt(geom.mow2) + " m"} accent={COL.front} />
             <ReadCell label="Tail swing vs #7" value={geom.isStraight ? "0.0 m" : fmt(geom.tailSwing7) + " m"} accent={COL.tailSwing} />
@@ -920,12 +921,18 @@ export default function BusSteeringSimulator() {
               <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} />
               <div style={{ fontSize: 15, color: COL.textDim, margin: "-4px 0 8px" }}>← / → arrow keys nudge the lock — 0.15° steps near straight-ahead (±3°), 0.5° beyond that</div>
               <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
-                {[["Full lock left", -35], ["Straight", 0], ["Full lock right", 35]].map(([lbl, v]) => (
+                {[["Full lock left", -50], ["Straight", 0], ["Full lock right", 50]].map(([lbl, v]) => (
                   <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => setSteerInput(v)}>{lbl}</button>
                 ))}
               </div>
             </div>
             <VerticalSlider label="Throttle" unit=" km/h" value={speed} min={0} max={60} step={1} onChange={setSpeed} accent={COL.amber} />
+          </div>
+
+          {/* reference photo: confirmed dimensions of the actual BCC Volvo/Scania tag-axle bus
+              (fleet #5054) the geometry defaults above are modelled on. */}
+          <div style={{ marginTop: 10, border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, background: "#fff", overflow: "hidden" }}>
+            <img src={busDimensionsPhoto} alt="BCC Volvo/Scania tag-axle bus (fleet 5054) with confirmed axle dimensions" style={{ display: "block", width: "100%", height: "auto" }} />
           </div>
         </div>
       </div>
