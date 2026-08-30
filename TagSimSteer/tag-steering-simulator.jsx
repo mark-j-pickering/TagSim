@@ -101,10 +101,10 @@ function poseTransform(p, pose) {
 
 function computeView(geom, pose, viewMode) {
   if (viewMode === "bus") {
-    // Fixed scale: the vehicle's own length occupies roughly a third of the map height,
+    // Fixed scale: the vehicle's own length occupies a bit over half the map height,
     // regardless of steering — camera just follows the bus.
     const vehicleLength = geom.Lfd + geom.Fo + geom.Ldt + geom.Ro;
-    const scale = ((VB / 3) / vehicleLength) * 1.2;
+    const scale = ((VB / 3) / vehicleLength) * 1.7;
     return { scale, originX: VB / 2 + pose.y * scale, originY: VB / 2 + pose.x * scale };
   }
   let center, fitExtent;
@@ -172,6 +172,11 @@ const WHEEL_HALF_LEN = 0.42, WHEEL_HALF_W = 0.16;
 const DUAL_HALF_LEN = 0.42, DUAL_HALF_W = 0.085; // narrower single tyre within a dual pair
 const DUAL_GAP = 0.28; // centre-to-centre spacing of a dual (twin) tyre pair
 
+// ---------- driver marker icon (supplied artwork: "bcc bus driver head.svg") ----------
+const DRIVER_ICON_VB_W = 1087, DRIVER_ICON_VB_H = 1039;
+const DRIVER_ICON_HEAD_D = "M0 0 C1.19592366 -0.00429709 2.39184733 -0.00859419 3.6240111 -0.0130215 C4.97087592 -0.01276704 6.31774072 -0.01241991 7.6646055 -0.01199049 C9.08598057 -0.01515359 10.50735472 -0.01875211 11.92872769 -0.02274993 C15.87061305 -0.03253162 19.81248337 -0.03599055 23.75437918 -0.03847325 C28.02929697 -0.04222771 32.30420271 -0.05167409 36.57911277 -0.06037748 C45.0741247 -0.07672482 53.56913577 -0.08754194 62.0641582 -0.09665609 C69.12946996 -0.10439081 76.1947752 -0.11446119 83.26008165 -0.12605089 C84.27778045 -0.12771897 85.29547925 -0.12938704 86.34401741 -0.13110567 C88.41938924 -0.13451442 90.49476106 -0.13792595 92.57013288 -0.14134019 C120.65517192 -0.18706193 148.74022482 -0.21749533 176.82528627 -0.24550241 C178.54945381 -0.2472349 178.54945381 -0.2472349 180.30845302 -0.24900238 C225.78445815 -0.29468779 271.26046895 -0.33434188 316.73648943 -0.36102732 C328.00778772 -0.3676512 339.27908585 -0.37452457 350.55038393 -0.38148874 C351.79588453 -0.38225193 353.04138514 -0.38301511 354.32462819 -0.38380143 C394.71957788 -0.40875256 435.1144247 -0.46224141 475.50932087 -0.531507 C517.01215139 -0.60254311 558.51492656 -0.6476777 600.01781857 -0.65900809 C605.87562177 -0.66061309 611.73342484 -0.66250069 617.59122789 -0.66455263 C619.32062145 -0.66514195 619.32062145 -0.66514195 621.08495225 -0.66574319 C639.66629646 -0.67281093 658.24749646 -0.70705655 676.82878538 -0.75121364 C695.49483841 -0.79495287 714.16073365 -0.80951793 732.8268332 -0.79412038 C743.92561683 -0.78584185 755.02385123 -0.79997972 766.122546 -0.84583971 C773.52955959 -0.8742572 780.93620262 -0.87380891 788.34323028 -0.84957484 C792.5683351 -0.83658384 796.79239259 -0.83642471 801.01739629 -0.8713404 C804.85964748 -0.90284428 808.70001842 -0.89766908 812.54222601 -0.8629573 C814.57848419 -0.85409551 816.61479679 -0.88460004 818.65082294 -0.91659108 C827.3144964 -0.7861323 827.3144964 -0.7861323 830.84407942 1.87041713 C832.61588076 3.87497416 834.07450014 5.89747768 835.53622377 8.13340384 C836.4620062 9.19479083 837.40898668 10.23820801 838.37997377 11.25840384 C842.87235249 16.12074316 847.32533513 21.0054554 851.66122377 26.00840384 C854.08172452 28.75163802 856.55823019 31.44224952 859.03622377 34.13340384 C862.63635133 38.04321979 866.18039982 41.99206852 869.66122377 46.00840384 C872.08172452 48.75163802 874.55823019 51.44224952 877.03622377 54.13340384 C880.63635133 58.04321979 884.18039982 61.99206852 887.66122377 66.00840384 C890.08172452 68.75163802 892.55823019 71.44224952 895.03622377 74.13340384 C898.63635133 78.04321979 902.18039982 81.99206852 905.66122377 86.00840384 C908.08172452 88.75163802 910.55823019 91.44224952 913.03622377 94.13340384 C916.63635133 98.04321979 920.18039982 101.99206852 923.66122377 106.00840384 C926.08172452 108.75163802 928.55823019 111.44224952 931.03622377 114.13340384 C934.63635133 118.04321979 938.18039982 121.99206852 941.66122377 126.00840384 C944.08172452 128.75163802 946.55823019 131.44224952 949.03622377 134.13340384 C952.07510395 137.43369306 955.09778422 140.74289667 958.03622377 144.13340384 C961.39945015 148.01157397 964.86958048 151.78868195 968.34432924 155.56650931 C972.77846005 160.38925275 977.16140617 165.25681504 981.53622377 170.13340384 C983.03593505 171.80033031 984.53593698 173.46699533 986.03622377 175.13340384 C986.76712221 175.9493804 987.49802064 176.76535696 988.25106752 177.60606009 C989.85300792 179.37777879 991.47172518 181.13440458 993.10263002 182.87949759 C993.92634096 183.76766165 994.75005189 184.65582571 995.59872377 185.57090384 C996.72987611 186.77553274 996.72987611 186.77553274 997.88388002 188.00449759 C999.53622377 190.13340384 999.53622377 190.13340384 999.53622377 193.13340384 C949.04622377 193.13340384 898.55622377 193.13340384 846.53622377 193.13340384 C845.21622377 199.40340384 843.89622377 205.67340384 842.53622377 212.13340384 C841.64479082 216.24366914 840.74929953 220.35206035 839.83700502 224.45762259 C839.60087495 225.52058554 839.36474489 226.58354849 839.12145936 227.67872244 C829.36444525 271.44412012 818.04420807 314.16183316 799.53622377 355.13340384 C799.09310853 356.11599173 798.6499933 357.09857962 798.19345033 358.1109429 C780.9217158 396.04820056 758.24239463 431.1821585 731.53622377 463.13340384 C731.10648256 463.64951224 730.67674135 464.16562063 730.23397768 464.69736868 C717.32812445 480.15024764 703.55057981 494.71320478 688.53622377 508.13340384 C687.96194643 508.64709524 687.38766908 509.16078665 686.79598939 509.69004446 C666.99745626 527.27619875 645.35544135 542.73172358 622.53622377 556.13340384 C621.88895326 556.51561087 621.24168275 556.8978179 620.57479799 557.29160696 C584.1318041 578.68759716 544.77788202 593.97608338 503.53622377 603.13340384 C502.54042299 603.35480032 501.54462221 603.57619681 500.51864564 603.80430228 C487.09168996 606.72190177 473.60970393 608.77121069 459.97372377 610.38340384 C459.27700563 610.46648794 458.58028749 610.54957205 457.86245668 610.63517386 C440.84677056 612.63728567 423.91398663 613.34437037 406.78622377 613.32090384 C405.44545778 613.31949896 405.44545778 613.31949896 404.07760561 613.3180657 C355.61534724 613.20886801 307.5393415 606.67714521 261.53622377 591.13340384 C260.59665834 590.81790579 259.65709291 590.50240774 258.6890558 590.17734915 C216.56925512 575.86803471 177.71003065 554.29599822 143.10018861 526.39316946 C141.63263592 525.21106333 140.15696615 524.03905443 138.68075502 522.86777884 C131.89226808 517.42131601 125.52177019 511.59511473 119.17245424 505.65195853 C117.55826118 504.15385634 115.9281468 502.67570116 114.29013002 501.20371634 C109.26560018 496.68179461 104.45469919 492.14083235 100.10263002 486.94981009 C98.53680461 485.13407738 96.88720257 483.4839768 95.16122377 481.82090384 C91.42849842 478.14637243 88.1823545 474.13854376 84.90341127 470.05918509 C82.59724981 467.20883041 80.22828281 464.4225591 77.84872377 461.63340384 C60.67350029 441.0072081 45.96729134 418.33208634 32.53622377 395.13340384 C32.10889955 394.39589895 31.68157533 393.65839407 31.24130189 392.89854056 C-0.95871908 336.95037619 -21.25365146 275.25369209 -28.46377623 211.13340384 C-28.63949156 209.65299612 -28.63949156 209.65299612 -28.8187567 208.14268118 C-36.63051565 139.85653272 -27.52777785 66.41924585 -6.46377623 1.13340384 C-4.72738871 -0.60298368 -2.36442651 0.00371838 0 0 Z";
+const DRIVER_ICON_CAP_D = "M0 0 C318.45 0 636.9 0 965 0 C963.8750129 10.12488389 963.8750129 10.12488389 963.18344116 13.52584839 C963.02708159 14.30473262 962.87072203 15.08361685 962.70962429 15.88610363 C962.45576505 17.11979923 962.45576505 17.11979923 962.19677734 18.37841797 C962.01558633 19.27518659 961.83439531 20.1719552 961.64771366 21.09589863 C961.04746875 24.06208783 960.44167968 27.02711648 959.8359375 29.9921875 C959.40718536 32.10615123 958.97881365 34.22019214 958.55079651 36.33430481 C957.40169398 42.00549356 956.24797962 47.67573462 955.09330368 53.34579086 C953.162447 62.83258207 951.2395419 72.3209912 949.31545067 81.80915642 C948.83068951 84.19924285 948.34575557 86.58929424 947.86065102 88.97931099 C944.76839719 104.21489658 941.70344641 119.45538322 938.69140625 134.70703125 C929.52621397 181.08933298 919.86326389 227.2903774 907.86328125 273.0390625 C907.68785797 273.70807587 907.51243469 274.37708923 907.33169556 275.06637573 C906.62358314 277.7422452 905.87567811 280.37296567 905 283 C624.5 283 344 283 55 283 C53.53652273 278.60956818 52.43889291 274.67333919 51.55187988 270.177948 C51.41996618 269.51504511 51.28805248 268.85214222 51.15214139 268.16915137 C50.71294093 265.95707356 50.27932809 263.74393867 49.84570312 261.53076172 C49.52981131 259.93364008 49.21357725 258.33658611 48.89702892 256.73959446 C48.03484836 252.38466367 47.17754516 248.02878522 46.32108474 243.67272639 C45.41021603 239.04436867 44.49484643 234.4169011 43.58003235 229.7893219 C41.8208418 220.88656843 40.06586697 211.98298931 38.31263107 203.07906145 C36.90686828 195.93994166 35.49984676 188.80107114 34.09188843 181.66238403 C33.89324261 180.65518049 33.69459679 179.64797695 33.4899314 178.61025208 C33.08892854 176.57703972 32.68792369 174.54382776 32.28691685 172.51061618 C29.70766717 159.43254969 27.12957551 146.35425582 24.55461121 133.27534485 C24.36253006 132.29972861 24.17044891 131.32411237 23.97254711 130.318932 C23.78200046 129.35110808 23.59145381 128.38328416 23.39513302 127.38613224 C19.96589989 109.96851388 16.52916438 92.5524299 13.07730103 75.13928223 C11.55161789 67.44257703 10.03080408 59.74491444 8.51250648 52.04674911 C7.57702422 47.3044332 6.63921208 42.56260883 5.6953125 37.82196045 C4.84362035 33.54388471 3.99878401 29.26451834 3.15981102 24.98393059 C2.8652937 23.48764237 2.56824975 21.99184851 2.26827431 20.49664497 C1.87082513 18.51404614 1.48359925 16.52940596 1.09692383 14.54467773 C0.88272293 13.46194077 0.66852203 12.3792038 0.4478302 11.26365662 C0 8 0 8 0 0 Z";
+
 function wheelLocalPts(halfLen, halfW) {
   return [
     { x: halfLen, y: halfW }, { x: halfLen, y: -halfW },
@@ -223,10 +228,10 @@ const COL = {
 
 function Slider({ label, unit, value, min, max, step, onChange, accent = COL.amber }) {
   return (
-    <div style={{ marginBottom: 10 }}>
+    <div style={{ marginBottom: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12.5, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</span>
-        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 12.5, color: COL.text }}>{value.toFixed(step < 1 ? 2 : 0)}{unit}</span>
+        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</span>
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text }}>{value.toFixed(step < 1 ? 2 : 0)}{unit}</span>
       </div>
       <input
         type="range" min={min} max={max} step={step} value={value}
@@ -240,10 +245,10 @@ function Slider({ label, unit, value, min, max, step, onChange, accent = COL.amb
 function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber }) {
   const index = closestSteerIndex(value);
   return (
-    <div style={{ marginBottom: 10 }}>
+    <div style={{ marginBottom: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 12.5, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</span>
-        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 12.5, color: COL.text }}>{value % 1 === 0 ? value.toFixed(0) : value.toFixed(2)}{unit}</span>
+        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</span>
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text }}>{value % 1 === 0 ? value.toFixed(0) : value.toFixed(2)}{unit}</span>
       </div>
       <input
         type="range" min={0} max={steps.length - 1} step={1} value={index}
@@ -256,9 +261,9 @@ function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber
 
 function ReadCell({ label, value, accent }) {
   return (
-    <div style={{ padding: "8px 10px", borderRight: `1px solid rgba(200,225,245,0.10)` }}>
-      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 10.5, letterSpacing: 0.6, color: COL.textDim, textTransform: "uppercase" }}>{label}</div>
-      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: accent || COL.text, marginTop: 2 }}>{value}</div>
+    <div style={{ padding: "6px 10px", borderRight: `1px solid rgba(200,225,245,0.10)`, borderBottom: `1px solid rgba(200,225,245,0.10)` }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 14, letterSpacing: 0.6, color: COL.textDim, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 18, color: accent || COL.text, marginTop: 2 }}>{value}</div>
     </div>
   );
 }
@@ -281,7 +286,7 @@ export default function BusSteeringSimulator() {
   const [showBand, setShowBand] = useState(true);
   const [animating, setAnimating] = useState(false);
   const [showGeom, setShowGeom] = useState(false);
-  const [gridOpen, setGridOpen] = useState(true);
+  const [showDims, setShowDims] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [viewMode, setViewMode] = useState("circle");
 
@@ -406,6 +411,60 @@ export default function BusSteeringSimulator() {
   const bodyWorld = bodyStatic.map((p) => poseTransform(p, pose));
   const bodyScreen = bodyWorld.map((p) => toScreen(displayedView, p));
 
+  // Head/tail lights and driver marker — fixed body detail, chassis-local, no steer angle of
+  // their own (angle 0 in wheelStaticCorners), just carried through the vehicle's pose like the
+  // body corners above.
+  const halfWbody = geom.Wb / 2;
+  const lightCenters = {
+    headL: { x: geom.Lfd + geom.Fo - 0.12, y: halfWbody - 0.22 },
+    headR: { x: geom.Lfd + geom.Fo - 0.12, y: -(halfWbody - 0.22) },
+    tailL: { x: -(geom.Ldt + geom.Ro) + 0.12, y: halfWbody - 0.22 },
+    tailR: { x: -(geom.Ldt + geom.Ro) + 0.12, y: -(halfWbody - 0.22) },
+  };
+  const lightScreens = Object.fromEntries(
+    Object.entries(lightCenters).map(([key, center]) => [
+      key,
+      wheelStaticCorners(center, 0, 0.1, 0.16).map((p) => toScreen(displayedView, poseTransform(p, pose))),
+    ])
+  );
+  // Driver sits at the front-offside corner, ahead of the front axle — this fleet is
+  // right-hand-drive (Australian), and the driver's position is forward of the front wheels.
+  // Icon is the supplied artwork (DRIVER_ICON_VIEWBOX/PATHS below), embedded as a nested SVG sized
+  // from a fixed real-world width so it scales with the vehicle and view zoom like the mirror/lights,
+  // rather than staying a fixed screen size.
+  const driverLocal = { x: geom.Lfd + geom.Fo - 0.80, y: -(halfWbody - 0.4) };
+  const driverScreen = toScreen(displayedView, poseTransform(driverLocal, pose));
+  const DRIVER_ICON_WORLD_W = 0.55; // metres
+  const driverIconScreenW = DRIVER_ICON_WORLD_W * displayedView.scale;
+  const driverIconScreenH = driverIconScreenW * (DRIVER_ICON_VB_H / DRIVER_ICON_VB_W);
+
+  // Nearside mirror — mounted at the front-nearside body corner, angled backward and outward
+  // along the nearside edge. The centre is only pushed out 70% of the half-length (rather than a
+  // full half-length), so ~15% of the arm sits back over the corner instead of starting flush at it.
+  const mirrorAngle = toRad(125);
+  const mirrorHalfLen = 0.3, mirrorHalfW = 0.06;
+  const mirrorMount = { x: geom.Lfd + geom.Fo, y: halfWbody };
+  const mirrorCenter = {
+    x: mirrorMount.x + Math.cos(mirrorAngle) * mirrorHalfLen * 0.7,
+    y: mirrorMount.y + Math.sin(mirrorAngle) * mirrorHalfLen * 0.7,
+  };
+  const mirrorScreen = wheelStaticCorners(mirrorCenter, mirrorAngle, mirrorHalfLen, mirrorHalfW).map((p) =>
+    toScreen(displayedView, poseTransform(p, pose))
+  );
+
+  // Offside mirror — short, mounted at the body edge a short distance ahead of the driver, angled
+  // almost straight out (near-perpendicular to the body) rather than swept back like the nearside one.
+  const mirrorOAngle = toRad(-95);
+  const mirrorOHalfLen = 0.16, mirrorOHalfW = 0.05;
+  const mirrorOMount = { x: driverLocal.x + 0.40, y: -halfWbody };
+  const mirrorOCenter = {
+    x: mirrorOMount.x + Math.cos(mirrorOAngle) * mirrorOHalfLen * 0.7,
+    y: mirrorOMount.y + Math.sin(mirrorOAngle) * mirrorOHalfLen * 0.7,
+  };
+  const mirrorOScreen = wheelStaticCorners(mirrorOCenter, mirrorOAngle, mirrorOHalfLen, mirrorOHalfW).map((p) =>
+    toScreen(displayedView, poseTransform(p, pose))
+  );
+
   const { driveL, driveR } = geom.wheelCenters;
   const wheelDefs = [
     { key: "w1", num: 1, center: geom.wheelCenters.frontL, angle: geom.deltaF, color: COL.front },
@@ -492,23 +551,25 @@ export default function BusSteeringSimulator() {
         input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; margin-top:-6px; width:15px; height:15px; border-radius:2px; background:var(--thumb,#ffb937); border:1px solid #0b1c30; }
         input[type=range]::-moz-range-track{ height:3px; background:rgba(200,225,245,0.22); border-radius:2px; }
         input[type=range]::-moz-range-thumb{ width:14px; height:14px; border-radius:2px; background:#ffb937; border:1px solid #0b1c30; }
-        .btn{ font-family:'Barlow Condensed',sans-serif; text-transform:uppercase; letter-spacing:0.6px; font-size:12.5px; padding:8px 12px; border-radius:3px; border:1px solid rgba(200,225,245,0.25); background:rgba(200,225,245,0.04); color:#eaf2f8; cursor:pointer; }
+        .btn{ font-family:'Barlow Condensed',sans-serif; text-transform:uppercase; letter-spacing:0.6px; font-size:15px; padding:8px 12px; border-radius:3px; border:1px solid rgba(200,225,245,0.25); background:rgba(200,225,245,0.04); color:#eaf2f8; cursor:pointer; }
         .btn:active{ transform:translateY(1px); }
         .btnOn{ background:#ffb937; color:#0b1c30; border-color:#ffb937; font-weight:600; }
       `}</style>
 
       {/* header */}
-      <div style={{ padding: "16px 16px 10px", borderBottom: "1px solid rgba(200,225,245,0.12)" }}>
-        <div style={{ fontSize: 11, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
-        <div style={{ fontSize: 24, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
-        <div style={{ fontSize: 13, color: COL.textDim, marginTop: 2, lineHeight: 1.4 }}>
+      <div style={{ padding: "10px 12px 8px", borderBottom: "1px solid rgba(200,225,245,0.12)" }}>
+        <div style={{ fontSize: 14, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
+        <div style={{ fontSize: 29, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
+        <div style={{ fontSize: 16, color: COL.textDim, marginTop: 2, lineHeight: 1.4 }}>
           Front axle steers, drive axle fixed (pivot reference), tag axle counter-steers. Default dimensions are an illustrative approximation of a ~12.8 m tag-axle bus — adjust the geometry sliders to match a real spec if you have one.
         </div>
       </div>
 
-      {/* canvas */}
-      <div style={{ padding: "12px 12px 0", overflow: "hidden" }}>
-        <div style={{ position: "relative", overflow: "hidden", contain: "layout paint" }}>
+      {/* main layout: map + side panel — wraps to a stacked layout if the host container is narrow */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, padding: "8px 10px 0", alignItems: "flex-start" }}>
+        {/* map column */}
+        <div style={{ flex: "3 1 420px", minWidth: 640, maxWidth: "100%", overflow: "hidden" }}>
+        <div style={{ position: "relative", overflow: "hidden", contain: "layout paint", maxWidth: "82vh", margin: "0 auto" }}>
         <svg
           viewBox={`0 0 ${VB} ${VB}`}
           style={{ width: "100%", height: "auto", aspectRatio: "1/1", background: COL.panelAlt, borderRadius: 4, border: "1px solid rgba(200,225,245,0.14)", overflow: "hidden" }}
@@ -614,7 +675,7 @@ export default function BusSteeringSimulator() {
 
           {/* mowing-the-grass (#1/#2) and tail-swing (#7/#8) dimension lines — radial, so
               perpendicular to each wheel's own arc, from the body corner to that wheel's path */}
-          {showGeom && !geom.isStraight && (() => {
+          {showDims && !geom.isStraight && (() => {
             const dims = [
               { corner: geom.bodyCorners.FL, radius: geom.radii.frontL, color: COL.front, value: geom.mow1 },
               { corner: geom.bodyCorners.FR, radius: geom.radii.frontR, color: COL.front, value: geom.mow2 },
@@ -633,6 +694,31 @@ export default function BusSteeringSimulator() {
           <polygon points={ptsToPath(bodyScreen)} fill={COL.outlineFill} stroke={COL.outline} strokeWidth="2.2" strokeLinejoin="round" />
           {/* front cap accent line */}
           <line x1={bodyScreen[0].x} y1={bodyScreen[0].y} x2={bodyScreen[1].x} y2={bodyScreen[1].y} stroke={COL.front} strokeWidth="3" />
+
+          {/* headlights (front) and tail lights (rear) */}
+          <polygon points={ptsToPath(lightScreens.headL)} fill="#f5f8fb" stroke="#0b1c30" strokeWidth="0.8" />
+          <polygon points={ptsToPath(lightScreens.headR)} fill="#f5f8fb" stroke="#0b1c30" strokeWidth="0.8" />
+          <polygon points={ptsToPath(lightScreens.tailL)} fill="#e5384d" stroke="#0b1c30" strokeWidth="0.8" />
+          <polygon points={ptsToPath(lightScreens.tailR)} fill="#e5384d" stroke="#0b1c30" strokeWidth="0.8" />
+
+          {/* driver marker — offside/front, right-hand-drive. Supplied artwork, embedded as a
+              nested SVG sized from a fixed real-world width so it scales with the vehicle and
+              view zoom like the mirror/lights, rather than staying a fixed screen size. Not
+              rotated with vehicle heading — a stylised location marker, not a facing indicator. */}
+          <svg
+            x={driverScreen.x - driverIconScreenW / 2} y={driverScreen.y - driverIconScreenH / 2}
+            width={driverIconScreenW} height={driverIconScreenH}
+            viewBox={`0 0 ${DRIVER_ICON_VB_W} ${DRIVER_ICON_VB_H}`}
+          >
+            <path d={DRIVER_ICON_HEAD_D} fill="#FED700" transform="translate(77.46377623081207,423.8665961623192)" />
+            <path d={DRIVER_ICON_CAP_D} fill="#0025FE" transform="translate(2,65)" />
+          </svg>
+
+          {/* nearside mirror */}
+          <polygon points={ptsToPath(mirrorScreen)} fill="#9aa5b1" stroke="#0b1c30" strokeWidth="0.8" />
+
+          {/* offside mirror */}
+          <polygon points={ptsToPath(mirrorOScreen)} fill="#9aa5b1" stroke="#0b1c30" strokeWidth="0.8" />
 
           {/* scrub ghost wheels */}
           {ghostWheels.map((g) => (
@@ -669,25 +755,25 @@ export default function BusSteeringSimulator() {
           })}
           </g>
         </svg>
-        <div style={{ position: "absolute", left: 10, top: 10, display: "flex", flexDirection: "column", gap: 4, background: "rgba(10,26,44,0.72)", borderRadius: 4, padding: "8px 10px", fontSize: 11, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.4 }}>
+        <div style={{ position: "absolute", left: 10, top: 10, display: "flex", flexDirection: "column", gap: 4, background: "rgba(10,26,44,0.72)", borderRadius: 4, padding: "6px 8px", fontSize: 14, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.4 }}>
           <LegendDot color={COL.front} label="Front · steers (1–2)" />
           <LegendDot color={COL.drive} label="Drive · fixed, dual (3–6)" />
           <LegendDot color={COL.tag} label="Tag · counter-steers (7–8)" />
           <LegendDot color={COL.w3} label="Wheel 3 path — nearside" />
-          <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>Nearside = left (1, 3, 4, 7)</div>
+          <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Nearside = left (1, 3, 4, 7)</div>
         </div>
-        <div style={{ position: "absolute", right: 10, top: 10, display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end", background: "rgba(10,26,44,0.72)", borderRadius: 4, padding: "8px 10px", fontSize: 11, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.4, textAlign: "right" }}>
+        <div style={{ position: "absolute", right: 10, top: 10, display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end", background: "rgba(10,26,44,0.72)", borderRadius: 4, padding: "6px 8px", fontSize: 14, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.4, textAlign: "right" }}>
           <LegendDot color={COL.w6} label="Wheel 6 path — offside" />
           <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />
           <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />
           <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />
-          <div style={{ fontSize: 10.5, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
+          <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
         </div>
         <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", boxShadow: "0 2px 8px rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden" }}>
           <button
             onClick={() => selectViewMode("bus")}
             style={{
-              fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 12.5,
+              fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
               padding: "8px 12px", border: "none", cursor: "pointer",
               background: viewMode === "bus" ? COL.amber : "rgba(200,225,245,0.08)",
               color: viewMode === "bus" ? COL.bg : COL.text,
@@ -699,7 +785,7 @@ export default function BusSteeringSimulator() {
           <button
             onClick={() => selectViewMode("circle")}
             style={{
-              fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 12.5,
+              fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
               padding: "8px 12px", border: "none", cursor: "pointer",
               background: viewMode === "circle" ? COL.amber : "rgba(200,225,245,0.08)",
               color: viewMode === "circle" ? COL.bg : COL.text,
@@ -708,6 +794,24 @@ export default function BusSteeringSimulator() {
           >
             Circle
           </button>
+          {viewMode === "bus" && (
+            <button
+              onClick={() => setPose({ x: 0, y: 0, theta: 0 })}
+              title="Reset the vehicle back to the centre, facing straight ahead"
+              style={{
+                fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
+                padding: "8px 12px", border: "none", cursor: "pointer",
+                background: "rgba(200,225,245,0.08)", color: COL.text, fontWeight: 400,
+              }}
+            >
+              Recenter
+            </button>
+          )}
+        </div>
+        <div style={{ position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)", display: "flex", gap: 4, whiteSpace: "nowrap" }}>
+          <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Off-track</button>
+          <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
+          <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
         </div>
         <button
           className={"btn" + (animating ? " btnOn" : "")}
@@ -717,25 +821,39 @@ export default function BusSteeringSimulator() {
           {animating ? "■ Stop" : "▶ Drive the turn"}
         </button>
         </div>
-      </div>
 
-      {/* common controls: steering + throttle, always visible */}
-      <div style={{ padding: "0 16px" }}>
-        <SectionLabel>Steering &amp; throttle</SectionLabel>
-        <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} />
-        <div style={{ fontSize: 11.5, color: COL.textDim, margin: "-6px 0 10px" }}>← / → arrow keys nudge the lock — 0.15° steps near straight-ahead (±3°), 0.5° beyond that</div>
-        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
-          {[["Full lock left", -35], ["Lane change", -8], ["Straight", 0], ["Full lock right", 35]].map(([lbl, v]) => (
-            <button key={lbl} className="btn" onClick={() => setSteerInput(v)}>{lbl}</button>
-          ))}
+        {/* advanced settings: sits under the map, full mapCol width, collapsed by default */}
+        <div style={{ marginTop: 10 }}>
+          <Collapsible title="Advanced settings" open={advancedOpen} onToggle={() => setAdvancedOpen((v) => !v)}>
+            <SectionLabel>Tag axle behaviour</SectionLabel>
+            <Slider label="Tag axle sync ratio (1 = ideal Ackermann)" unit="×" value={tagRatio} min={0} max={1.3} step={0.05} onChange={setTagRatio} accent={COL.tag} />
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <span style={{ fontSize: 15, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.5 }}>Speed lockout above threshold</span>
+              <button className={"btn" + (lockoutOn ? " btnOn" : "")} onClick={() => setLockoutOn((v) => !v)}>{lockoutOn ? "On" : "Off"}</button>
+            </div>
+            {lockoutOn && <Slider label="Lockout threshold" unit=" km/h" value={lockoutSpeed} min={10} max={40} step={1} onChange={setLockoutSpeed} />}
+
+            <SectionLabel>Vehicle geometry (m)</SectionLabel>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 20 }}>
+              <Slider label="Front–drive wheelbase" unit="m" value={Lfd} min={4} max={8} step={0.1} onChange={setLfd} />
+              <Slider label="Drive–tag wheelbase" unit="m" value={Ldt} min={1.5} max={3.5} step={0.1} onChange={setLdt} />
+              <Slider label="Front overhang" unit="m" value={Fo} min={1.5} max={3.5} step={0.1} onChange={setFo} />
+              <Slider label="Rear overhang" unit="m" value={Ro} min={1} max={3} step={0.1} onChange={setRo} />
+              <Slider label="Body width" unit="m" value={Wb} min={2.3} max={2.6} step={0.01} onChange={setWb} />
+              <Slider label="Track width" unit="m" value={Tw} min={1.8} max={2.3} step={0.01} onChange={setTw} />
+            </div>
+            <div style={{ fontSize: 15, color: COL.textDim, marginTop: 2, marginBottom: 4 }}>
+              Overall length ≈ {(Lfd + Fo + Ldt + Ro).toFixed(1)} m
+            </div>
+          </Collapsible>
         </div>
-        <Slider label="Throttle (road speed)" unit=" km/h" value={speed} min={0} max={60} step={1} onChange={setSpeed} />
-      </div>
+        </div>
 
-      {/* title block readouts */}
-      <div style={{ padding: "0 16px" }}>
-        <Collapsible title="Radius grid" open={gridOpen} onToggle={() => setGridOpen((v) => !v)}>
-          <div style={{ border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", background: COL.panel }}>
+        {/* side panel: grid readouts on top, primary controls below — no collapse here, always visible */}
+        <div style={{ flex: "1 1 340px", minWidth: 290, maxWidth: 415, background: COL.panel, border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, padding: 12 }}>
+          <SectionLabel>Radius grid</SectionLabel>
+          <div style={{ border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", background: COL.panelAlt, marginBottom: 10 }}>
             <ReadCell label="Wheel 3 path radius (nearside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w3) + " m"} accent={COL.w3} />
             <ReadCell label="Wheel 6 path radius (offside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w6) + " m"} accent={COL.w6} />
             <ReadCell label="Front steer δf" value={geom.isStraight ? "0.0° straight" : fmt(Math.abs(geom.deltaFdeg)) + "° " + (geom.deltaFdeg > 0 ? "→ nearside" : "→ offside")} accent={COL.front} />
@@ -750,43 +868,20 @@ export default function BusSteeringSimulator() {
             <ReadCell label="Tail swing vs #7" value={geom.isStraight ? "0.0 m" : fmt(geom.tailSwing7) + " m"} accent={COL.tailSwing} />
             <ReadCell label="Tail swing vs #8" value={geom.isStraight ? "0.0 m" : fmt(geom.tailSwing8) + " m"} accent={COL.tailSwing} />
           </div>
-        </Collapsible>
+
+          <SectionLabel>Steering &amp; throttle</SectionLabel>
+          <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} />
+          <div style={{ fontSize: 15, color: COL.textDim, margin: "-4px 0 8px" }}>← / → arrow keys nudge the lock — 0.15° steps near straight-ahead (±3°), 0.5° beyond that</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+            {[["Full lock left", -35], ["Lane change", -8], ["Straight", 0], ["Full lock right", 35]].map(([lbl, v]) => (
+              <button key={lbl} className="btn" onClick={() => setSteerInput(v)}>{lbl}</button>
+            ))}
+          </div>
+          <Slider label="Throttle (road speed)" unit=" km/h" value={speed} min={0} max={60} step={1} onChange={setSpeed} />
+        </div>
       </div>
 
-      {/* everything else: collapsible advanced settings */}
-      <div style={{ padding: "16px 16px 0" }}>
-        <Collapsible title="Advanced settings" open={advancedOpen} onToggle={() => setAdvancedOpen((v) => !v)}>
-          <SectionLabel>Tag axle behaviour</SectionLabel>
-          <Slider label="Tag axle sync ratio (1 = ideal Ackermann)" unit="×" value={tagRatio} min={0} max={1.3} step={0.05} onChange={setTagRatio} accent={COL.tag} />
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-            <span style={{ fontSize: 12.5, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.5 }}>Speed lockout above threshold</span>
-            <button className={"btn" + (lockoutOn ? " btnOn" : "")} onClick={() => setLockoutOn((v) => !v)}>{lockoutOn ? "On" : "Off"}</button>
-          </div>
-          {lockoutOn && <Slider label="Lockout threshold" unit=" km/h" value={lockoutSpeed} min={10} max={40} step={1} onChange={setLockoutSpeed} />}
-
-          <SectionLabel>Vehicle geometry (m)</SectionLabel>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 16 }}>
-            <Slider label="Front–drive wheelbase" unit="m" value={Lfd} min={4} max={8} step={0.1} onChange={setLfd} />
-            <Slider label="Drive–tag wheelbase" unit="m" value={Ldt} min={1.5} max={3.5} step={0.1} onChange={setLdt} />
-            <Slider label="Front overhang" unit="m" value={Fo} min={1.5} max={3.5} step={0.1} onChange={setFo} />
-            <Slider label="Rear overhang" unit="m" value={Ro} min={1} max={3} step={0.1} onChange={setRo} />
-            <Slider label="Body width" unit="m" value={Wb} min={2.3} max={2.6} step={0.01} onChange={setWb} />
-            <Slider label="Track width" unit="m" value={Tw} min={1.8} max={2.3} step={0.01} onChange={setTw} />
-          </div>
-          <div style={{ fontSize: 12, color: COL.textDim, marginTop: 2, marginBottom: 14 }}>
-            Overall length ≈ {(Lfd + Fo + Ldt + Ro).toFixed(1)} m
-          </div>
-
-          <SectionLabel>Display</SectionLabel>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
-            <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)}>Off-track band</button>
-            <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)}>Construction &amp; dim lines</button>
-          </div>
-        </Collapsible>
-      </div>
-
-      <div style={{ padding: "0 16px", fontSize: 11.5, color: COL.textDim, lineHeight: 1.5 }}>
+      <div style={{ padding: "10px 12px 0", fontSize: 15, color: COL.textDim, lineHeight: 1.5 }}>
         Wheels numbered 1–8: 1–2 front (nearside/offside), 3–4 drive-axle nearside pair (3 leftmost/outer, 4 inner), 5–6 drive-axle offside pair (5 inner, 6 rightmost/outer), 7–8 tag axle. Model: steady-state circular turn, no tyre slip. Tag axle angle set for zero-scrub rolling at the current ratio; when locked straight (ratio 0, or above the speed lockout), the dashed ghost outline shows the ideal angle it's deviating from — the "tag scrub angle" readout is that gap. The shaded band spans from the drive axle's inner wheel (3 or 6, whichever is tighter) out to the front axle's outer wheel (2 or 1) — the corridor the vehicle actually occupies through the turn. The outer tail-swing circle (rear corner) is shown as a plain dashed reference only.
       </div>
     </div>
@@ -795,7 +890,7 @@ export default function BusSteeringSimulator() {
 
 function SectionLabel({ children }) {
   return (
-    <div style={{ fontSize: 12, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase", margin: "6px 0 10px", borderBottom: "1px solid rgba(200,225,245,0.14)", paddingBottom: 6 }}>
+    <div style={{ fontSize: 15, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase", margin: "4px 0 8px", borderBottom: "1px solid rgba(200,225,245,0.14)", paddingBottom: 4 }}>
       {children}
     </div>
   );
@@ -803,7 +898,7 @@ function SectionLabel({ children }) {
 
 function Collapsible({ title, open, onToggle, children }) {
   return (
-    <div style={{ marginBottom: 14 }}>
+    <div style={{ marginBottom: 10 }}>
       <button
         onClick={onToggle}
         style={{
@@ -812,8 +907,8 @@ function Collapsible({ title, open, onToggle, children }) {
           padding: "8px 0", cursor: "pointer", fontFamily: "'Barlow Condensed',sans-serif",
         }}
       >
-        <span style={{ fontSize: 12, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase" }}>{title}</span>
-        <span style={{ color: COL.textDim, fontFamily: "'Space Mono',monospace", fontSize: 14 }}>{open ? "▾ collapse" : "▸ expand"}</span>
+        <span style={{ fontSize: 15, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase" }}>{title}</span>
+        <span style={{ color: COL.textDim, fontFamily: "'Space Mono',monospace", fontSize: 17 }}>{open ? "▾ collapse" : "▸ expand"}</span>
       </button>
       {open && <div style={{ marginTop: 10 }}>{children}</div>}
     </div>
