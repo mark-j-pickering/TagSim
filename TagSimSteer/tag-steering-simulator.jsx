@@ -415,9 +415,12 @@ export default function BusSteeringSimulator() {
   // their own (angle 0 in wheelStaticCorners), just carried through the vehicle's pose like the
   // body corners above.
   const halfWbody = geom.Wb / 2;
+  const HEADLIGHT_INBOARD_OFFSET = 0.4; // metres, inner pair relative to outer pair
   const lightCenters = {
     headL: { x: geom.Lfd + geom.Fo - 0.12, y: halfWbody - 0.22 },
     headR: { x: geom.Lfd + geom.Fo - 0.12, y: -(halfWbody - 0.22) },
+    headL2: { x: geom.Lfd + geom.Fo - 0.12, y: halfWbody - 0.22 - HEADLIGHT_INBOARD_OFFSET },
+    headR2: { x: geom.Lfd + geom.Fo - 0.12, y: -(halfWbody - 0.22 - HEADLIGHT_INBOARD_OFFSET) },
     tailL: { x: -(geom.Ldt + geom.Ro) + 0.12, y: halfWbody - 0.22 },
     tailR: { x: -(geom.Ldt + geom.Ro) + 0.12, y: -(halfWbody - 0.22) },
   };
@@ -698,6 +701,8 @@ export default function BusSteeringSimulator() {
           {/* headlights (front) and tail lights (rear) */}
           <polygon points={ptsToPath(lightScreens.headL)} fill="#f5f8fb" stroke="#0b1c30" strokeWidth="0.8" />
           <polygon points={ptsToPath(lightScreens.headR)} fill="#f5f8fb" stroke="#0b1c30" strokeWidth="0.8" />
+          <polygon points={ptsToPath(lightScreens.headL2)} fill="#f5f8fb" stroke="#0b1c30" strokeWidth="0.8" />
+          <polygon points={ptsToPath(lightScreens.headR2)} fill="#f5f8fb" stroke="#0b1c30" strokeWidth="0.8" />
           <polygon points={ptsToPath(lightScreens.tailL)} fill="#e5384d" stroke="#0b1c30" strokeWidth="0.8" />
           <polygon points={ptsToPath(lightScreens.tailR)} fill="#e5384d" stroke="#0b1c30" strokeWidth="0.8" />
 
