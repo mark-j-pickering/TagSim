@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
+  base: process.env.GITHUB_ACTIONS ? "/TagSim/" : "/",
   plugins: [react()],
   server: {
     // 5173 is Vite's own default and collides with other projects on this
