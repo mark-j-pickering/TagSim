@@ -877,9 +877,9 @@ export default function BusSteeringSimulator() {
           <SectionLabel>Steering &amp; throttle</SectionLabel>
           <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} />
           <div style={{ fontSize: 15, color: COL.textDim, margin: "-4px 0 8px" }}>← / → arrow keys nudge the lock — 0.15° steps near straight-ahead (±3°), 0.5° beyond that</div>
-          <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
-            {[["Full lock left", -35], ["Lane change", -8], ["Straight", 0], ["Full lock right", 35]].map(([lbl, v]) => (
-              <button key={lbl} className="btn" onClick={() => setSteerInput(v)}>{lbl}</button>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10, justifyContent: "center" }}>
+            {[["Full lock left", -35], ["Straight", 0], ["Full lock right", 35]].map(([lbl, v]) => (
+              <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => setSteerInput(v)}>{lbl}</button>
             ))}
           </div>
           <Slider label="Throttle (road speed)" unit=" km/h" value={speed} min={0} max={60} step={1} onChange={setSpeed} />
