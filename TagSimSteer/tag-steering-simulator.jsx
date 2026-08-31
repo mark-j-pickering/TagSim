@@ -197,6 +197,35 @@ const TRAIL_MIN_SPACING = 0.2; // metres between recorded trail samples
 const TRAIL_MIN_SPACING_SQ = TRAIL_MIN_SPACING * TRAIL_MIN_SPACING;
 const TRAIL_RENDER_EVERY = 5; // force a re-render every N recorded samples, not every one
 const TRAIL_BOUND_HALF = 500; // metres — recording area capped to a 1000x1000m (1km²) square centred on the origin
+const TRAIL_PREVIEW_LENGTH = 50; // metres ahead of the bus the preview band projects
+const TRAIL_PREVIEW_STEPS = 40; // segments across that length — plenty smooth even at full-lock radii
+
+// Closed-form projection of pose forward by arc length `s`, holding the current curvature (or
+// straight heading) constant — derived by solving the same unicycle model the drive loop
+// integrates each frame (theta' = v/R, x' = v cos(theta), y' = v sin(theta)) in closed form for
+// constant R instead of stepping it. Used only for the forward trail *preview*, recomputed fresh
+// every render from the live pose/geom — never for the driven pose itself. Re-deriving the actual
+// driven position this way (rotation about the turn centre) was tried and reverted (see main
+// CLAUDE.md): the turn centre moves with every steering input, which broke continuity. That
+// problem doesn't apply here since the preview is a disposable, from-scratch projection of "if you
+// held this" rather than a persisted position.
+function projectPosesForward(pose, geom, arcLength, steps) {
+  const poses = [];
+  for (let i = 0; i <= steps; i++) {
+    const s = (arcLength * i) / steps;
+    if (geom.isStraight) {
+      poses.push({ x: pose.x + s * Math.cos(pose.theta), y: pose.y + s * Math.sin(pose.theta), theta: pose.theta });
+    } else {
+      const theta = pose.theta + s / geom.R;
+      poses.push({
+        x: pose.x + geom.R * (Math.sin(theta) - Math.sin(pose.theta)),
+        y: pose.y - geom.R * (Math.cos(theta) - Math.cos(pose.theta)),
+        theta,
+      });
+    }
+  }
+  return poses;
+}
 
 // ---------- driver marker icon (supplied artwork: "bcc bus driver head.svg") ----------
 const DRIVER_ICON_VB_W = 1087, DRIVER_ICON_VB_H = 1039;
@@ -692,6 +721,25 @@ export default function BusSteeringSimulator() {
       ])
     : null;
 
+  // Preview: a ~50m projection ahead of the bus assuming the current steering angle is held,
+  // recomputed fresh each render from live pose/geom rather than accumulated like the cured trail
+  // above — always shown in trail mode (not gated on actively driving), since it's the only useful
+  // trail content before any history exists (see docs/trail-display-mode.md open questions). Same
+  // three axle bands and edge-offset formulas as the cured trail, just projected forward instead of
+  // sampled from the past.
+  const previewPoses = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_LENGTH, TRAIL_PREVIEW_STEPS) : null;
+  const previewHalfW = bandHalfWidth(geom.Tw);
+  const previewAxleHalfW = singleAxleBandHalfWidth(geom.Tw);
+  function previewBandPath(offsetX, halfW) {
+    return ptsToPath([
+      ...previewPoses.map((p) => toScreen(displayedView, poseTransform({ x: offsetX, y: halfW }, p))),
+      ...previewPoses.map((p) => toScreen(displayedView, poseTransform({ x: offsetX, y: -halfW }, p))).reverse(),
+    ]);
+  }
+  const previewPolygonPoints = previewPoses ? previewBandPath(0, previewHalfW) : null;
+  const previewFrontPolygonPoints = previewPoses ? previewBandPath(geom.Lfd, previewAxleHalfW) : null;
+  const previewTagPolygonPoints = previewPoses ? previewBandPath(-geom.Ldt, previewAxleHalfW) : null;
+
   // grid pattern step
   const gridMeters = geom.isStraight ? geom.straightHalfExtent / 6 : Math.min(geom.outerRadius, 40) / 7;
   const niceSteps = [0.5, 1, 2, 2.5, 5, 10, 20];
@@ -767,6 +815,19 @@ export default function BusSteeringSimulator() {
                  M ${Cscreen.x - R_bandInner_px} ${Cscreen.y} A ${R_bandInner_px} ${R_bandInner_px} 0 1 0 ${Cscreen.x + R_bandInner_px} ${Cscreen.y} A ${R_bandInner_px} ${R_bandInner_px} 0 1 0 ${Cscreen.x - R_bandInner_px} ${Cscreen.y} Z`}
             />
           ))}
+
+          {/* preview: ~50m projection ahead of the bus if the current steering angle is held —
+              dashed and lower-opacity than the cured trail so it reads as "if you hold this" rather
+              than a record of fact (see docs/trail-display-mode.md) */}
+          {previewPolygonPoints && (
+            <polygon points={previewPolygonPoints} fill={COL.trail} fillOpacity="0.08" stroke={COL.trail} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
+          )}
+          {previewFrontPolygonPoints && (
+            <polygon points={previewFrontPolygonPoints} fill={COL.front} fillOpacity="0.08" stroke={COL.front} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
+          )}
+          {previewTagPolygonPoints && (
+            <polygon points={previewTagPolygonPoints} fill={COL.tag} fillOpacity="0.08" stroke={COL.tag} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
+          )}
 
           {/* trail: painted record of the corridor actually driven so far (see docs/trail-display-mode.md) */}
           {trailPolygonPoints && (

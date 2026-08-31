@@ -1,9 +1,9 @@
 # Design note: Trail display mode
 
-Status: v1 landed in `tag-steering-simulator.jsx` — history buffer and a
-single-band ribbon (the "Trail" toggle). The forward 50m preview and the
-tyre/overhang colour split described below are not implemented yet; see
-"What shipped in v1" at the bottom.
+Status: v1 landed in `tag-steering-simulator.jsx` — history buffer, three
+axle-track ribbons, and the forward 50m preview (the "Trail" toggle). The
+tyre/overhang colour split described below is not implemented yet; see "What
+shipped" at the bottom.
 
 ## Summary
 
@@ -147,9 +147,9 @@ ribbon polygons at the boundary.
 
 ## Open questions
 
-- Should the preview (forward 50m) always render in trail mode, or only
-  while actively driving? Static/parked with no trail yet, it's the only
-  useful content, so probably always-on.
+- ~~Should the preview (forward 50m) always render in trail mode, or only
+  while actively driving?~~ Resolved: always-on whenever trail mode is on,
+  parked or driving.
 - Exact sample spacing and buffer cap are tuning, not architecture — pick
   defaults during implementation and adjust by eye.
 - ~~The existing "Recenter" button teleports `pose` back to `{0,0,0}`...~~
@@ -164,7 +164,7 @@ ribbon polygons at the boundary.
   complexity yet.
 - No persistence across page reloads (matches the rest of the app today).
 
-## What shipped in v1
+## What shipped
 
 - **Three bands, all "tyre corridor" style — not yet the tyre/overhang
   split** described above. Shipped: a drive-axle corridor (teal, sampled at
@@ -186,9 +186,30 @@ ribbon polygons at the boundary.
   differently-styled band for body-corner overhang (`mow1`/`mow2`/
   `tailSwing7`/`tailSwing8`) — the "nothing touched here, but the bus
   occupied this space" corridor described above.
-- **No forward 50m preview yet** — trail mode currently only paints the
-  cured (historical) corridors. Adding the ahead-of-the-bus projection is
-  the natural next increment.
+- **Forward 50m preview**: implemented as a closed-form projection
+  (`projectPosesForward`), not an iterative step loop — it solves the same
+  unicycle model the drive loop integrates (`theta' = v/R`, `x' = v
+  cos(theta)`, `y' = v sin(theta)`) directly for arc length `s`, giving an
+  exact point on the current circle (or straight line) at any distance ahead
+  without accumulating float error over many small steps. Recomputed fresh
+  every render from live `pose`/`geom` — not stored in `trailRef` and not
+  gated on `animating`, so it's visible whether parked or driving, per the
+  "should probably be always-on" open question above. Same three axle bands
+  as the cured trail (drive/front/tag), same edge-offset formulas
+  (`bandHalfWidth`/`singleAxleBandHalfWidth`), just built from 41 projected
+  points spanning `TRAIL_PREVIEW_LENGTH` (50m) instead of sampled history —
+  rendered dashed and at half the cured trail's fill/stroke opacity so it
+  reads as "if you hold this" rather than a record. Verified by hand at
+  straight-ahead, mid-turn, and full lock (R≈5.9m at this vehicle's 50°
+  max) — at full lock the 50m preview laps the turning circle more than
+  once and renders as an overlapping spiral, which is correct (the
+  projection doesn't stop at one revolution), not a bug. This is
+  deliberately *not* the "rotation about the turn centre" pattern that's
+  off-limits for the driven pose (see main CLAUDE.md) — that restriction is
+  about not re-deriving the persisted position, which would break
+  continuity every time the turn centre moves; this projection is disposable
+  and recomputed from scratch each render, so it has nothing to stay
+  continuous with.
 - **History buffer**: `trailRef` (a `useRef` array of `{poseX, poseY, left,
   right, frontLeft, frontRight, tagLeft, tagRight}` world-space samples),
   appended inside the existing drive-loop `requestAnimationFrame` callback
