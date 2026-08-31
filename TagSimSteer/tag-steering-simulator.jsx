@@ -2,6 +2,11 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
 
 // ---------- constants ----------
+// VB is the height of the SVG's abstract coordinate space, always 1000 units — it's the reference
+// every tuned scale constant below (VB/3, VB/2-MARGIN) was chosen against. The width side of that
+// space (vb.w below) is not fixed: it's recomputed every render from the map wrapper's actual pixel
+// aspect ratio, so the viewBox always matches the wrapper's on-screen rectangle exactly and the
+// square content never letterboxes or stretches — see `vbSize` in the component body.
 const VB = 1000;
 const MARGIN = 60;
 
@@ -100,13 +105,13 @@ function poseTransform(p, pose) {
   return { x: pose.x + p.x * c - p.y * s, y: pose.y + p.x * s + p.y * c };
 }
 
-function computeView(geom, pose, viewMode) {
+function computeView(geom, pose, viewMode, vb) {
   if (viewMode === "bus") {
-    // Fixed scale: the vehicle's own length occupies a bit over half the map height,
+    // Fixed scale: the vehicle's own length occupies a bit over half the map's shorter side,
     // regardless of steering — camera just follows the bus.
     const vehicleLength = geom.Lfd + geom.Fo + geom.Ldt + geom.Ro;
-    const scale = ((VB / 3) / vehicleLength) * 1.7;
-    return { scale, originX: VB / 2 + pose.y * scale, originY: VB / 2 + pose.x * scale };
+    const scale = ((vb.min / 3) / vehicleLength) * 1.7;
+    return { scale, originX: vb.w / 2 + pose.y * scale, originY: vb.h / 2 + pose.x * scale };
   }
   let center, fitExtent;
   if (geom.isStraight) {
@@ -116,8 +121,8 @@ function computeView(geom, pose, viewMode) {
     center = poseTransform(geom.C, pose); // turn centre stays centred, in current world position
     fitExtent = geom.outerRadius * 1.05; // fit the whole swept circle, no clipping
   }
-  const scale = (VB / 2 - MARGIN) / fitExtent;
-  return { scale, originX: VB / 2 + center.y * scale, originY: VB / 2 + center.x * scale };
+  const scale = (vb.min / 2 - MARGIN) / fitExtent;
+  return { scale, originX: vb.w / 2 + center.y * scale, originY: vb.h / 2 + center.x * scale };
 }
 
 function toScreen(view, p) {
@@ -386,6 +391,39 @@ export default function BusSteeringSimulator() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [viewMode, setViewMode] = useState("bus");
 
+  // Map sizing: the map wrapper's height is pinned to the side panel's own rendered height (so the
+  // two columns line up exactly), and its width just follows normal flex layout (100% of whatever
+  // space is left beside the side panel). Both are measured via ResizeObserver rather than computed
+  // from window size directly, since the side panel's height depends on its own content (the bus
+  // photo's aspect ratio, wrapped text, etc.), not just viewport size.
+  const sidePanelRef = useRef(null);
+  const mapWrapperRef = useRef(null);
+  const [sidePanelHeight, setSidePanelHeight] = useState(0);
+  const [mapWrapperWidth, setMapWrapperWidth] = useState(0);
+  useEffect(() => {
+    const sideEl = sidePanelRef.current, mapEl = mapWrapperRef.current;
+    if (!sideEl || !mapEl) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        // offsetHeight/offsetWidth (border-box) rather than entry.contentRect (content-box) — the
+        // side panel has its own padding+border, and we want the map wrapper's *outer* box to line
+        // up with the side panel's *outer* box, not its inner content area.
+        if (entry.target === sideEl) setSidePanelHeight(sideEl.offsetHeight);
+        else if (entry.target === mapEl) setMapWrapperWidth(mapEl.offsetWidth);
+      }
+    });
+    ro.observe(sideEl);
+    ro.observe(mapEl);
+    return () => ro.disconnect();
+  }, []);
+  // Abstract viewBox size: height fixed at VB (every tuned scale constant assumes it), width scaled
+  // to match the wrapper's actual on-screen aspect ratio so the square coordinate space always fills
+  // its rectangle exactly, however wide or narrow that rectangle ends up being.
+  const vbSize = useMemo(() => {
+    const w = sidePanelHeight > 0 && mapWrapperWidth > 0 ? Math.round((VB * mapWrapperWidth) / sidePanelHeight) : VB;
+    return { w, h: VB, min: Math.min(w, VB) };
+  }, [sidePanelHeight, mapWrapperWidth]);
+
   // Trail display mode: paints the corridor the vehicle has actually driven, rather than just the
   // instantaneous turning circle. See docs/trail-display-mode.md for the design.
   const [trailMode, setTrailMode] = useState(false);
@@ -510,9 +548,9 @@ export default function BusSteeringSimulator() {
   // short transition, the camera tracks its target exactly every frame — no drift, no lag — so a
   // circle centre stays pinned dead-centre while turning, and bus-centric tracks the bus exactly.
   function computeEffectiveView(mode) {
-    const busView = computeView(geom, pose, "bus");
+    const busView = computeView(geom, pose, "bus", vbSize);
     if (mode === "bus") return busView;
-    const circleView = computeView(geom, pose, "circle");
+    const circleView = computeView(geom, pose, "circle", vbSize);
     const t = Math.max(0, Math.min(1, (3 - Math.abs(geom.deltaFdeg)) / 3));
     const lerp = (a, b) => a + (b - a) * t;
     return {
@@ -775,21 +813,27 @@ export default function BusSteeringSimulator() {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 10, padding: "8px 10px 0", alignItems: "flex-start" }}>
         {/* map column */}
         <div style={{ flex: "3 1 420px", minWidth: 640, maxWidth: "100%", overflow: "hidden" }}>
-        <div style={{ position: "relative", overflow: "hidden", contain: "layout paint", maxWidth: "82vh", margin: "0 auto" }}>
+        <div
+          ref={mapWrapperRef}
+          style={{
+            position: "relative", overflow: "hidden", contain: "layout paint",
+            width: "100%", height: sidePanelHeight > 0 ? sidePanelHeight : undefined, aspectRatio: sidePanelHeight > 0 ? undefined : "1/1",
+          }}
+        >
         <svg
-          viewBox={`0 0 ${VB} ${VB}`}
-          style={{ width: "100%", height: "auto", aspectRatio: "1/1", background: COL.panelAlt, borderRadius: 4, border: "1px solid rgba(200,225,245,0.14)", overflow: "hidden" }}
+          viewBox={`0 0 ${vbSize.w} ${vbSize.h}`}
+          style={{ width: "100%", height: "100%", background: COL.panelAlt, borderRadius: 4, border: "1px solid rgba(200,225,245,0.14)", overflow: "hidden" }}
         >
           <defs>
             <pattern id="grid" width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
               <path d={`M ${gridPx} 0 L 0 0 0 ${gridPx}`} fill="none" stroke={COL.grid} strokeWidth="1" />
             </pattern>
             <clipPath id="mapClip">
-              <rect x="0" y="0" width={VB} height={VB} />
+              <rect x="0" y="0" width={vbSize.w} height={vbSize.h} />
             </clipPath>
           </defs>
           <g clipPath="url(#mapClip)">
-          <rect x="0" y="0" width={VB} height={VB} fill="url(#grid)" />
+          <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />
 
           {/* straight road centreline, when steering ≈ 0 (radius infinite) */}
           {geom.isStraight && (() => {
@@ -1069,37 +1113,10 @@ export default function BusSteeringSimulator() {
           {animating ? "■ Stop" : "▶ Drive the turn"}
         </button>
         </div>
-
-        {/* advanced settings: sits under the map, full mapCol width, collapsed by default */}
-        <div style={{ marginTop: 10 }}>
-          <Collapsible title="Advanced settings" open={advancedOpen} onToggle={() => setAdvancedOpen((v) => !v)}>
-            <SectionLabel>Tag axle behaviour</SectionLabel>
-            <Slider label="Tag axle sync ratio (1 = ideal Ackermann)" unit="×" value={tagRatio} min={0} max={1.3} step={0.05} onChange={setTagRatio} accent={COL.tag} />
-
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <span style={{ fontSize: 15, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.5 }}>Speed lockout above threshold</span>
-              <button className={"btn" + (lockoutOn ? " btnOn" : "")} onClick={() => setLockoutOn((v) => !v)}>{lockoutOn ? "On" : "Off"}</button>
-            </div>
-            {lockoutOn && <Slider label="Lockout threshold" unit=" km/h" value={lockoutSpeed} min={10} max={40} step={1} onChange={setLockoutSpeed} />}
-
-            <SectionLabel>Vehicle geometry (m)</SectionLabel>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", columnGap: 20 }}>
-              <Slider label="Front–drive wheelbase" unit="m" value={Lfd} min={4} max={8} step={0.1} onChange={setLfd} />
-              <Slider label="Drive–tag wheelbase" unit="m" value={Ldt} min={1} max={3.5} step={0.1} onChange={setLdt} />
-              <Slider label="Front overhang" unit="m" value={Fo} min={1.5} max={3.5} step={0.1} onChange={setFo} />
-              <Slider label="Rear overhang" unit="m" value={Ro} min={1} max={4} step={0.1} onChange={setRo} />
-              <Slider label="Body width" unit="m" value={Wb} min={2.3} max={2.6} step={0.01} onChange={setWb} />
-              <Slider label="Track width" unit="m" value={Tw} min={1.8} max={2.3} step={0.01} onChange={setTw} />
-            </div>
-            <div style={{ fontSize: 15, color: COL.textDim, marginTop: 2, marginBottom: 4 }}>
-              Overall length ≈ {(Lfd + Fo + Ldt + Ro).toFixed(1)} m
-            </div>
-          </Collapsible>
-        </div>
         </div>
 
         {/* side panel: grid readouts on top, primary controls below — no collapse here, always visible */}
-        <div style={{ flex: "1 1 340px", minWidth: 290, maxWidth: 415, background: COL.panel, border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, padding: 12 }}>
+        <div ref={sidePanelRef} style={{ flex: "1 1 340px", minWidth: 290, maxWidth: 415, background: COL.panel, border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, padding: 12 }}>
           <SectionLabel>Radius grid</SectionLabel>
           <div style={{ border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", background: COL.panelAlt, marginBottom: 10 }}>
             <ReadCell label="Wheel 3 path radius (nearside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w3) + " m"} accent={COL.w3} />
@@ -1137,6 +1154,33 @@ export default function BusSteeringSimulator() {
             <img src={busDimensionsPhoto} alt="BCC Volvo/Scania tag-axle bus (fleet 5054) with confirmed axle dimensions" style={{ display: "block", width: "100%", height: "auto" }} />
           </div>
         </div>
+      </div>
+
+      {/* advanced settings: full window width, below both the map and side panel, collapsed by default */}
+      <div style={{ padding: "10px 10px 0" }}>
+        <Collapsible title="Advanced settings" open={advancedOpen} onToggle={() => setAdvancedOpen((v) => !v)}>
+          <SectionLabel>Tag axle behaviour</SectionLabel>
+          <Slider label="Tag axle sync ratio (1 = ideal Ackermann)" unit="×" value={tagRatio} min={0} max={1.3} step={0.05} onChange={setTagRatio} accent={COL.tag} />
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ fontSize: 15, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.5 }}>Speed lockout above threshold</span>
+            <button className={"btn" + (lockoutOn ? " btnOn" : "")} onClick={() => setLockoutOn((v) => !v)}>{lockoutOn ? "On" : "Off"}</button>
+          </div>
+          {lockoutOn && <Slider label="Lockout threshold" unit=" km/h" value={lockoutSpeed} min={10} max={40} step={1} onChange={setLockoutSpeed} />}
+
+          <SectionLabel>Vehicle geometry (m)</SectionLabel>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", columnGap: 20, rowGap: 4 }}>
+            <Slider label="Front–drive wheelbase" unit="m" value={Lfd} min={4} max={8} step={0.1} onChange={setLfd} />
+            <Slider label="Drive–tag wheelbase" unit="m" value={Ldt} min={1} max={3.5} step={0.1} onChange={setLdt} />
+            <Slider label="Front overhang" unit="m" value={Fo} min={1.5} max={3.5} step={0.1} onChange={setFo} />
+            <Slider label="Rear overhang" unit="m" value={Ro} min={1} max={4} step={0.1} onChange={setRo} />
+            <Slider label="Body width" unit="m" value={Wb} min={2.3} max={2.6} step={0.01} onChange={setWb} />
+            <Slider label="Track width" unit="m" value={Tw} min={1.8} max={2.3} step={0.01} onChange={setTw} />
+          </div>
+          <div style={{ fontSize: 15, color: COL.textDim, marginTop: 2, marginBottom: 4 }}>
+            Overall length ≈ {(Lfd + Fo + Ldt + Ro).toFixed(1)} m
+          </div>
+        </Collapsible>
       </div>
 
       <div style={{ padding: "10px 12px 0", fontSize: 15, color: COL.textDim, lineHeight: 1.5 }}>
