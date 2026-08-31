@@ -166,26 +166,34 @@ ribbon polygons at the boundary.
 
 ## What shipped in v1
 
-- **Single band, not the two-band tyre/overhang split** described above.
-  The shipped ribbon reuses the existing off-tracking band's local
-  half-width formula (`bandHalfWidth(Tw)`, matching the render's existing
-  `bandHalfY`) applied symmetrically both sides, carried along the actual
-  driven path — one corridor, same simplification the live off-track band
-  already makes (front-wheel steer-angle widening isn't accounted for).
-  The tyre-vs-overhang colour split is future work.
+- **Two bands, both "tyre corridor" style — not yet the tyre/overhang split**
+  described above. Shipped: a drive-axle corridor (teal, sampled at chassis
+  x = 0, reusing the existing off-tracking band's local half-width formula —
+  `bandHalfWidth(Tw)`, matching the render's existing `bandHalfY`) and a
+  front-axle track (amber/`COL.front`, sampled at chassis x = Lfd via
+  `frontBandHalfWidth(Tw)`) — same construction, offset forward along the
+  chassis so it traces where the front axle itself has been, not just the
+  drive axle. The two visibly diverge once the bus turns, which is the same
+  effect the "mowing the grass" readouts describe. Neither band accounts for
+  the front wheel's own steer-angle widening (same accepted simplification
+  as the live off-track band). Still not implemented: a third,
+  differently-styled band for body-corner overhang (`mow1`/`mow2`/
+  `tailSwing7`/`tailSwing8`) — the "nothing touched here, but the bus
+  occupied this space" corridor described above — and a tag-axle band.
 - **No forward 50m preview yet** — trail mode currently only paints the
-  cured (historical) corridor. Adding the ahead-of-the-bus projection is the
-  natural next increment.
+  cured (historical) corridors. Adding the ahead-of-the-bus projection is
+  the natural next increment.
 - **History buffer**: `trailRef` (a `useRef` array of `{poseX, poseY, left,
-  right}` world-space samples), appended inside the existing drive-loop
-  `requestAnimationFrame` callback via `maybeSampleTrail()`, gated at 0.2m
-  spacing (`TRAIL_MIN_SPACING`). A `trailVersion` counter is bumped every 5
-  samples to force a periodic re-render, since the ref itself doesn't
-  trigger one — matches the "Implementation approach" section above.
-  Getting a synchronous just-integrated pose into that sampler required
-  replacing the drive loop's `setPose(prev => ...)` functional update with
-  an explicit `poseRef` driven forward each tick and passed to `setPose` as
-  a plain value — the functional-update form couldn't safely support a
+  right, frontLeft, frontRight}` world-space samples), appended inside the
+  existing drive-loop `requestAnimationFrame` callback via
+  `maybeSampleTrail()`, gated at 0.2m spacing (`TRAIL_MIN_SPACING`). A
+  `trailVersion` counter is bumped every 5 samples to force a periodic
+  re-render, since the ref itself doesn't trigger one — matches the
+  "Implementation approach" section above. Getting a synchronous
+  just-integrated pose into that sampler required replacing the drive
+  loop's `setPose(prev => ...)` functional update with an explicit
+  `poseRef` driven forward each tick and passed to `setPose` as a plain
+  value — the functional-update form couldn't safely support a
   side-effecting sampler call (StrictMode double-invokes updater functions).
 - **1km² bound**: implemented as `TRAIL_BOUND_HALF = 500`, i.e. `|pose.x| >
   500 || |pose.y| > 500` pauses recording (no wrap, no truncation) with a

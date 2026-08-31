@@ -184,6 +184,15 @@ function bandHalfWidth(Tw) {
   const halfT = Tw / 2;
   return Math.max(halfT + DUAL_GAP / 2, halfT + WHEEL_HALF_W);
 }
+// Front axle's own local half-width — same `halfT + WHEEL_HALF_W` term as above, without the dual
+// term since the front axle isn't a dual pair. Sampled at the front axle's own along-chassis
+// offset (x = Lfd), not x = 0, so this band traces where the front axle itself has actually been —
+// distinct from the drive-axle band above, which is why the two diverge once the bus turns (the
+// front axle cuts the corner ahead of where the drive axle tracks, same effect as "mowing the
+// grass" in the live geometry readouts).
+function frontBandHalfWidth(Tw) {
+  return Tw / 2 + WHEEL_HALF_W;
+}
 const TRAIL_MIN_SPACING = 0.2; // metres between recorded trail samples
 const TRAIL_MIN_SPACING_SQ = TRAIL_MIN_SPACING * TRAIL_MIN_SPACING;
 const TRAIL_RENDER_EVERY = 5; // force a re-render every N recorded samples, not every one
@@ -398,10 +407,13 @@ export default function BusSteeringSimulator() {
       if (dx * dx + dy * dy < TRAIL_MIN_SPACING_SQ) return;
     }
     const halfW = bandHalfWidth(g.Tw);
+    const frontHalfW = frontBandHalfWidth(g.Tw);
     samples.push({
       poseX: nextPose.x, poseY: nextPose.y,
       left: poseTransform({ x: 0, y: halfW }, nextPose),
       right: poseTransform({ x: 0, y: -halfW }, nextPose),
+      frontLeft: poseTransform({ x: g.Lfd, y: frontHalfW }, nextPose),
+      frontRight: poseTransform({ x: g.Lfd, y: -frontHalfW }, nextPose),
     });
     if (samples.length % TRAIL_RENDER_EVERY === 0) setTrailVersion((v) => v + 1);
   }
@@ -662,6 +674,15 @@ export default function BusSteeringSimulator() {
         ...trailSamples.map((s) => toScreen(displayedView, s.right)).reverse(),
       ])
     : null;
+  // Second band: the front axle's own track, sampled at its own along-chassis offset (see
+  // frontBandHalfWidth) — a separate ribbon since it follows a different curve than the drive-axle
+  // band above once the bus is turning.
+  const frontTrailPolygonPoints = trailMode && trailSamples.length >= 2
+    ? ptsToPath([
+        ...trailSamples.map((s) => toScreen(displayedView, s.frontLeft)),
+        ...trailSamples.map((s) => toScreen(displayedView, s.frontRight)).reverse(),
+      ])
+    : null;
 
   // grid pattern step
   const gridMeters = geom.isStraight ? geom.straightHalfExtent / 6 : Math.min(geom.outerRadius, 40) / 7;
@@ -742,6 +763,11 @@ export default function BusSteeringSimulator() {
           {/* trail: painted record of the corridor actually driven so far (see docs/trail-display-mode.md) */}
           {trailPolygonPoints && (
             <polygon points={trailPolygonPoints} fill={COL.trail} fillOpacity="0.16" stroke={COL.trail} strokeOpacity="0.5" strokeWidth="1" />
+          )}
+          {/* second band: the front axle's own track, drawn in the same colour used for the front
+              axle everywhere else in this view (wheels 1–2, mowing-the-grass lines) */}
+          {frontTrailPolygonPoints && (
+            <polygon points={frontTrailPolygonPoints} fill={COL.front} fillOpacity="0.16" stroke={COL.front} strokeOpacity="0.5" strokeWidth="1" />
           )}
 
           {/* swept path circles while turning, parallel reference lines while driving straight */}
@@ -903,7 +929,8 @@ export default function BusSteeringSimulator() {
           <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />
           <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />
           <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />
-          {trailMode && <LegendDot color={COL.trail} label="Trail — corridor actually driven" />}
+          {trailMode && <LegendDot color={COL.trail} label="Trail — drive axle corridor" />}
+          {trailMode && <LegendDot color={COL.front} label="Trail — front axle track" />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
         </div>
         <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", boxShadow: "0 2px 8px rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden" }}>
