@@ -9,7 +9,7 @@ import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
 // square content never letterboxes or stretches — see `vbSize` in the component body.
 const VB = 1000;
 const MARGIN = 60;
-const MIN_ZOOM = 0.4;
+const MIN_ZOOM = 0.02; // low enough to zoom out to roughly the full 1km² trail-recording area
 const MAX_ZOOM = 6;
 
 // ---------- math helpers ----------
@@ -223,9 +223,9 @@ const TRAIL_MIN_SPACING = 0.2; // metres between recorded trail samples
 const TRAIL_MIN_SPACING_SQ = TRAIL_MIN_SPACING * TRAIL_MIN_SPACING;
 const TRAIL_RENDER_EVERY = 5; // force a re-render every N recorded samples, not every one
 const TRAIL_BOUND_HALF = 500; // metres — recording area capped to a 1000x1000m (1km²) square centred on the origin
-const TRAIL_PREVIEW_LENGTH = 50; // metres ahead of the bus the dashed centreline preview projects
+const TRAIL_PREVIEW_LENGTH = 40; // metres ahead of the bus the dashed centreline preview projects
 const TRAIL_PREVIEW_STEPS = 40; // segments across that length — plenty smooth even at full-lock radii
-const TRAIL_PREVIEW_FRONT_LENGTH = 25; // metres ahead the (shorter, dotted) front wheel track preview projects
+const TRAIL_PREVIEW_FRONT_LENGTH = 20; // metres ahead the (shorter, dotted) front wheel track preview projects
 const TRAIL_PREVIEW_FRONT_STEPS = 20;
 
 // Closed-form projection of pose forward by arc length `s`, holding the current curvature (or
@@ -285,6 +285,31 @@ function ptsToPath(pts) {
   return pts.map((p) => `${p.x.toFixed(2)},${p.y.toFixed(2)}`).join(" ");
 }
 
+// Convex hull via Andrew's monotone chain — used to fill the true swept quadrilateral (or hexagon,
+// depending on rotation) of the body's 4 corners between two nearby poses, rather than just the
+// corridor traced by a single reference point. Returns hull vertices in one consistent winding
+// order (whichever the algorithm naturally produces), which is what matters here — every caller
+// needs the SAME order every time so that overlapping hulls add under the SVG nonzero fill rule
+// instead of cancelling (see bodyTrailPathD).
+function convexHull(points) {
+  const pts = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (let i = pts.length - 1; i >= 0; i--) {
+    const p = pts[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
 // Steering resolution: fine (0.15°) near straight-ahead where a coarse step would otherwise
 // collapse several distinct, very-large-radius turns into "straight"; coarser (0.5°) beyond ±3°
 // where the extra precision doesn't matter.
@@ -313,6 +338,7 @@ const COL = {
   tailSwing: "#ffd166",
   w3: "#c9f24a", w6: "#b18aff",
   trail: "#4fd1c5",
+  bodyTrail: "#8ef2b0",
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
 };
 
@@ -516,7 +542,7 @@ export default function BusSteeringSimulator() {
     const halfW = bandHalfWidth(g.Tw);
     const axleHalfW = singleAxleBandHalfWidth(g.Tw); // same formula for front and tag — neither is a dual pair
     samples.push({
-      poseX: nextPose.x, poseY: nextPose.y,
+      poseX: nextPose.x, poseY: nextPose.y, theta: nextPose.theta,
       left: poseTransform({ x: 0, y: halfW }, nextPose),
       right: poseTransform({ x: 0, y: -halfW }, nextPose),
       frontLeft: poseTransform({ x: g.Lfd, y: axleHalfW }, nextPose),
@@ -674,6 +700,18 @@ export default function BusSteeringSimulator() {
       wheelStaticCorners(center, 0, 0.1, 0.16).map((p) => toScreen(displayedView, poseTransform(p, pose))),
     ])
   );
+
+  // Forward-heading arrow: a short fixed-length marker mounted right at the front of the body, on
+  // the chassis centreline (y=0) — always shown, independent of trail mode, as a simple "which way
+  // is forward" indicator distinct from the (much longer) trail-preview centreline.
+  const ARROW_LEN = 2.7, ARROW_HEAD_LEN = 0.4, ARROW_HEAD_HALF_W = 0.22;
+  const arrowBaseX = geom.Lfd + geom.Fo;
+  const arrowScreen = {
+    base: toScreen(displayedView, poseTransform({ x: arrowBaseX, y: 0 }, pose)),
+    tip: toScreen(displayedView, poseTransform({ x: arrowBaseX + ARROW_LEN, y: 0 }, pose)),
+    headL: toScreen(displayedView, poseTransform({ x: arrowBaseX + ARROW_LEN - ARROW_HEAD_LEN, y: ARROW_HEAD_HALF_W }, pose)),
+    headR: toScreen(displayedView, poseTransform({ x: arrowBaseX + ARROW_LEN - ARROW_HEAD_LEN, y: -ARROW_HEAD_HALF_W }, pose)),
+  };
   // Driver sits at the front-offside corner, ahead of the front axle — this fleet is
   // right-hand-drive (Australian), and the driver's position is forward of the front wheels.
   // Icon is the supplied artwork (DRIVER_ICON_VIEWBOX/PATHS below), embedded as a nested SVG sized
@@ -763,6 +801,7 @@ export default function BusSteeringSimulator() {
   const R_outer_px = geom.isStraight ? 0 : geom.outerRadius * displayedView.scale;
   const R_pivot_px = geom.isStraight ? 0 : Math.abs(geom.R) * displayedView.scale;
   const innerSide = geom.R > 0 ? "L" : "R";
+  const outerSide = geom.R > 0 ? "R" : "L"; // the side away from the turn centre
   const R_tagInner_px = geom.isStraight ? 0 : geom.radii["tag" + innerSide] * displayedView.scale;
   const R_w3_px = geom.isStraight ? 0 : geom.radii.w3 * displayedView.scale;
   const R_w6_px = geom.isStraight ? 0 : geom.radii.w6 * displayedView.scale;
@@ -808,13 +847,51 @@ export default function BusSteeringSimulator() {
         ...trailSamples.map((s) => toScreen(displayedView, s.tagRight)).reverse(),
       ])
     : null;
+  // Body footprint band: the ground actually driven over by the whole body, including the front
+  // and rear overhang "mowing the grass" wider through a turn — not just the corridor traced by a
+  // single reference point at x=0. For each pair of consecutive samples, take all 4 body corners
+  // (FL/FR/RL/RR) at both poses (8 points) and fill their convex hull; consecutive samples are only
+  // TRAIL_MIN_SPACING apart, so the true swept region between them (a rotating rectangle sweeping a
+  // small angle) is well approximated by that hull. One extra hull is added from the last recorded
+  // sample to the *live* current pose, so the current nose/tail stay covered between recording
+  // ticks (and, right at the very start, the first sample's own corners already cover its rear
+  // extent — no separate cap needed there).
+  //
+  // Built as one small hull per step (a single "d" path, many "M...Z" subpaths) rather than one big
+  // polygon spanning the whole trail: on a trail driven over itself more than once (repeated
+  // loops), one big self-crossing polygon has its fill cancelled out by SVG's nonzero fill rule
+  // wherever the crossings' winding directions oppose, fading or gapping the band exactly where
+  // laps overlap. Small per-step hulls don't have that failure mode — each is simple (never self-
+  // intersects) and convexHull always winds them the same direction, so overlapping hulls from
+  // different laps only ever *add* to the winding number (never cancel to zero).
+  const bodyTrailPathD = trailMode && trailSamples.length >= 1
+    ? (() => {
+        const poseAt = (s) => ({ x: s.poseX, y: s.poseY, theta: s.theta });
+        const cornersAt = (poseLike) => [geom.bodyCorners.FL, geom.bodyCorners.FR, geom.bodyCorners.RL, geom.bodyCorners.RR]
+          .map((c) => toScreen(displayedView, poseTransform(c, poseLike)));
+        const hullPath = (poseA, poseB) => {
+          const hull = convexHull([...cornersAt(poseA), ...cornersAt(poseB)]);
+          return `M ${hull.map((p) => `${p.x} ${p.y}`).join(" L ")} Z`;
+        };
+        const steps = [];
+        for (let i = 1; i < trailSamples.length; i++) steps.push(hullPath(poseAt(trailSamples[i - 1]), poseAt(trailSamples[i])));
+        steps.push(hullPath(poseAt(trailSamples[trailSamples.length - 1]), pose));
+        return steps.join(" ");
+      })()
+    : null;
 
   // Preview: unfilled lines only, no shaded corridor — a dashed centreline (the drive axle's own
-  // path, 50m ahead) plus dotted front wheel tracks (25m ahead, shorter and more transparent since
-  // they're the finer-grained detail). Recomputed fresh each render from live pose/geom rather than
-  // accumulated like the cured trail below — always shown in trail mode (not gated on actively
-  // driving), since it's the only useful trail content before any history exists (see
-  // docs/trail-display-mode.md open questions).
+  // path, TRAIL_PREVIEW_LENGTH ahead) plus dotted front wheel tracks (shorter,
+  // TRAIL_PREVIEW_FRONT_LENGTH ahead, and more transparent since they're the finer-grained detail).
+  // The swept-path arcs below reuse this same shorter window. Recomputed fresh each render from
+  // live pose/geom rather than accumulated like the cured trail below — always shown in trail mode
+  // (not gated on actively driving), since it's the only useful trail content before any history
+  // exists (see docs/trail-display-mode.md open questions).
+  // projectPosesForward already handles isStraight itself (a straight bounded-length projection
+  // instead of an arc), so these preview lines stay on and just go straight — it's only the
+  // *unbounded* (±1000m) straight-case reference lines below (pathOuter/pathInner/tailSwing/w3/w6)
+  // that get suppressed in trail mode, since those duplicate the non-trail view rather than preview
+  // anything.
   const previewPoses = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_LENGTH, TRAIL_PREVIEW_STEPS) : null;
   const previewPosesFront = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_FRONT_LENGTH, TRAIL_PREVIEW_FRONT_STEPS) : null;
   const previewAxleHalfW = singleAxleBandHalfWidth(geom.Tw);
@@ -826,19 +903,29 @@ export default function BusSteeringSimulator() {
   const previewFrontRightPoints = previewPosesFront ? previewLinePoints(previewPosesFront, geom.Lfd, -previewAxleHalfW) : null;
 
   // Below, in trail mode the swept-path reference circles (outer envelope, pivot, tag-inner,
-  // tail-swing, w3/w6) are drawn as "next 50m" arcs instead of full circles — same forward window
-  // as the preview bands above, computed from the same previewPoses so the two always agree.
-  const previewArcStart = previewPoses && !geom.isStraight
-    ? (() => {
-        const p0 = toScreen(displayedView, { x: previewPoses[0].x, y: previewPoses[0].y });
-        return Math.atan2(p0.y - Cscreen.y, p0.x - Cscreen.x);
-      })()
-    : null;
-  const previewArcSweep = previewPoses ? previewPoses[previewPoses.length - 1].theta - previewPoses[0].theta : null;
-  function sweptRing(r, props) {
-    return trailMode && previewArcStart != null
-      ? <path d={arcPathFromWorldSweep(Cscreen.x, Cscreen.y, r, previewArcStart, previewArcSweep)} fill="none" {...props} />
-      : <circle cx={Cscreen.x} cy={Cscreen.y} r={r} fill="none" {...props} />;
+  // tail-swing, w3/w6) are drawn as short look-ahead arcs instead of full circles. Each arc has to
+  // start from that specific point's own current position — not a shared reference angle (the drive
+  // axle's, say) — otherwise an arc for a point well ahead of or offset from the drive axle (the
+  // outer front corner especially) starts short of, or behind, where that point actually is right
+  // now, rather than running only forward from it.
+  function ringStartAngle(chassisPt) {
+    const s = toScreen(displayedView, poseTransform(chassisPt, pose));
+    return Math.atan2(s.y - Cscreen.y, s.x - Cscreen.x);
+  }
+  // Each ring sweeps exactly TRAIL_PREVIEW_FRONT_LENGTH metres along its OWN radius, not a shared
+  // angle — a shared angle (this arc's radius × the vehicle's own s/R rotation) makes a wide ring
+  // like the outer envelope trace a visibly longer arc than a tight one like wheel 3, since arc
+  // length = radius × angle for a fixed angle. Per-ring angle keeps every ring's arc length equal.
+  function ringWorldSweep(r_m) {
+    return (TRAIL_PREVIEW_FRONT_LENGTH * Math.sign(geom.R)) / r_m;
+  }
+  // arcOpacity, when given, overrides props.opacity for the trail-mode arc only — the full circle
+  // (Circle-view / trail off) keeps its normal brightness, but as a "look-ahead" arc it reads as
+  // too bright at full opacity, particularly wheels 3/6's solid core line.
+  function sweptRing(r_px, r_m, chassisPt, props, arcOpacity) {
+    return trailMode
+      ? <path d={arcPathFromWorldSweep(Cscreen.x, Cscreen.y, r_px, ringStartAngle(chassisPt), ringWorldSweep(r_m))} fill="none" {...props} opacity={arcOpacity ?? props.opacity} />
+      : <circle cx={Cscreen.x} cy={Cscreen.y} r={r_px} fill="none" {...props} />;
   }
 
   // grid pattern step
@@ -898,8 +985,16 @@ export default function BusSteeringSimulator() {
           <g clipPath="url(#mapClip)">
           <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />
 
-          {/* straight road centreline, when steering ≈ 0 (radius infinite) */}
-          {geom.isStraight && (() => {
+          {/* body footprint trail — the ground actually driven over by the body, bottom layer,
+              under everything else including the off-track band and the vehicle itself, so it
+              reads as ground shading rather than competing with what's painted on top later. */}
+          {bodyTrailPathD && (
+            <path d={bodyTrailPathD} fill={COL.bodyTrail} fillOpacity="0.1" />
+          )}
+
+          {/* straight road centreline, when steering ≈ 0 (radius infinite) — suppressed in trail
+              mode, where the dedicated (bounded) preview centreline covers the same purpose */}
+          {geom.isStraight && !trailMode && (() => {
             const ahead = toScreen(displayedView, poseTransform({ x: 1000, y: 0 }, pose));
             const behind = toScreen(displayedView, poseTransform({ x: -1000, y: 0 }, pose));
             return (
@@ -923,19 +1018,6 @@ export default function BusSteeringSimulator() {
             />
           ))}
 
-          {/* preview: unfilled lines only, if the current steering angle is held — a 50m dashed
-              centreline (drive axle's own path) plus 25m dotted front wheel tracks, fainter still
-              since they're the finer-grained detail (see docs/trail-display-mode.md) */}
-          {previewCentrelinePoints && (
-            <polyline points={previewCentrelinePoints} fill="none" stroke={COL.trail} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
-          )}
-          {previewFrontLeftPoints && (
-            <polyline points={previewFrontLeftPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
-          )}
-          {previewFrontRightPoints && (
-            <polyline points={previewFrontRightPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
-          )}
-
           {/* trail: painted record of the corridor actually driven so far (see docs/trail-display-mode.md).
               Fill only, no stroke — an outline on a band built from left-then-right-reversed edge
               points draws a straight closing edge across the front and back of the band on every
@@ -952,62 +1034,6 @@ export default function BusSteeringSimulator() {
               everywhere else in this view (wheels 7–8, tail-swing lines) */}
           {tagTrailPolygonPoints && (
             <polygon points={tagTrailPolygonPoints} fill={COL.tag} fillOpacity="0.16" />
-          )}
-
-          {/* swept path circles while turning, parallel reference lines while driving straight */}
-          {geom.isStraight ? (
-            <>
-              {(() => {
-                const l = longLineScreen(halfW_s, pose, displayedView);
-                return <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.pathOuter} strokeWidth="1" strokeDasharray="4 6" opacity="0.35" />;
-              })()}
-              {(() => {
-                const l = longLineScreen(halfT_s, pose, displayedView);
-                return <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.pathInner} strokeWidth="1" strokeDasharray="4 6" opacity="0.35" />;
-              })()}
-              {(() => {
-                const l = longLineScreen(halfW_s, pose, displayedView);
-                return <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.tailSwing} strokeWidth="1.3" strokeDasharray="3 5" opacity="0.75" />;
-              })()}
-              {/* wheel 3 & 6 — the important ones */}
-              {(() => {
-                const l = longLineScreen(w3Y, pose, displayedView);
-                return (
-                  <>
-                    <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.w3} strokeWidth="5" opacity="0.18" />
-                    <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.w3} strokeWidth="2.4" opacity="1" />
-                  </>
-                );
-              })()}
-              {(() => {
-                const l = longLineScreen(w6Y, pose, displayedView);
-                return (
-                  <>
-                    <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.w6} strokeWidth="5" opacity="0.18" />
-                    <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.w6} strokeWidth="2.4" opacity="1" />
-                  </>
-                );
-              })()}
-            </>
-          ) : (
-            <>
-              {sweptRing(R_outer_px, { stroke: COL.pathOuter, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
-              {sweptRing(R_pivot_px, { stroke: COL.dim, strokeWidth: "1.6", strokeDasharray: "10 8", opacity: "0.45" })}
-              {sweptRing(R_tagInner_px, { stroke: COL.pathInner, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
-              {sweptRing(R_tailSwing_px, { stroke: COL.tailSwing, strokeWidth: "1.3", strokeDasharray: "3 5", opacity: "0.75" })}
-              {/* wheel 3 & 6 — the important ones */}
-              {sweptRing(geom.radii.w3 * displayedView.scale, { stroke: COL.w3, strokeWidth: "5", opacity: "0.18" })}
-              {sweptRing(geom.radii.w3 * displayedView.scale, { stroke: COL.w3, strokeWidth: "2.4", opacity: "1" })}
-              {sweptRing(geom.radii.w6 * displayedView.scale, { stroke: COL.w6, strokeWidth: "5", opacity: "0.18" })}
-              {sweptRing(geom.radii.w6 * displayedView.scale, { stroke: COL.w6, strokeWidth: "2.4", opacity: "1" })}
-              {/* center marker */}
-              <line x1={Cscreen.x - 9} y1={Cscreen.y} x2={Cscreen.x + 9} y2={Cscreen.y} stroke={COL.dim} strokeWidth="1.4" />
-              <line x1={Cscreen.x} y1={Cscreen.y - 9} x2={Cscreen.x} y2={Cscreen.y + 9} stroke={COL.dim} strokeWidth="1.4" />
-              <circle cx={Cscreen.x} cy={Cscreen.y} r="3" fill={COL.dim} />
-              <text x={Cscreen.x + 12} y={Cscreen.y - 10} fontFamily="'Space Mono',monospace" fontSize="12" fill={geom.radii.w3 <= geom.radii.w6 ? COL.w3 : COL.w6}>
-                C · R {fmt(Math.min(geom.radii.w3, geom.radii.w6))}m
-              </text>
-            </>
           )}
 
           {/* optional geometry construction lines */}
@@ -1046,6 +1072,12 @@ export default function BusSteeringSimulator() {
           <polygon points={ptsToPath(lightScreens.headR2)} fill="#f5f8fb" stroke="#0b1c30" strokeWidth="0.8" />
           <polygon points={ptsToPath(lightScreens.tailL)} fill="#e5384d" stroke="#0b1c30" strokeWidth="0.8" />
           <polygon points={ptsToPath(lightScreens.tailR)} fill="#e5384d" stroke="#0b1c30" strokeWidth="0.8" />
+
+          {/* forward-heading arrow — front of the body, on the centreline. Open chevron head (two
+              strokes), not a filled triangle. */}
+          <line x1={arrowScreen.base.x} y1={arrowScreen.base.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" />
+          <line x1={arrowScreen.headL.x} y1={arrowScreen.headL.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
+          <line x1={arrowScreen.headR.x} y1={arrowScreen.headR.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
 
           {/* driver marker — offside/front, right-hand-drive. Supplied artwork, embedded as a
               nested SVG sized from a fixed real-world width so it scales with the vehicle and
@@ -1099,6 +1131,97 @@ export default function BusSteeringSimulator() {
               </g>
             );
           })}
+
+          {/* look-ahead overlay, painted last so it always reads on top of the vehicle body/wheels
+              rather than being partly hidden behind them: a 40m dashed centreline (drive axle's own
+              path) plus 20m dotted front wheel tracks when trail mode is on, and — while turning —
+              the swept-path reference circles (outer envelope, pivot, tag-inner, tail-swing, w3/w6),
+              drawn as matching 20m arcs in trail mode or full circles otherwise. Driving straight,
+              these degenerate into parallel reference lines instead (a circle at infinite radius). */}
+          {previewCentrelinePoints && (
+            <polyline points={previewCentrelinePoints} fill="none" stroke={COL.trail} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
+          )}
+          {previewFrontLeftPoints && (
+            <polyline points={previewFrontLeftPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
+          )}
+          {previewFrontRightPoints && (
+            <polyline points={previewFrontRightPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
+          )}
+          {geom.isStraight ? (
+            <>
+              {/* Full-width parallel reference lines (pathOuter/pathInner/tailSwing) suppressed in
+                  trail mode — those duplicate the non-trail view rather than preview anything. */}
+              {!trailMode && (
+                <>
+                  {(() => {
+                    const l = longLineScreen(halfW_s, pose, displayedView);
+                    return <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.pathOuter} strokeWidth="1" strokeDasharray="4 6" opacity="0.35" />;
+                  })()}
+                  {(() => {
+                    const l = longLineScreen(halfT_s, pose, displayedView);
+                    return <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.pathInner} strokeWidth="1" strokeDasharray="4 6" opacity="0.35" />;
+                  })()}
+                  {(() => {
+                    const l = longLineScreen(halfW_s, pose, displayedView);
+                    return <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.tailSwing} strokeWidth="1.3" strokeDasharray="3 5" opacity="0.75" />;
+                  })()}
+                </>
+              )}
+              {/* wheel 3 & 6 — the important ones. In trail mode these become short look-ahead
+                  lines (same TRAIL_PREVIEW_FRONT_LENGTH window as the arcs while turning), rather
+                  than the full-width reference line used outside trail mode. */}
+              {trailMode ? (
+                <>
+                  <polyline points={previewLinePoints(previewPosesFront, 0, w3Y)} fill="none" stroke={COL.w3} strokeWidth="5" opacity="0.08" />
+                  <polyline points={previewLinePoints(previewPosesFront, 0, w3Y)} fill="none" stroke={COL.w3} strokeWidth="2.4" opacity="0.35" />
+                  <polyline points={previewLinePoints(previewPosesFront, 0, w6Y)} fill="none" stroke={COL.w6} strokeWidth="5" opacity="0.08" />
+                  <polyline points={previewLinePoints(previewPosesFront, 0, w6Y)} fill="none" stroke={COL.w6} strokeWidth="2.4" opacity="0.35" />
+                </>
+              ) : (
+                <>
+                  {(() => {
+                    const l = longLineScreen(w3Y, pose, displayedView);
+                    return (
+                      <>
+                        <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.w3} strokeWidth="5" opacity="0.18" />
+                        <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.w3} strokeWidth="2.4" opacity="1" />
+                      </>
+                    );
+                  })()}
+                  {(() => {
+                    const l = longLineScreen(w6Y, pose, displayedView);
+                    return (
+                      <>
+                        <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.w6} strokeWidth="5" opacity="0.18" />
+                        <line x1={l.p1.x} y1={l.p1.y} x2={l.p2.x} y2={l.p2.y} stroke={COL.w6} strokeWidth="2.4" opacity="1" />
+                      </>
+                    );
+                  })()}
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              {sweptRing(R_outer_px, geom.outerRadius, geom.wheelCenters["front" + outerSide], { stroke: COL.pathOuter, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
+              {/* pivot ring skipped in trail mode — it's the drive axle's own path, already drawn
+                  as the dedicated dashed centreline preview above; drawing both is a duplicate. */}
+              {!trailMode && sweptRing(R_pivot_px, Math.abs(geom.R), null, { stroke: COL.dim, strokeWidth: "1.6", strokeDasharray: "10 8", opacity: "0.45" })}
+              {sweptRing(R_tagInner_px, geom.radii["tag" + innerSide], geom.wheelCenters["tag" + innerSide], { stroke: COL.pathInner, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
+              {sweptRing(R_tailSwing_px, geom.radii[tailCorner], geom.bodyCorners[tailCorner], { stroke: COL.tailSwing, strokeWidth: "1.3", strokeDasharray: "3 5", opacity: "0.75" })}
+              {/* wheel 3 & 6 — the important ones */}
+              {sweptRing(geom.radii.w3 * displayedView.scale, geom.radii.w3, { x: 0, y: geom.Tw / 2 + DUAL_GAP / 2 }, { stroke: COL.w3, strokeWidth: "5", opacity: "0.18" }, 0.08)}
+              {sweptRing(geom.radii.w3 * displayedView.scale, geom.radii.w3, { x: 0, y: geom.Tw / 2 + DUAL_GAP / 2 }, { stroke: COL.w3, strokeWidth: "2.4", opacity: "1" }, 0.35)}
+              {sweptRing(geom.radii.w6 * displayedView.scale, geom.radii.w6, { x: 0, y: -(geom.Tw / 2 + DUAL_GAP / 2) }, { stroke: COL.w6, strokeWidth: "5", opacity: "0.18" }, 0.08)}
+              {sweptRing(geom.radii.w6 * displayedView.scale, geom.radii.w6, { x: 0, y: -(geom.Tw / 2 + DUAL_GAP / 2) }, { stroke: COL.w6, strokeWidth: "2.4", opacity: "1" }, 0.35)}
+              {/* center marker */}
+              <line x1={Cscreen.x - 9} y1={Cscreen.y} x2={Cscreen.x + 9} y2={Cscreen.y} stroke={COL.dim} strokeWidth="1.4" />
+              <line x1={Cscreen.x} y1={Cscreen.y - 9} x2={Cscreen.x} y2={Cscreen.y + 9} stroke={COL.dim} strokeWidth="1.4" />
+              <circle cx={Cscreen.x} cy={Cscreen.y} r="3" fill={COL.dim} />
+              <text x={Cscreen.x + 12} y={Cscreen.y - 10} fontFamily="'Space Mono',monospace" fontSize="12" fill={geom.radii.w3 <= geom.radii.w6 ? COL.w3 : COL.w6}>
+                C · R {fmt(Math.min(geom.radii.w3, geom.radii.w6))}m
+              </text>
+            </>
+          )}
           </g>
         </svg>
         <div style={{ position: "absolute", left: 10, top: 10, display: "flex", flexDirection: "column", gap: 4, background: "rgba(10,26,44,0.72)", borderRadius: 4, padding: "6px 8px", fontSize: 14, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.4 }}>
