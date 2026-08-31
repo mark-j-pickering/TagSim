@@ -219,9 +219,15 @@ branches (circular vs straight-line versions).
   section above).
 - The `innerDriveRadius` local variable in `computeGeometry` is computed but
   unused (leftover from an earlier version of the off-tracking calc).
-- No persistence — refreshing the page resets everything to defaults. Would
-  be a reasonable thing to add now that we're off the artifact platform
-  (localStorage was off-limits there).
+- No *automatic* persistence — refreshing the page still resets everything to
+  defaults. There's now an explicit Save/Load pair (header toolbar, top
+  right) that round-trips vehicle geometry, steering/tag/lockout/display
+  settings, live pose, and the trail buffer through a downloaded JSON file —
+  see `buildSaveData`/`applySaveData`/`handleSave`/`handleLoadFile`. Chosen
+  over localStorage (which would auto-restore silently on refresh) so a save
+  is an explicit, shareable/backup-able file instead of invisible browser
+  state — localStorage remains a reasonable follow-up for "remember my last
+  session" if that's ever wanted alongside this.
 - Vehicle geometry defaults (`Lfd=7.0, Ldt=1.4, Fo=2.75, Ro=3.35, Wb=2.48,
   Tw=2.1`) reflect the confirmed dimensions of the person's actual BCC
   Volvo/Scania 6x2 tag-axle bus: overall length 14.5m (2.75 + 7.0 + 1.4 +
