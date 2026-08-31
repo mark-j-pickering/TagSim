@@ -431,7 +431,7 @@ export default function BusSteeringSimulator() {
   const [lockoutOn, setLockoutOn] = useState(true);
   const [lockoutSpeed, setLockoutSpeed] = useState(25);
   const [speed, setSpeed] = useState(0);
-  const [showBand, setShowBand] = useState(false);
+  const [showBand, setShowBand] = useState(true);
   // "Driving" is just speed > 0 — not independent state — so dragging the throttle slider
   // itself starts/stops the animation and keeps the Drive/Stop button in sync, not only the button.
   const animating = speed > 0;
@@ -492,7 +492,7 @@ export default function BusSteeringSimulator() {
 
   // Trail display mode: paints the corridor the vehicle has actually driven, rather than just the
   // instantaneous turning circle. See docs/trail-display-mode.md for the design.
-  const [trailMode, setTrailMode] = useState(true);
+  const [trailMode, setTrailMode] = useState(false);
   const [trailVersion, setTrailVersion] = useState(0); // bumped to force a re-render as samples accumulate
   const [trailPaused, setTrailPaused] = useState(false); // mirrors trailPausedRef, only for display
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
@@ -1299,7 +1299,19 @@ export default function BusSteeringSimulator() {
           <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Off-track</button>
           <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
           <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
-          <button className={"btn" + (trailMode ? " btnOn" : "")} onClick={() => setTrailMode((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Trail</button>
+          <button
+            className={"btn" + (trailMode ? " btnOn" : "")}
+            onClick={() => {
+              setTrailMode((v) => !v);
+              if (!trailMode) {
+                selectViewMode("bus");
+                setShowBand(false);
+              }
+            }}
+            style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
+          >
+            Trail
+          </button>
           {trailMode && (
             <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
           )}
