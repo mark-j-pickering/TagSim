@@ -438,7 +438,7 @@ export default function BusSteeringSimulator() {
   const [showGeom, setShowGeom] = useState(false);
   const [showDims, setShowDims] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [viewMode, setViewMode] = useState("bus");
+  const [viewMode, setViewMode] = useState("circle");
 
   // Map sizing: the map wrapper's height is pinned to the side panel's own rendered height (so the
   // two columns line up exactly), and its width just follows normal flex layout (100% of whatever
