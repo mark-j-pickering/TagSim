@@ -15,6 +15,24 @@ turning-circle overlay. Two zones, split at the bus's current position:
   the current steering angle is held, so the driver has a guide for what's
   coming.
 
+## Scope: stays in TagSimSteer, not TagSim3D
+
+Considered building this as the seed of `TagSim3D` instead. Decided against
+it: the feature as scoped is still a top-down, world-x/y thing — painted
+bands on a plan-view ground plane — and reuses the existing chassis→world→
+screen pipeline and `computeGeometry` wholesale. It has no rendering need
+that 2D lacks. Standing up `TagSim3D` now would mean a whole new toolchain
+(the two sub-projects are deliberately independent, no shared build — see
+root CLAUDE.md) and porting or forking the kinematic model before the trail
+feature itself exists anywhere, which is a much bigger lift than adding a
+buffer and some polygons to the existing file.
+
+If/when `TagSim3D` becomes a real 3D scene, ground-painted trails are a
+natural feature to reproduce there too (the "ghost trail on the track
+surface" pattern) — at that point this implementation is the reference to
+port from, and extracting `computeGeometry` into something shareable
+becomes worth deciding. Not before.
+
 ## Relationship to the existing off-tracking band
 
 The current `showBand` overlay already draws a swept corridor — but it's
@@ -69,6 +87,25 @@ annulus but from sampled path history instead of two circle radii.
   changes (same trigger that already resets `pose`) or an explicit "clear
   trail" action.
 
+## Implementation approach (state, not just render)
+
+The existing pattern is: live state (`pose`, sliders) → `useMemo`-derived
+render data, recomputed fresh each render. That pattern still fits
+everything about this feature except the trail buffer itself, which has to
+persist and accumulate across frames — the one thing nothing in the
+component does today.
+
+- Hold the trail as a `useRef` array (alongside `rafRef`/`lastTRef`/
+  `geomRef`), appended to inside the existing RAF `step()` function in the
+  "drive the turn" effect, right next to `setPose` — not `useState`, since a
+  `setState` on every RAF tick for a growing array would re-render (and
+  re-diff a growing SVG) far more than needed.
+- Force a render periodically (e.g. a small `trailVersion` counter bumped
+  every N appended samples) rather than on every sample. At ~0.2m sampling
+  within the 1km² cap the point count stays small enough that this should be
+  enough; a dedicated non-React-diffed SVG/canvas layer is the fallback if
+  it isn't.
+
 ## Bounding the surface to 1km²
 
 Proposal: cap the trail to a fixed **1000m × 1000m axis-aligned square in
@@ -113,6 +150,11 @@ ribbon polygons at the boundary.
   useful content, so probably always-on.
 - Exact sample spacing and buffer cap are tuning, not architecture — pick
   defaults during implementation and adjust by eye.
+- The existing "Recenter" button teleports `pose` back to `{0,0,0}`
+  independent of the vehicle-geometry-change reset. Since the trail lives in
+  the same world frame as `pose`, recentering would leave old trail sitting
+  at its previous world position while the bus jumps back to origin. Decide
+  whether Recenter also clears the trail, or the two stay decoupled.
 
 ## Non-goals for v1
 
