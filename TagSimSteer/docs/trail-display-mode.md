@@ -162,7 +162,11 @@ ribbon polygons at the boundary.
 - No compression/simplification of old trail geometry (e.g. Douglas-Peucker)
   — 1km² at ~0.2m sampling is a bounded, small point count; not worth the
   complexity yet.
-- No persistence across page reloads (matches the rest of the app today).
+- No *automatic* persistence across page reloads (matches the rest of the
+  app today). The trail buffer is included in the explicit Save/Load file
+  feature (see main CLAUDE.md, "Known rough edges") — `trailRef.current` is
+  serialised verbatim into the save file and restored into the ref on load,
+  bumping `trailVersion` to force a repaint.
 
 ## What shipped
 

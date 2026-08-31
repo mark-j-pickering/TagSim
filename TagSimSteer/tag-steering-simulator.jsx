@@ -505,6 +505,11 @@ export default function BusSteeringSimulator() {
   const lastTRef = useRef(null);
   const geomRef = useRef(null);
   const speedRef = useRef(speed);
+  // Set just before a Load applies new vehicle dimensions, so the dimension-change effect below
+  // (which normally resets pose/trail for a genuinely different bus) skips once and leaves the
+  // just-loaded pose/trail in place instead of clobbering them.
+  const skipResetRef = useRef(false);
+  const fileInputRef = useRef(null);
 
   const geom = useMemo(
     () => computeGeometry({ Lfd, Ldt, Fo, Ro, Wb, Tw, deltaFdeg, tagRatio, lockoutOn, lockoutSpeed, speed }),
@@ -557,7 +562,99 @@ export default function BusSteeringSimulator() {
   // means the old pose isn't meaningful). Steering, tag ratio and lockout changes leave the bus
   // exactly where it is — only the swept-path circles update to match the new radius. A dimension
   // change invalidates any existing trail the same way — it was painted by a different-size bus.
-  useEffect(() => { setPose({ x: 0, y: 0, theta: 0 }); clearTrail(); }, [Lfd, Ldt, Fo, Ro, Wb, Tw]);
+  useEffect(() => {
+    if (skipResetRef.current) { skipResetRef.current = false; return; }
+    setPose({ x: 0, y: 0, theta: 0 });
+    clearTrail();
+  }, [Lfd, Ldt, Fo, Ro, Wb, Tw]);
+
+  // ---------- save / load (map + bus configuration) ----------
+  // "Map" is the recorded trail (see docs/trail-display-mode.md) plus the bus's current position;
+  // "bus configuration" is the vehicle geometry and the steering/tag/lockout/display settings.
+  // Saved as a downloaded JSON file rather than localStorage, so a saved run can be shared or
+  // backed up outside the browser.
+  function buildSaveData() {
+    return {
+      tagsimSave: 1,
+      savedAt: new Date().toISOString(),
+      vehicle: { Lfd, Ldt, Fo, Ro, Wb, Tw },
+      controls: { steerInput, tagRatio, lockoutOn, lockoutSpeed },
+      display: { showBand, showGeom, showDims, advancedOpen, viewMode, trailMode },
+      pose,
+      trail: trailRef.current,
+    };
+  }
+
+  function handleSave() {
+    const data = buildSaveData();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `tagsim-${data.savedAt.replace(/[:.]/g, "-")}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function applySaveData(data) {
+    const v = data.vehicle || {};
+    const c = data.controls || {};
+    const d = data.display || {};
+    const num = (x, fallback) => (typeof x === "number" && isFinite(x) ? x : fallback);
+
+    skipResetRef.current = true;
+    setLfd(num(v.Lfd, Lfd));
+    setLdt(num(v.Ldt, Ldt));
+    setFo(num(v.Fo, Fo));
+    setRo(num(v.Ro, Ro));
+    setWb(num(v.Wb, Wb));
+    setTw(num(v.Tw, Tw));
+
+    setSteerInput(num(c.steerInput, 0));
+    setTagRatio(num(c.tagRatio, 1));
+    setLockoutOn(typeof c.lockoutOn === "boolean" ? c.lockoutOn : true);
+    setLockoutSpeed(num(c.lockoutSpeed, 25));
+    setSpeed(0); // never resume driving straight out of a load
+
+    setShowBand(typeof d.showBand === "boolean" ? d.showBand : true);
+    setShowGeom(!!d.showGeom);
+    setShowDims(!!d.showDims);
+    setAdvancedOpen(!!d.advancedOpen);
+    setViewMode(d.viewMode === "bus" ? "bus" : "circle");
+    setTrailMode(!!d.trailMode);
+
+    const p = data.pose;
+    const loadedPose = p && [p.x, p.y, p.theta].every((n) => typeof n === "number" && isFinite(n))
+      ? { x: p.x, y: p.y, theta: p.theta }
+      : { x: 0, y: 0, theta: 0 };
+    poseRef.current = loadedPose;
+    setPose(loadedPose);
+
+    trailRef.current = Array.isArray(data.trail) ? data.trail : [];
+    trailPausedRef.current = false;
+    setTrailPaused(false);
+    setTrailVersion((n) => n + 1);
+  }
+
+  function handleLoadFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // allow re-selecting the same file next time
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!data || typeof data !== "object" || !data.vehicle) throw new Error("Not a TagSim save file");
+        applySaveData(data);
+      } catch (err) {
+        alert("Couldn't load that file: " + err.message);
+      }
+    };
+    reader.onerror = () => alert("Couldn't read that file.");
+    reader.readAsText(file);
+  }
 
   // Left/Right arrow keys nudge the steering lock, unless focus is on a form control (which
   // already has its own arrow-key behaviour, e.g. another slider).
@@ -951,11 +1048,22 @@ export default function BusSteeringSimulator() {
       `}</style>
 
       {/* header */}
-      <div style={{ padding: "10px 12px 8px", borderBottom: "1px solid rgba(200,225,245,0.12)" }}>
-        <div style={{ fontSize: 14, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
-        <div style={{ fontSize: 29, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
-        <div style={{ fontSize: 16, color: COL.textDim, marginTop: 2, lineHeight: 1.4 }}>
-          Front axle steers, drive axle fixed (pivot reference), tag axle counter-steers. Default dimensions match a 14.5 m tag-axle bus (2.48 m wide, excl. mirrors) — adjust the geometry sliders for a different spec.
+      <div style={{ padding: "10px 12px 8px", borderBottom: "1px solid rgba(200,225,245,0.12)", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 14, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
+          <div style={{ fontSize: 29, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
+          <div style={{ fontSize: 16, color: COL.textDim, marginTop: 2, lineHeight: 1.4 }}>
+            Front axle steers, drive axle fixed (pivot reference), tag axle counter-steers. Default dimensions match a 14.5 m tag-axle bus (2.48 m wide, excl. mirrors) — adjust the geometry sliders for a different spec.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <button className="btn" onClick={handleSave} title="Save the current map (trail + position) and bus configuration to a file" style={{ fontSize: 13, padding: "6px 10px" }}>
+            Save
+          </button>
+          <button className="btn" onClick={() => fileInputRef.current && fileInputRef.current.click()} title="Load a previously saved map and bus configuration from a file" style={{ fontSize: 13, padding: "6px 10px" }}>
+            Load
+          </button>
+          <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleLoadFile} style={{ display: "none" }} />
         </div>
       </div>
 
