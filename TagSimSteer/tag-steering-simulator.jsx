@@ -9,6 +9,8 @@ import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
 // square content never letterboxes or stretches — see `vbSize` in the component body.
 const VB = 1000;
 const MARGIN = 60;
+const MIN_ZOOM = 0.4;
+const MAX_ZOOM = 6;
 
 // ---------- math helpers ----------
 const toRad = (d) => (d * Math.PI) / 180;
@@ -424,6 +426,23 @@ export default function BusSteeringSimulator() {
     return { w, h: VB, min: Math.min(w, VB) };
   }, [sidePanelHeight, mapWrapperWidth]);
 
+  // Mouse-wheel zoom on the map. Registered as a native listener (not React's onWheel) because
+  // React attaches wheel handlers passively — calling preventDefault() from a JSX onWheel prop is a
+  // no-op (and logs a warning) in modern React, and without it the page itself scrolls while the
+  // user is trying to zoom the map.
+  const [zoom, setZoom] = useState(1);
+  useEffect(() => {
+    const el = mapWrapperRef.current;
+    if (!el) return;
+    function onWheel(e) {
+      e.preventDefault();
+      const factor = Math.exp(-e.deltaY * 0.0015);
+      setZoom((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
+    }
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   // Trail display mode: paints the corridor the vehicle has actually driven, rather than just the
   // instantaneous turning circle. See docs/trail-display-mode.md for the design.
   const [trailMode, setTrailMode] = useState(false);
@@ -588,7 +607,7 @@ export default function BusSteeringSimulator() {
 
   const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
-  const displayedView = transition
+  const autoView = transition
     ? (() => {
         const fromView = computeEffectiveView(transition.fromMode);
         const eased = easeInOutCubic(transitionT);
@@ -599,6 +618,16 @@ export default function BusSteeringSimulator() {
         };
       })()
     : targetView;
+
+  // Mouse-wheel zoom: a plain multiplier on top of the auto-computed view, applied about the
+  // viewBox centre (not the cursor) — the camera is already tracking the point that matters (bus
+  // position or turn centre) dead-centre every frame, so zooming around that same centre keeps it
+  // there rather than fighting the auto-framing. Persists independently of steering/pose/mode.
+  const displayedView = {
+    scale: autoView.scale * zoom,
+    originX: vbSize.w / 2 + (autoView.originX - vbSize.w / 2) * zoom,
+    originY: vbSize.h / 2 + (autoView.originY - vbSize.h / 2) * zoom,
+  };
 
   // ---------- build drawable points ----------
   const bodyStatic = ["FL", "FR", "RR", "RL"].map((k) => geom.bodyCorners[k]);
@@ -1091,6 +1120,21 @@ export default function BusSteeringSimulator() {
             </button>
           )}
         </div>
+        {zoom !== 1 && (
+          <button
+            onClick={() => setZoom(1)}
+            title="Scroll-wheel zoom — click to reset to 100%"
+            style={{
+              position: "absolute", left: 10, bottom: 48,
+              fontFamily: "'Space Mono',monospace", fontSize: 12,
+              padding: "4px 8px", border: "none", borderRadius: 3, cursor: "pointer",
+              background: "rgba(10,26,44,0.72)", color: COL.textDim,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.45)",
+            }}
+          >
+            {Math.round(zoom * 100)}% zoom ×
+          </button>
+        )}
         <div style={{ position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)", display: "flex", gap: 4, whiteSpace: "nowrap" }}>
           <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Off-track</button>
           <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
