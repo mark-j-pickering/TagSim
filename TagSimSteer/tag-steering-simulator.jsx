@@ -137,6 +137,25 @@ function longLineScreen(yOffset, pose, view) {
   return { p1, p2 };
 }
 
+// An SVG arc path for a circle of radius r about (cx, cy), starting at world-frame angle a0 and
+// sweeping by worldDelta radians (i.e. ending at world angle a0 + worldDelta). toScreen's world→
+// screen map is linear and orientation-reversing (a reflection, not a pure rotation — see
+// `toScreen`), which flips the sign of any angular delta but preserves its magnitude exactly, so
+// the screen-space sweep is simply -worldDelta with no wrap-around ambiguity to resolve. Used to
+// draw the swept-path reference circles as a "next 50m" arc instead of a full circle in trail mode
+// (see TRAIL_PREVIEW_LENGTH) — capped just under a full turn since a single SVG arc command can't
+// represent more than that (relevant at very tight lock, where 50m of travel can exceed 360°).
+function arcPathFromWorldSweep(cx, cy, r, a0, worldDelta) {
+  const MAX_SWEEP = 2 * Math.PI * 0.999;
+  const screenDelta = Math.max(-MAX_SWEEP, Math.min(MAX_SWEEP, -worldDelta));
+  const a1 = a0 + screenDelta;
+  const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+  const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+  const largeArc = Math.abs(screenDelta) > Math.PI ? 1 : 0;
+  const sweep = screenDelta > 0 ? 1 : 0;
+  return `M ${x0} ${y0} A ${r} ${r} 0 ${largeArc} ${sweep} ${x1} ${y1}`;
+}
+
 function longBandPoints(yLo, yHi, pose, view) {
   const corners = [
     { x: 1000, y: yHi }, { x: 1000, y: yLo }, { x: -1000, y: yLo }, { x: -1000, y: yHi },
@@ -384,7 +403,7 @@ export default function BusSteeringSimulator() {
   const [lockoutOn, setLockoutOn] = useState(true);
   const [lockoutSpeed, setLockoutSpeed] = useState(25);
   const [speed, setSpeed] = useState(0);
-  const [showBand, setShowBand] = useState(true);
+  const [showBand, setShowBand] = useState(false);
   // "Driving" is just speed > 0 — not independent state — so dragging the throttle slider
   // itself starts/stops the animation and keeps the Drive/Stop button in sync, not only the button.
   const animating = speed > 0;
@@ -445,7 +464,7 @@ export default function BusSteeringSimulator() {
 
   // Trail display mode: paints the corridor the vehicle has actually driven, rather than just the
   // instantaneous turning circle. See docs/trail-display-mode.md for the design.
-  const [trailMode, setTrailMode] = useState(false);
+  const [trailMode, setTrailMode] = useState(true);
   const [trailVersion, setTrailVersion] = useState(0); // bumped to force a re-render as samples accumulate
   const [trailPaused, setTrailPaused] = useState(false); // mirrors trailPausedRef, only for display
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
@@ -807,6 +826,22 @@ export default function BusSteeringSimulator() {
   const previewFrontPolygonPoints = previewPoses ? previewBandPath(geom.Lfd, previewAxleHalfW) : null;
   const previewTagPolygonPoints = previewPoses ? previewBandPath(-geom.Ldt, previewAxleHalfW) : null;
 
+  // Below, in trail mode the swept-path reference circles (outer envelope, pivot, tag-inner,
+  // tail-swing, w3/w6) are drawn as "next 50m" arcs instead of full circles — same forward window
+  // as the preview bands above, computed from the same previewPoses so the two always agree.
+  const previewArcStart = previewPoses && !geom.isStraight
+    ? (() => {
+        const p0 = toScreen(displayedView, { x: previewPoses[0].x, y: previewPoses[0].y });
+        return Math.atan2(p0.y - Cscreen.y, p0.x - Cscreen.x);
+      })()
+    : null;
+  const previewArcSweep = previewPoses ? previewPoses[previewPoses.length - 1].theta - previewPoses[0].theta : null;
+  function sweptRing(r, props) {
+    return trailMode && previewArcStart != null
+      ? <path d={arcPathFromWorldSweep(Cscreen.x, Cscreen.y, r, previewArcStart, previewArcSweep)} fill="none" {...props} />
+      : <circle cx={Cscreen.x} cy={Cscreen.y} r={r} fill="none" {...props} />;
+  }
+
   // grid pattern step
   const gridMeters = geom.isStraight ? geom.straightHalfExtent / 6 : Math.min(geom.outerRadius, 40) / 7;
   const niceSteps = [0.5, 1, 2, 2.5, 5, 10, 20];
@@ -954,15 +989,15 @@ export default function BusSteeringSimulator() {
             </>
           ) : (
             <>
-              <circle cx={Cscreen.x} cy={Cscreen.y} r={R_outer_px} fill="none" stroke={COL.pathOuter} strokeWidth="1" strokeDasharray="4 6" opacity="0.35" />
-              <circle cx={Cscreen.x} cy={Cscreen.y} r={R_pivot_px} fill="none" stroke={COL.dim} strokeWidth="1.6" strokeDasharray="10 8" opacity="0.45" />
-              <circle cx={Cscreen.x} cy={Cscreen.y} r={R_tagInner_px} fill="none" stroke={COL.pathInner} strokeWidth="1" strokeDasharray="4 6" opacity="0.35" />
-              <circle cx={Cscreen.x} cy={Cscreen.y} r={R_tailSwing_px} fill="none" stroke={COL.tailSwing} strokeWidth="1.3" strokeDasharray="3 5" opacity="0.75" />
+              {sweptRing(R_outer_px, { stroke: COL.pathOuter, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
+              {sweptRing(R_pivot_px, { stroke: COL.dim, strokeWidth: "1.6", strokeDasharray: "10 8", opacity: "0.45" })}
+              {sweptRing(R_tagInner_px, { stroke: COL.pathInner, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
+              {sweptRing(R_tailSwing_px, { stroke: COL.tailSwing, strokeWidth: "1.3", strokeDasharray: "3 5", opacity: "0.75" })}
               {/* wheel 3 & 6 — the important ones */}
-              <circle cx={Cscreen.x} cy={Cscreen.y} r={geom.radii.w3 * displayedView.scale} fill="none" stroke={COL.w3} strokeWidth="5" opacity="0.18" />
-              <circle cx={Cscreen.x} cy={Cscreen.y} r={geom.radii.w3 * displayedView.scale} fill="none" stroke={COL.w3} strokeWidth="2.4" opacity="1" />
-              <circle cx={Cscreen.x} cy={Cscreen.y} r={geom.radii.w6 * displayedView.scale} fill="none" stroke={COL.w6} strokeWidth="5" opacity="0.18" />
-              <circle cx={Cscreen.x} cy={Cscreen.y} r={geom.radii.w6 * displayedView.scale} fill="none" stroke={COL.w6} strokeWidth="2.4" opacity="1" />
+              {sweptRing(geom.radii.w3 * displayedView.scale, { stroke: COL.w3, strokeWidth: "5", opacity: "0.18" })}
+              {sweptRing(geom.radii.w3 * displayedView.scale, { stroke: COL.w3, strokeWidth: "2.4", opacity: "1" })}
+              {sweptRing(geom.radii.w6 * displayedView.scale, { stroke: COL.w6, strokeWidth: "5", opacity: "0.18" })}
+              {sweptRing(geom.radii.w6 * displayedView.scale, { stroke: COL.w6, strokeWidth: "2.4", opacity: "1" })}
               {/* center marker */}
               <line x1={Cscreen.x - 9} y1={Cscreen.y} x2={Cscreen.x + 9} y2={Cscreen.y} stroke={COL.dim} strokeWidth="1.4" />
               <line x1={Cscreen.x} y1={Cscreen.y - 9} x2={Cscreen.x} y2={Cscreen.y + 9} stroke={COL.dim} strokeWidth="1.4" />
