@@ -173,6 +173,31 @@ const WHEEL_HALF_LEN = 0.42, WHEEL_HALF_W = 0.16;
 const DUAL_HALF_LEN = 0.42, DUAL_HALF_W = 0.085; // narrower single tyre within a dual pair
 const DUAL_GAP = 0.28; // centre-to-centre spacing of a dual (twin) tyre pair
 
+// ---------- trail display mode ----------
+// Local (chassis-frame) half-width of the swept corridor, same simplification the existing
+// straight-case off-tracking band already uses (see `bandHalfY` in the render body): the wider of
+// the hero-wheel offset and the front wheel's own footprint, applied symmetrically on both sides
+// regardless of which side actually reaches it. Depends only on track width, not steering angle,
+// so unlike the live turning-case band it doesn't widen further on tight lock — an accepted
+// simplification for a first pass (see docs/trail-display-mode.md).
+function bandHalfWidth(Tw) {
+  const halfT = Tw / 2;
+  return Math.max(halfT + DUAL_GAP / 2, halfT + WHEEL_HALF_W);
+}
+// Front/tag axle local half-width — same `halfT + WHEEL_HALF_W` term as above, without the dual
+// term since neither the front nor the tag axle is a dual pair. Sampled at that axle's own
+// along-chassis offset (x = Lfd or x = -Ldt), not x = 0, so each band traces where that axle
+// itself has actually been — distinct from the drive-axle band above, which is why they diverge
+// once the bus turns (the front axle cuts the corner ahead of where the drive axle tracks, the tag
+// axle tracks inboard of it — the same effect as the "mowing the grass" / tail-swing readouts).
+function singleAxleBandHalfWidth(Tw) {
+  return Tw / 2 + WHEEL_HALF_W;
+}
+const TRAIL_MIN_SPACING = 0.2; // metres between recorded trail samples
+const TRAIL_MIN_SPACING_SQ = TRAIL_MIN_SPACING * TRAIL_MIN_SPACING;
+const TRAIL_RENDER_EVERY = 5; // force a re-render every N recorded samples, not every one
+const TRAIL_BOUND_HALF = 500; // metres — recording area capped to a 1000x1000m (1km²) square centred on the origin
+
 // ---------- driver marker icon (supplied artwork: "bcc bus driver head.svg") ----------
 const DRIVER_ICON_VB_W = 1087, DRIVER_ICON_VB_H = 1039;
 const DRIVER_ICON_HEAD_D = "M0 0 C1.19592366 -0.00429709 2.39184733 -0.00859419 3.6240111 -0.0130215 C4.97087592 -0.01276704 6.31774072 -0.01241991 7.6646055 -0.01199049 C9.08598057 -0.01515359 10.50735472 -0.01875211 11.92872769 -0.02274993 C15.87061305 -0.03253162 19.81248337 -0.03599055 23.75437918 -0.03847325 C28.02929697 -0.04222771 32.30420271 -0.05167409 36.57911277 -0.06037748 C45.0741247 -0.07672482 53.56913577 -0.08754194 62.0641582 -0.09665609 C69.12946996 -0.10439081 76.1947752 -0.11446119 83.26008165 -0.12605089 C84.27778045 -0.12771897 85.29547925 -0.12938704 86.34401741 -0.13110567 C88.41938924 -0.13451442 90.49476106 -0.13792595 92.57013288 -0.14134019 C120.65517192 -0.18706193 148.74022482 -0.21749533 176.82528627 -0.24550241 C178.54945381 -0.2472349 178.54945381 -0.2472349 180.30845302 -0.24900238 C225.78445815 -0.29468779 271.26046895 -0.33434188 316.73648943 -0.36102732 C328.00778772 -0.3676512 339.27908585 -0.37452457 350.55038393 -0.38148874 C351.79588453 -0.38225193 353.04138514 -0.38301511 354.32462819 -0.38380143 C394.71957788 -0.40875256 435.1144247 -0.46224141 475.50932087 -0.531507 C517.01215139 -0.60254311 558.51492656 -0.6476777 600.01781857 -0.65900809 C605.87562177 -0.66061309 611.73342484 -0.66250069 617.59122789 -0.66455263 C619.32062145 -0.66514195 619.32062145 -0.66514195 621.08495225 -0.66574319 C639.66629646 -0.67281093 658.24749646 -0.70705655 676.82878538 -0.75121364 C695.49483841 -0.79495287 714.16073365 -0.80951793 732.8268332 -0.79412038 C743.92561683 -0.78584185 755.02385123 -0.79997972 766.122546 -0.84583971 C773.52955959 -0.8742572 780.93620262 -0.87380891 788.34323028 -0.84957484 C792.5683351 -0.83658384 796.79239259 -0.83642471 801.01739629 -0.8713404 C804.85964748 -0.90284428 808.70001842 -0.89766908 812.54222601 -0.8629573 C814.57848419 -0.85409551 816.61479679 -0.88460004 818.65082294 -0.91659108 C827.3144964 -0.7861323 827.3144964 -0.7861323 830.84407942 1.87041713 C832.61588076 3.87497416 834.07450014 5.89747768 835.53622377 8.13340384 C836.4620062 9.19479083 837.40898668 10.23820801 838.37997377 11.25840384 C842.87235249 16.12074316 847.32533513 21.0054554 851.66122377 26.00840384 C854.08172452 28.75163802 856.55823019 31.44224952 859.03622377 34.13340384 C862.63635133 38.04321979 866.18039982 41.99206852 869.66122377 46.00840384 C872.08172452 48.75163802 874.55823019 51.44224952 877.03622377 54.13340384 C880.63635133 58.04321979 884.18039982 61.99206852 887.66122377 66.00840384 C890.08172452 68.75163802 892.55823019 71.44224952 895.03622377 74.13340384 C898.63635133 78.04321979 902.18039982 81.99206852 905.66122377 86.00840384 C908.08172452 88.75163802 910.55823019 91.44224952 913.03622377 94.13340384 C916.63635133 98.04321979 920.18039982 101.99206852 923.66122377 106.00840384 C926.08172452 108.75163802 928.55823019 111.44224952 931.03622377 114.13340384 C934.63635133 118.04321979 938.18039982 121.99206852 941.66122377 126.00840384 C944.08172452 128.75163802 946.55823019 131.44224952 949.03622377 134.13340384 C952.07510395 137.43369306 955.09778422 140.74289667 958.03622377 144.13340384 C961.39945015 148.01157397 964.86958048 151.78868195 968.34432924 155.56650931 C972.77846005 160.38925275 977.16140617 165.25681504 981.53622377 170.13340384 C983.03593505 171.80033031 984.53593698 173.46699533 986.03622377 175.13340384 C986.76712221 175.9493804 987.49802064 176.76535696 988.25106752 177.60606009 C989.85300792 179.37777879 991.47172518 181.13440458 993.10263002 182.87949759 C993.92634096 183.76766165 994.75005189 184.65582571 995.59872377 185.57090384 C996.72987611 186.77553274 996.72987611 186.77553274 997.88388002 188.00449759 C999.53622377 190.13340384 999.53622377 190.13340384 999.53622377 193.13340384 C949.04622377 193.13340384 898.55622377 193.13340384 846.53622377 193.13340384 C845.21622377 199.40340384 843.89622377 205.67340384 842.53622377 212.13340384 C841.64479082 216.24366914 840.74929953 220.35206035 839.83700502 224.45762259 C839.60087495 225.52058554 839.36474489 226.58354849 839.12145936 227.67872244 C829.36444525 271.44412012 818.04420807 314.16183316 799.53622377 355.13340384 C799.09310853 356.11599173 798.6499933 357.09857962 798.19345033 358.1109429 C780.9217158 396.04820056 758.24239463 431.1821585 731.53622377 463.13340384 C731.10648256 463.64951224 730.67674135 464.16562063 730.23397768 464.69736868 C717.32812445 480.15024764 703.55057981 494.71320478 688.53622377 508.13340384 C687.96194643 508.64709524 687.38766908 509.16078665 686.79598939 509.69004446 C666.99745626 527.27619875 645.35544135 542.73172358 622.53622377 556.13340384 C621.88895326 556.51561087 621.24168275 556.8978179 620.57479799 557.29160696 C584.1318041 578.68759716 544.77788202 593.97608338 503.53622377 603.13340384 C502.54042299 603.35480032 501.54462221 603.57619681 500.51864564 603.80430228 C487.09168996 606.72190177 473.60970393 608.77121069 459.97372377 610.38340384 C459.27700563 610.46648794 458.58028749 610.54957205 457.86245668 610.63517386 C440.84677056 612.63728567 423.91398663 613.34437037 406.78622377 613.32090384 C405.44545778 613.31949896 405.44545778 613.31949896 404.07760561 613.3180657 C355.61534724 613.20886801 307.5393415 606.67714521 261.53622377 591.13340384 C260.59665834 590.81790579 259.65709291 590.50240774 258.6890558 590.17734915 C216.56925512 575.86803471 177.71003065 554.29599822 143.10018861 526.39316946 C141.63263592 525.21106333 140.15696615 524.03905443 138.68075502 522.86777884 C131.89226808 517.42131601 125.52177019 511.59511473 119.17245424 505.65195853 C117.55826118 504.15385634 115.9281468 502.67570116 114.29013002 501.20371634 C109.26560018 496.68179461 104.45469919 492.14083235 100.10263002 486.94981009 C98.53680461 485.13407738 96.88720257 483.4839768 95.16122377 481.82090384 C91.42849842 478.14637243 88.1823545 474.13854376 84.90341127 470.05918509 C82.59724981 467.20883041 80.22828281 464.4225591 77.84872377 461.63340384 C60.67350029 441.0072081 45.96729134 418.33208634 32.53622377 395.13340384 C32.10889955 394.39589895 31.68157533 393.65839407 31.24130189 392.89854056 C-0.95871908 336.95037619 -21.25365146 275.25369209 -28.46377623 211.13340384 C-28.63949156 209.65299612 -28.63949156 209.65299612 -28.8187567 208.14268118 C-36.63051565 139.85653272 -27.52777785 66.41924585 -6.46377623 1.13340384 C-4.72738871 -0.60298368 -2.36442651 0.00371838 0 0 Z";
@@ -230,6 +255,7 @@ const COL = {
   pathOuter: "#7fd1e0", pathInner: "#ff7a56", dim: "#9fc3db",
   tailSwing: "#ffd166",
   w3: "#c9f24a", w6: "#b18aff",
+  trail: "#4fd1c5",
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
 };
 
@@ -331,6 +357,16 @@ export default function BusSteeringSimulator() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [viewMode, setViewMode] = useState("bus");
 
+  // Trail display mode: paints the corridor the vehicle has actually driven, rather than just the
+  // instantaneous turning circle. See docs/trail-display-mode.md for the design.
+  const [trailMode, setTrailMode] = useState(false);
+  const [trailVersion, setTrailVersion] = useState(0); // bumped to force a re-render as samples accumulate
+  const [trailPaused, setTrailPaused] = useState(false); // mirrors trailPausedRef, only for display
+  const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
+  const trailModeRef = useRef(trailMode);
+  const trailPausedRef = useRef(false);
+  const poseRef = useRef({ x: 0, y: 0, theta: 0 }); // live pose during the drive loop, source of truth for trail sampling
+
   const [pose, setPose] = useState({ x: 0, y: 0, theta: 0 });
   const rafRef = useRef(null);
   const lastTRef = useRef(null);
@@ -343,11 +379,52 @@ export default function BusSteeringSimulator() {
   );
   geomRef.current = geom;
   speedRef.current = speed;
+  trailModeRef.current = trailMode;
+
+  function clearTrail() {
+    trailRef.current = [];
+    trailPausedRef.current = false;
+    setTrailPaused(false);
+    setTrailVersion((v) => v + 1);
+  }
+
+  // Appends a trail sample for `nextPose` if trail mode is on, the bus has moved far enough since
+  // the last sample, and we're still within the capped 1km² recording area. Called from the drive
+  // loop below with a plain value (never from inside a setState updater — this repo runs under
+  // StrictMode, which double-invokes updater functions to catch impure ones, and this mutates a ref).
+  function maybeSampleTrail(nextPose, g) {
+    if (!trailModeRef.current) return;
+    const outOfBounds = Math.abs(nextPose.x) > TRAIL_BOUND_HALF || Math.abs(nextPose.y) > TRAIL_BOUND_HALF;
+    if (outOfBounds !== trailPausedRef.current) {
+      trailPausedRef.current = outOfBounds;
+      setTrailPaused(outOfBounds);
+    }
+    if (outOfBounds) return;
+    const samples = trailRef.current;
+    const last = samples[samples.length - 1];
+    if (last) {
+      const dx = nextPose.x - last.poseX, dy = nextPose.y - last.poseY;
+      if (dx * dx + dy * dy < TRAIL_MIN_SPACING_SQ) return;
+    }
+    const halfW = bandHalfWidth(g.Tw);
+    const axleHalfW = singleAxleBandHalfWidth(g.Tw); // same formula for front and tag — neither is a dual pair
+    samples.push({
+      poseX: nextPose.x, poseY: nextPose.y,
+      left: poseTransform({ x: 0, y: halfW }, nextPose),
+      right: poseTransform({ x: 0, y: -halfW }, nextPose),
+      frontLeft: poseTransform({ x: g.Lfd, y: axleHalfW }, nextPose),
+      frontRight: poseTransform({ x: g.Lfd, y: -axleHalfW }, nextPose),
+      tagLeft: poseTransform({ x: -g.Ldt, y: axleHalfW }, nextPose),
+      tagRight: poseTransform({ x: -g.Ldt, y: -axleHalfW }, nextPose),
+    });
+    if (samples.length % TRAIL_RENDER_EVERY === 0) setTrailVersion((v) => v + 1);
+  }
 
   // Only reset the vehicle's position when the physical dimensions change (a different-size bus
   // means the old pose isn't meaningful). Steering, tag ratio and lockout changes leave the bus
-  // exactly where it is — only the swept-path circles update to match the new radius.
-  useEffect(() => { setPose({ x: 0, y: 0, theta: 0 }); }, [Lfd, Ldt, Fo, Ro, Wb, Tw]);
+  // exactly where it is — only the swept-path circles update to match the new radius. A dimension
+  // change invalidates any existing trail the same way — it was painted by a different-size bus.
+  useEffect(() => { setPose({ x: 0, y: 0, theta: 0 }); clearTrail(); }, [Lfd, Ldt, Fo, Ro, Wb, Tw]);
 
   // Left/Right arrow keys nudge the steering lock, unless focus is on a form control (which
   // already has its own arrow-key behaviour, e.g. another slider).
@@ -368,9 +445,14 @@ export default function BusSteeringSimulator() {
 
   // Dead-reckoning integration: reads the current geometry/speed from refs each frame, so changing
   // the steering lock mid-drive just changes the curvature the bus is following from where it is,
-  // rather than restarting the loop or resetting position.
+  // rather than restarting the loop or resetting position. `poseRef` is seeded from the latest
+  // `pose` state whenever a drive starts, then driven forward imperatively each tick — trail
+  // sampling needs the freshly-integrated value synchronously, which a functional setPose update
+  // can't give us without pushing the sampling side effect into the updater itself (unsafe under
+  // StrictMode's double-invocation of updater functions).
   useEffect(() => {
     if (!animating) { lastTRef.current = null; return; }
+    poseRef.current = pose;
     function step(t) {
       if (lastTRef.current == null) lastTRef.current = t;
       const dt = Math.min((t - lastTRef.current) / 1000, 0.05);
@@ -378,11 +460,15 @@ export default function BusSteeringSimulator() {
       const g = geomRef.current;
       const v = (speedRef.current * 1000) / 3600;
       const omega = g.isStraight ? 0 : v / g.R;
-      setPose((prev) => ({
+      const prev = poseRef.current;
+      const next = {
         x: prev.x + v * dt * Math.cos(prev.theta),
         y: prev.y + v * dt * Math.sin(prev.theta),
         theta: prev.theta + omega * dt,
-      }));
+      };
+      poseRef.current = next;
+      setPose(next);
+      maybeSampleTrail(next, g);
       rafRef.current = requestAnimationFrame(step);
     }
     rafRef.current = requestAnimationFrame(step);
@@ -578,6 +664,34 @@ export default function BusSteeringSimulator() {
   const frontWheelMaxY_s = halfT_s + WHEEL_HALF_W; // angle is 0 when straight, so no rotation widening
   const bandHalfY = Math.max(Math.abs(w3Y), Math.abs(w6Y), frontWheelMaxY_s);
 
+  // Trail: the ribbon of everywhere the swept corridor has actually been, built from accumulated
+  // world-space samples rather than derived from the current instantaneous circle. trailRef is a
+  // plain ref (mutated per-frame in the drive loop, see maybeSampleTrail) so it doesn't itself
+  // trigger a render — trailVersion state is bumped periodically instead, purely to force this
+  // component to re-run and pick up the latest trailRef.current.
+  const trailSamples = trailRef.current;
+  const trailPolygonPoints = trailMode && trailSamples.length >= 2
+    ? ptsToPath([
+        ...trailSamples.map((s) => toScreen(displayedView, s.left)),
+        ...trailSamples.map((s) => toScreen(displayedView, s.right)).reverse(),
+      ])
+    : null;
+  // Second and third bands: the front and tag axles' own tracks, each sampled at that axle's own
+  // along-chassis offset (see singleAxleBandHalfWidth) — separate ribbons since they follow
+  // different curves than the drive-axle band above once the bus is turning.
+  const frontTrailPolygonPoints = trailMode && trailSamples.length >= 2
+    ? ptsToPath([
+        ...trailSamples.map((s) => toScreen(displayedView, s.frontLeft)),
+        ...trailSamples.map((s) => toScreen(displayedView, s.frontRight)).reverse(),
+      ])
+    : null;
+  const tagTrailPolygonPoints = trailMode && trailSamples.length >= 2
+    ? ptsToPath([
+        ...trailSamples.map((s) => toScreen(displayedView, s.tagLeft)),
+        ...trailSamples.map((s) => toScreen(displayedView, s.tagRight)).reverse(),
+      ])
+    : null;
+
   // grid pattern step
   const gridMeters = geom.isStraight ? geom.straightHalfExtent / 6 : Math.min(geom.outerRadius, 40) / 7;
   const niceSteps = [0.5, 1, 2, 2.5, 5, 10, 20];
@@ -653,6 +767,21 @@ export default function BusSteeringSimulator() {
                  M ${Cscreen.x - R_bandInner_px} ${Cscreen.y} A ${R_bandInner_px} ${R_bandInner_px} 0 1 0 ${Cscreen.x + R_bandInner_px} ${Cscreen.y} A ${R_bandInner_px} ${R_bandInner_px} 0 1 0 ${Cscreen.x - R_bandInner_px} ${Cscreen.y} Z`}
             />
           ))}
+
+          {/* trail: painted record of the corridor actually driven so far (see docs/trail-display-mode.md) */}
+          {trailPolygonPoints && (
+            <polygon points={trailPolygonPoints} fill={COL.trail} fillOpacity="0.16" stroke={COL.trail} strokeOpacity="0.5" strokeWidth="1" />
+          )}
+          {/* second band: the front axle's own track, drawn in the same colour used for the front
+              axle everywhere else in this view (wheels 1–2, mowing-the-grass lines) */}
+          {frontTrailPolygonPoints && (
+            <polygon points={frontTrailPolygonPoints} fill={COL.front} fillOpacity="0.16" stroke={COL.front} strokeOpacity="0.5" strokeWidth="1" />
+          )}
+          {/* third band: the tag axle's own track, drawn in the same colour used for the tag axle
+              everywhere else in this view (wheels 7–8, tail-swing lines) */}
+          {tagTrailPolygonPoints && (
+            <polygon points={tagTrailPolygonPoints} fill={COL.tag} fillOpacity="0.16" stroke={COL.tag} strokeOpacity="0.5" strokeWidth="1" />
+          )}
 
           {/* swept path circles while turning, parallel reference lines while driving straight */}
           {geom.isStraight ? (
@@ -813,6 +942,9 @@ export default function BusSteeringSimulator() {
           <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />
           <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />
           <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />
+          {trailMode && <LegendDot color={COL.trail} label="Trail — drive axle corridor" />}
+          {trailMode && <LegendDot color={COL.front} label="Trail — front axle track" />}
+          {trailMode && <LegendDot color={COL.tag} label="Trail — tag axle track" />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
         </div>
         <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", boxShadow: "0 2px 8px rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden" }}>
@@ -858,7 +990,16 @@ export default function BusSteeringSimulator() {
           <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Off-track</button>
           <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
           <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
+          <button className={"btn" + (trailMode ? " btnOn" : "")} onClick={() => setTrailMode((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Trail</button>
+          {trailMode && (
+            <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
+          )}
         </div>
+        {trailMode && trailPaused && (
+          <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.tag, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
+            Trail paused — outside 1km² mapped area
+          </div>
+        )}
         <button
           className={"btn" + (animating ? " btnOn" : "")}
           onClick={() => setSpeed(animating ? 0 : 12)}
