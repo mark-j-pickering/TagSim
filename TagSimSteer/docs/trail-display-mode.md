@@ -166,27 +166,33 @@ ribbon polygons at the boundary.
 
 ## What shipped in v1
 
-- **Two bands, both "tyre corridor" style — not yet the tyre/overhang split**
-  described above. Shipped: a drive-axle corridor (teal, sampled at chassis
-  x = 0, reusing the existing off-tracking band's local half-width formula —
-  `bandHalfWidth(Tw)`, matching the render's existing `bandHalfY`) and a
-  front-axle track (amber/`COL.front`, sampled at chassis x = Lfd via
-  `frontBandHalfWidth(Tw)`) — same construction, offset forward along the
-  chassis so it traces where the front axle itself has been, not just the
-  drive axle. The two visibly diverge once the bus turns, which is the same
-  effect the "mowing the grass" readouts describe. Neither band accounts for
-  the front wheel's own steer-angle widening (same accepted simplification
-  as the live off-track band). Still not implemented: a third,
+- **Three bands, all "tyre corridor" style — not yet the tyre/overhang
+  split** described above. Shipped: a drive-axle corridor (teal, sampled at
+  chassis x = 0, reusing the existing off-tracking band's local half-width
+  formula — `bandHalfWidth(Tw)`, matching the render's existing
+  `bandHalfY`), a front-axle track (amber/`COL.front`, sampled at chassis
+  x = Lfd), and a tag-axle track (coral/`COL.tag`, sampled at chassis
+  x = -Ldt) — front and tag both via `singleAxleBandHalfWidth(Tw)`, same
+  formula, neither axle being a dual pair. Same ribbon construction for all
+  three, each offset along the chassis to its own axle so it traces where
+  that axle itself has been, not just the drive axle. Front and drive
+  visibly diverge once the bus turns (the "mowing the grass" effect); tag
+  and drive stay close together for this vehicle's proportions (`Ldt` =
+  1.4m is small relative to `Lfd` = 7m) — correct, not a rendering bug,
+  verified by checking the underlying polygon point counts match across all
+  three bands even where the tag band is visually subtle. None of the three
+  account for that axle's own steer-angle widening (same accepted
+  simplification as the live off-track band). Still not implemented: a
   differently-styled band for body-corner overhang (`mow1`/`mow2`/
   `tailSwing7`/`tailSwing8`) — the "nothing touched here, but the bus
-  occupied this space" corridor described above — and a tag-axle band.
+  occupied this space" corridor described above.
 - **No forward 50m preview yet** — trail mode currently only paints the
   cured (historical) corridors. Adding the ahead-of-the-bus projection is
   the natural next increment.
 - **History buffer**: `trailRef` (a `useRef` array of `{poseX, poseY, left,
-  right, frontLeft, frontRight}` world-space samples), appended inside the
-  existing drive-loop `requestAnimationFrame` callback via
-  `maybeSampleTrail()`, gated at 0.2m spacing (`TRAIL_MIN_SPACING`). A
+  right, frontLeft, frontRight, tagLeft, tagRight}` world-space samples),
+  appended inside the existing drive-loop `requestAnimationFrame` callback
+  via `maybeSampleTrail()`, gated at 0.2m spacing (`TRAIL_MIN_SPACING`). A
   `trailVersion` counter is bumped every 5 samples to force a periodic
   re-render, since the ref itself doesn't trigger one — matches the
   "Implementation approach" section above. Getting a synchronous
