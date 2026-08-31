@@ -1,7 +1,9 @@
 # Design note: Trail display mode
 
-Status: proposed, not implemented. No code yet — this is scoping for a future
-change to `tag-steering-simulator.jsx`.
+Status: v1 landed in `tag-steering-simulator.jsx` — history buffer and a
+single-band ribbon (the "Trail" toggle). The forward 50m preview and the
+tyre/overhang colour split described below are not implemented yet; see
+"What shipped in v1" at the bottom.
 
 ## Summary
 
@@ -150,11 +152,10 @@ ribbon polygons at the boundary.
   useful content, so probably always-on.
 - Exact sample spacing and buffer cap are tuning, not architecture — pick
   defaults during implementation and adjust by eye.
-- The existing "Recenter" button teleports `pose` back to `{0,0,0}`
-  independent of the vehicle-geometry-change reset. Since the trail lives in
-  the same world frame as `pose`, recentering would leave old trail sitting
-  at its previous world position while the bus jumps back to origin. Decide
-  whether Recenter also clears the trail, or the two stay decoupled.
+- ~~The existing "Recenter" button teleports `pose` back to `{0,0,0}`...~~
+  Resolved for v1: decoupled. Recenter doesn't touch the trail — it stays
+  painted at its real-world position while the bus jumps back to origin.
+  Revisit if that reads as confusing in practice.
 
 ## Non-goals for v1
 
@@ -162,3 +163,37 @@ ribbon polygons at the boundary.
   — 1km² at ~0.2m sampling is a bounded, small point count; not worth the
   complexity yet.
 - No persistence across page reloads (matches the rest of the app today).
+
+## What shipped in v1
+
+- **Single band, not the two-band tyre/overhang split** described above.
+  The shipped ribbon reuses the existing off-tracking band's local
+  half-width formula (`bandHalfWidth(Tw)`, matching the render's existing
+  `bandHalfY`) applied symmetrically both sides, carried along the actual
+  driven path — one corridor, same simplification the live off-track band
+  already makes (front-wheel steer-angle widening isn't accounted for).
+  The tyre-vs-overhang colour split is future work.
+- **No forward 50m preview yet** — trail mode currently only paints the
+  cured (historical) corridor. Adding the ahead-of-the-bus projection is the
+  natural next increment.
+- **History buffer**: `trailRef` (a `useRef` array of `{poseX, poseY, left,
+  right}` world-space samples), appended inside the existing drive-loop
+  `requestAnimationFrame` callback via `maybeSampleTrail()`, gated at 0.2m
+  spacing (`TRAIL_MIN_SPACING`). A `trailVersion` counter is bumped every 5
+  samples to force a periodic re-render, since the ref itself doesn't
+  trigger one — matches the "Implementation approach" section above.
+  Getting a synchronous just-integrated pose into that sampler required
+  replacing the drive loop's `setPose(prev => ...)` functional update with
+  an explicit `poseRef` driven forward each tick and passed to `setPose` as
+  a plain value — the functional-update form couldn't safely support a
+  side-effecting sampler call (StrictMode double-invokes updater functions).
+- **1km² bound**: implemented as `TRAIL_BOUND_HALF = 500`, i.e. `|pose.x| >
+  500 || |pose.y| > 500` pauses recording (no wrap, no truncation) with a
+  small "Trail paused — outside 1km² mapped area" indicator. Not yet
+  exercised by hand at the boundary (would take a very long real-time drive
+  to reach) — reviewed by code inspection only.
+- **Controls**: "Trail" toggle and "Clear" button added to the existing
+  bottom-centre display-toggle row (alongside Off-track/Construction/
+  Dimensions); a trail legend entry appears in the top-right panel when
+  trail mode is on. Trail is cleared automatically on vehicle-dimension
+  changes (same trigger that already resets `pose`).
