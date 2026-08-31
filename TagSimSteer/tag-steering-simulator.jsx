@@ -223,8 +223,10 @@ const TRAIL_MIN_SPACING = 0.2; // metres between recorded trail samples
 const TRAIL_MIN_SPACING_SQ = TRAIL_MIN_SPACING * TRAIL_MIN_SPACING;
 const TRAIL_RENDER_EVERY = 5; // force a re-render every N recorded samples, not every one
 const TRAIL_BOUND_HALF = 500; // metres — recording area capped to a 1000x1000m (1km²) square centred on the origin
-const TRAIL_PREVIEW_LENGTH = 50; // metres ahead of the bus the preview band projects
+const TRAIL_PREVIEW_LENGTH = 50; // metres ahead of the bus the dashed centreline preview projects
 const TRAIL_PREVIEW_STEPS = 40; // segments across that length — plenty smooth even at full-lock radii
+const TRAIL_PREVIEW_FRONT_LENGTH = 25; // metres ahead the (shorter, dotted) front wheel track preview projects
+const TRAIL_PREVIEW_FRONT_STEPS = 20;
 
 // Closed-form projection of pose forward by arc length `s`, holding the current curvature (or
 // straight heading) constant — derived by solving the same unicycle model the drive loop
@@ -807,24 +809,21 @@ export default function BusSteeringSimulator() {
       ])
     : null;
 
-  // Preview: a ~50m projection ahead of the bus assuming the current steering angle is held,
-  // recomputed fresh each render from live pose/geom rather than accumulated like the cured trail
-  // above — always shown in trail mode (not gated on actively driving), since it's the only useful
-  // trail content before any history exists (see docs/trail-display-mode.md open questions). Same
-  // three axle bands and edge-offset formulas as the cured trail, just projected forward instead of
-  // sampled from the past.
+  // Preview: unfilled lines only, no shaded corridor — a dashed centreline (the drive axle's own
+  // path, 50m ahead) plus dotted front wheel tracks (25m ahead, shorter and more transparent since
+  // they're the finer-grained detail). Recomputed fresh each render from live pose/geom rather than
+  // accumulated like the cured trail below — always shown in trail mode (not gated on actively
+  // driving), since it's the only useful trail content before any history exists (see
+  // docs/trail-display-mode.md open questions).
   const previewPoses = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_LENGTH, TRAIL_PREVIEW_STEPS) : null;
-  const previewHalfW = bandHalfWidth(geom.Tw);
+  const previewPosesFront = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_FRONT_LENGTH, TRAIL_PREVIEW_FRONT_STEPS) : null;
   const previewAxleHalfW = singleAxleBandHalfWidth(geom.Tw);
-  function previewBandPath(offsetX, halfW) {
-    return ptsToPath([
-      ...previewPoses.map((p) => toScreen(displayedView, poseTransform({ x: offsetX, y: halfW }, p))),
-      ...previewPoses.map((p) => toScreen(displayedView, poseTransform({ x: offsetX, y: -halfW }, p))).reverse(),
-    ]);
+  function previewLinePoints(poses, offsetX, offsetY) {
+    return poses.map((p) => toScreen(displayedView, poseTransform({ x: offsetX, y: offsetY }, p))).map((s) => `${s.x},${s.y}`).join(" ");
   }
-  const previewPolygonPoints = previewPoses ? previewBandPath(0, previewHalfW) : null;
-  const previewFrontPolygonPoints = previewPoses ? previewBandPath(geom.Lfd, previewAxleHalfW) : null;
-  const previewTagPolygonPoints = previewPoses ? previewBandPath(-geom.Ldt, previewAxleHalfW) : null;
+  const previewCentrelinePoints = previewPoses ? previewLinePoints(previewPoses, 0, 0) : null;
+  const previewFrontLeftPoints = previewPosesFront ? previewLinePoints(previewPosesFront, geom.Lfd, previewAxleHalfW) : null;
+  const previewFrontRightPoints = previewPosesFront ? previewLinePoints(previewPosesFront, geom.Lfd, -previewAxleHalfW) : null;
 
   // Below, in trail mode the swept-path reference circles (outer envelope, pivot, tag-inner,
   // tail-swing, w3/w6) are drawn as "next 50m" arcs instead of full circles — same forward window
@@ -924,32 +923,35 @@ export default function BusSteeringSimulator() {
             />
           ))}
 
-          {/* preview: ~50m projection ahead of the bus if the current steering angle is held —
-              dashed and lower-opacity than the cured trail so it reads as "if you hold this" rather
-              than a record of fact (see docs/trail-display-mode.md) */}
-          {previewPolygonPoints && (
-            <polygon points={previewPolygonPoints} fill={COL.trail} fillOpacity="0.08" stroke={COL.trail} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
+          {/* preview: unfilled lines only, if the current steering angle is held — a 50m dashed
+              centreline (drive axle's own path) plus 25m dotted front wheel tracks, fainter still
+              since they're the finer-grained detail (see docs/trail-display-mode.md) */}
+          {previewCentrelinePoints && (
+            <polyline points={previewCentrelinePoints} fill="none" stroke={COL.trail} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
           )}
-          {previewFrontPolygonPoints && (
-            <polygon points={previewFrontPolygonPoints} fill={COL.front} fillOpacity="0.08" stroke={COL.front} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
+          {previewFrontLeftPoints && (
+            <polyline points={previewFrontLeftPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
           )}
-          {previewTagPolygonPoints && (
-            <polygon points={previewTagPolygonPoints} fill={COL.tag} fillOpacity="0.08" stroke={COL.tag} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
+          {previewFrontRightPoints && (
+            <polyline points={previewFrontRightPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
           )}
 
-          {/* trail: painted record of the corridor actually driven so far (see docs/trail-display-mode.md) */}
+          {/* trail: painted record of the corridor actually driven so far (see docs/trail-display-mode.md).
+              Fill only, no stroke — an outline on a band built from left-then-right-reversed edge
+              points draws a straight closing edge across the front and back of the band on every
+              polygon, which reads as a spurious solid line cutting across the axles. */}
           {trailPolygonPoints && (
-            <polygon points={trailPolygonPoints} fill={COL.trail} fillOpacity="0.16" stroke={COL.trail} strokeOpacity="0.5" strokeWidth="1" />
+            <polygon points={trailPolygonPoints} fill={COL.trail} fillOpacity="0.16" />
           )}
           {/* second band: the front axle's own track, drawn in the same colour used for the front
               axle everywhere else in this view (wheels 1–2, mowing-the-grass lines) */}
           {frontTrailPolygonPoints && (
-            <polygon points={frontTrailPolygonPoints} fill={COL.front} fillOpacity="0.16" stroke={COL.front} strokeOpacity="0.5" strokeWidth="1" />
+            <polygon points={frontTrailPolygonPoints} fill={COL.front} fillOpacity="0.16" />
           )}
           {/* third band: the tag axle's own track, drawn in the same colour used for the tag axle
               everywhere else in this view (wheels 7–8, tail-swing lines) */}
           {tagTrailPolygonPoints && (
-            <polygon points={tagTrailPolygonPoints} fill={COL.tag} fillOpacity="0.16" stroke={COL.tag} strokeOpacity="0.5" strokeWidth="1" />
+            <polygon points={tagTrailPolygonPoints} fill={COL.tag} fillOpacity="0.16" />
           )}
 
           {/* swept path circles while turning, parallel reference lines while driving straight */}
