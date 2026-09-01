@@ -805,6 +805,14 @@ export default function BusSteeringSimulator() {
   const [transitionT, setTransitionT] = useState(1);
   const TRANSITION_MS = 450;
 
+  // Recenter transition: unlike the bus/circle mode switch above (which recomputes its "from" view
+  // live off current pose, since that pose keeps changing mid-turn), Recenter jumps pose straight
+  // back to the origin and resets zoom, so there's nothing live left to recompute "from" — instead
+  // this freezes a snapshot of whatever was on screen right before the click and eases from that
+  // fixed snapshot toward the reset (pose-centred, zoom=1) view.
+  const [recenterTransition, setRecenterTransition] = useState(null); // { fromView, startTime } | null
+  const [recenterT, setRecenterT] = useState(1);
+
   function selectViewMode(newMode) {
     if (newMode === viewMode) return;
     setTransition({ fromMode: viewMode, startTime: performance.now() });
@@ -825,6 +833,19 @@ export default function BusSteeringSimulator() {
     return () => cancelAnimationFrame(raf);
   }, [transition]);
 
+  useEffect(() => {
+    if (!recenterTransition) return;
+    let raf;
+    function step(now) {
+      const t = Math.min(1, (now - recenterTransition.startTime) / TRANSITION_MS);
+      setRecenterT(t);
+      if (t < 1) raf = requestAnimationFrame(step);
+      else setRecenterTransition(null);
+    }
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [recenterTransition]);
+
   const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
   const autoView = transition
@@ -843,11 +864,26 @@ export default function BusSteeringSimulator() {
   // viewBox centre (not the cursor) — the camera is already tracking the point that matters (bus
   // position or turn centre) dead-centre every frame, so zooming around that same centre keeps it
   // there rather than fighting the auto-framing. Persists independently of steering/pose/mode.
-  const displayedView = {
+  const zoomedView = {
     scale: autoView.scale * zoom,
     originX: vbSize.w / 2 + (autoView.originX - vbSize.w / 2) * zoom,
     originY: vbSize.h / 2 + (autoView.originY - vbSize.h / 2) * zoom,
   };
+
+  // Recenter blends in on top of everything else: pose/zoom have already reset by the time this
+  // runs (see the Recenter button below), so zoomedView above is already the resting target —
+  // this just eases the camera into it from the frozen pre-click snapshot instead of snapping.
+  const displayedView = recenterTransition
+    ? (() => {
+        const fv = recenterTransition.fromView;
+        const eased = easeInOutCubic(recenterT);
+        return {
+          scale: fv.scale + (zoomedView.scale - fv.scale) * eased,
+          originX: fv.originX + (zoomedView.originX - fv.originX) * eased,
+          originY: fv.originY + (zoomedView.originY - fv.originY) * eased,
+        };
+      })()
+    : zoomedView;
 
   // ---------- build drawable points ----------
   const bodyStatic = ["FL", "FR", "RR", "RL"].map((k) => geom.bodyCorners[k]);
@@ -1454,8 +1490,13 @@ export default function BusSteeringSimulator() {
           </button>
           {viewMode === "bus" && (
             <button
-              onClick={() => setPose({ x: 0, y: 0, theta: 0 })}
-              title="Reset the vehicle back to the centre, facing straight ahead"
+              onClick={() => {
+                setRecenterTransition({ fromView: displayedView, startTime: performance.now() });
+                setRecenterT(0);
+                setPose({ x: 0, y: 0, theta: 0 });
+                setZoom(1);
+              }}
+              title="Reset the vehicle back to the centre, facing straight ahead, and reset zoom"
               style={{
                 fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
                 padding: "8px 12px", border: "none", cursor: "pointer",
