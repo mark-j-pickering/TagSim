@@ -310,14 +310,10 @@ function convexHull(points) {
   return lower.concat(upper);
 }
 
-// Steering resolution: fine (0.15°) near straight-ahead where a coarse step would otherwise
-// collapse several distinct, very-large-radius turns into "straight"; coarser (0.5°) beyond ±3°
-// where the extra precision doesn't matter.
+// Steering resolution: uniform 1° steps across the full ±50° lock range.
 const STEER_STEPS = (() => {
   const vals = [];
-  for (let i = -100; i <= -7; i++) vals.push(i * 0.5); // -50.0 to -3.5, 0.5° steps
-  for (let i = -20; i <= 20; i++) vals.push(Math.round(i * 15) / 100); // -3.0 to 3.0, 0.15° steps
-  for (let i = 7; i <= 100; i++) vals.push(i * 0.5); // 3.5 to 50.0, 0.5° steps
+  for (let i = -50; i <= 50; i++) vals.push(i);
   return vals;
 })();
 
@@ -328,6 +324,31 @@ function closestSteerIndex(val) {
     if (d < bestDiff) { bestDiff = d; best = i; }
   }
   return best;
+}
+
+// Steering rate limiting: the applied front-wheel angle chases the slider/arrow-key/lock-button
+// target rather than jumping to it instantly, modelling how long it physically takes to wind the
+// steering wheel lock-to-lock. MAX_LOCK_DEG is the confirmed ±50° front steer range;
+// LOCK_TO_LOCK_SECONDS is the minimum time a full lock-to-lock sweep takes at max input speed.
+const MAX_LOCK_DEG = 50;
+const LOCK_TO_LOCK_SECONDS = 3;
+
+// Progressive (non-constant) ratio: real steering racks gear slower — more wheel turns per
+// degree of road-wheel angle — near straight-ahead for stability, and quicker near full lock for
+// manoeuvrability. STEER_RATE_RATIO is how much faster the applied angle may move at full lock
+// vs dead-centre; STEER_MIN_RATE/STEER_MAX_RATE (deg/s) are solved so that a linear rate(angle) =
+// STEER_MIN_RATE + (STEER_MAX_RATE-STEER_MIN_RATE)*angle/MAX_LOCK_DEG profile still integrates to
+// exactly LOCK_TO_LOCK_SECONDS for a full -50°→50° sweep (i.e. LOCK_TO_LOCK_SECONDS/2 each way
+// from centre): time(0→50) = [50/(max-min)]·ln(max/min) = LOCK_TO_LOCK_SECONDS/2.
+const STEER_RATE_RATIO = 2;
+const STEER_MIN_RATE = (MAX_LOCK_DEG * Math.log(STEER_RATE_RATIO)) / ((LOCK_TO_LOCK_SECONDS / 2) * (STEER_RATE_RATIO - 1)); // deg/s at dead-centre
+const STEER_MAX_RATE = STEER_MIN_RATE * STEER_RATE_RATIO; // deg/s at full lock
+const STEER_RATE_K = (STEER_MAX_RATE - STEER_MIN_RATE) / MAX_LOCK_DEG;
+
+// Max angular rate (deg/s) the applied angle may change at, given its current unsigned angle.
+function steerRampRate(absAngleDeg) {
+  const a = Math.min(MAX_LOCK_DEG, Math.max(0, absAngleDeg));
+  return STEER_MIN_RATE + STEER_RATE_K * a;
 }
 const COL = {
   bg: "#0b1c30", panel: "#0e2338", panelAlt: "#0a1a2c",
@@ -358,7 +379,7 @@ function Slider({ label, unit, value, min, max, step, onChange, accent = COL.amb
   );
 }
 
-function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber }) {
+function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber, large = false }) {
   const index = closestSteerIndex(value);
   return (
     <div style={{ marginBottom: 8 }}>
@@ -369,23 +390,37 @@ function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber
       <input
         type="range" min={0} max={steps.length - 1} step={1} value={index}
         onChange={(e) => onChange(steps[parseInt(e.target.value, 10)])}
+        className={large ? "slider-thumb-lg" : undefined}
         style={{ width: "100%", accentColor: accent, height: 4 }}
       />
     </div>
   );
 }
 
-// Rotates to visualise the steering slider's angle. Ratio reflects the real steering
-// box: ~4 turns lock-to-lock over the ±50° front steer range, i.e. 1440° of wheel
-// rotation across 100° of road-wheel angle = 14.4:1.
+// Rotates to visualise the steering wheel angle, through the same progressive (non-constant)
+// ratio as the rate limit above — quick near full lock, slow/precise near centre — rather than a
+// flat multiplier. STEERING_WHEEL_RATIO is kept as the *average* ratio across the full sweep
+// (~4 turns lock-to-lock, i.e. 1440° of wheel rotation over 100° of road-wheel angle = 14.4:1),
+// used only to derive the assumed constant physical hand-turning speed.
 const STEERING_WHEEL_RATIO = 14.4;
+const STEER_HAND_SPEED = (STEERING_WHEEL_RATIO * MAX_LOCK_DEG * 2) / LOCK_TO_LOCK_SECONDS; // deg/s, physical wheel
+
+// Closed-form time to sweep the road-wheel angle from 0 to |roadAngleDeg| under the linear
+// rate(angle) profile above: time(0→x) = (1/STEER_RATE_K)·ln(rate(x)/STEER_MIN_RATE).
+function wheelRotationDeg(roadAngleDeg) {
+  const sign = roadAngleDeg < 0 ? -1 : 1;
+  const a = Math.min(MAX_LOCK_DEG, Math.abs(roadAngleDeg));
+  const timeToA = Math.log(steerRampRate(a) / STEER_MIN_RATE) / STEER_RATE_K;
+  return sign * STEER_HAND_SPEED * timeToA;
+}
+
 function SteeringWheel({ angleDeg, size = 216 }) {
   return (
     <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
       <img
         src={STEERING_WHEEL_IMG} alt=""
         width={size} height={size * (STEERING_WHEEL_VB_H / STEERING_WHEEL_VB_W)}
-        style={{ display: "block", transform: `rotate(${angleDeg * STEERING_WHEEL_RATIO}deg)`, transition: "transform 0.06s linear" }}
+        style={{ display: "block", transform: `rotate(${wheelRotationDeg(angleDeg)}deg)` }}
       />
     </div>
   );
@@ -424,9 +459,16 @@ export default function BusSteeringSimulator() {
   const [Ro, setRo] = useState(3.35);
   const [Wb, setWb] = useState(2.48);
   const [Tw, setTw] = useState(2.1);
-  // steerInput: positive = steer right (offside), negative = steer left (nearside) — reversed vs. the raw geometry angle
+  // steerInput: positive = steer right (offside), negative = steer left (nearside) — reversed vs. the raw geometry angle.
+  // This is the *target* the slider/arrow-keys/lock-buttons set; the actual applied angle
+  // (appliedSteerInput) ramps toward it at a limited, progressive rate — see the "steering
+  // rate limiting" effect below.
   const [steerInput, setSteerInput] = useState(0);
-  const deltaFdeg = -steerInput;
+  const [appliedSteerInput, setAppliedSteerInput] = useState(0);
+  const appliedSteerRef = useRef(0);
+  const steerTargetRef = useRef(0);
+  steerTargetRef.current = steerInput;
+  const deltaFdeg = -appliedSteerInput;
   const [tagRatio, setTagRatio] = useState(1.0);
   const [lockoutOn, setLockoutOn] = useState(true);
   const [lockoutSpeed, setLockoutSpeed] = useState(25);
@@ -612,7 +654,10 @@ export default function BusSteeringSimulator() {
     setWb(num(v.Wb, Wb));
     setTw(num(v.Tw, Tw));
 
-    setSteerInput(num(c.steerInput, 0));
+    const loadedSteer = num(c.steerInput, 0);
+    setSteerInput(loadedSteer);
+    appliedSteerRef.current = loadedSteer; // loaded state applies instantly, no ramp-in
+    setAppliedSteerInput(loadedSteer);
     setTagRatio(num(c.tagRatio, 1));
     setLockoutOn(typeof c.lockoutOn === "boolean" ? c.lockoutOn : true);
     setLockoutSpeed(num(c.lockoutSpeed, 25));
@@ -672,6 +717,37 @@ export default function BusSteeringSimulator() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  // Steering rate limiting: chases appliedSteerInput toward the steerInput target every frame at
+  // the progressive rate from steerRampRate(), rather than snapping instantly. Runs independently
+  // of the drive loop below — turning the wheel takes time whether or not the bus is moving — and
+  // restarts (cancelling any in-flight ramp) whenever the target changes, continuing smoothly from
+  // wherever the applied angle currently is, same as the pose integration's dead-reckoning style.
+  useEffect(() => {
+    if (appliedSteerRef.current === steerInput) return;
+    let raf;
+    let lastT = null;
+    function tick(t) {
+      if (lastT == null) lastT = t;
+      const dt = Math.min((t - lastT) / 1000, 0.05);
+      lastT = t;
+      const target = steerTargetRef.current;
+      const current = appliedSteerRef.current;
+      const diff = target - current;
+      let next;
+      if (Math.abs(diff) < 1e-6) {
+        next = target;
+      } else {
+        const maxStep = steerRampRate(Math.abs(current)) * dt;
+        next = Math.abs(diff) <= maxStep ? target : current + Math.sign(diff) * maxStep;
+      }
+      appliedSteerRef.current = next;
+      setAppliedSteerInput(next);
+      if (next !== target) raf = requestAnimationFrame(tick);
+    }
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [steerInput]);
 
   // Dead-reckoning integration: reads the current geometry/speed from refs each frame, so changing
   // the steering lock mid-drive just changes the curvature the bus is following from where it is,
@@ -1042,6 +1118,8 @@ export default function BusSteeringSimulator() {
         input[type=range]::-webkit-slider-thumb{ -webkit-appearance:none; margin-top:-6px; width:15px; height:15px; border-radius:2px; background:var(--thumb,#ffb937); border:1px solid #0b1c30; }
         input[type=range]::-moz-range-track{ height:3px; background:rgba(200,225,245,0.22); border-radius:2px; }
         input[type=range]::-moz-range-thumb{ width:14px; height:14px; border-radius:2px; background:#ffb937; border:1px solid #0b1c30; }
+        input[type=range].slider-thumb-lg::-webkit-slider-thumb{ width:24px; height:24px; margin-top:-11px; }
+        input[type=range].slider-thumb-lg::-moz-range-thumb{ width:23px; height:23px; }
         .btn{ font-family:'Barlow Condensed',sans-serif; text-transform:uppercase; letter-spacing:0.6px; font-size:15px; padding:8px 12px; border-radius:3px; border:1px solid rgba(200,225,245,0.25); background:rgba(200,225,245,0.04); color:#eaf2f8; cursor:pointer; }
         .btn:active{ transform:translateY(1px); }
         .btnOn{ background:#ffb937; color:#0b1c30; border-color:#ffb937; font-weight:600; }
@@ -1460,9 +1538,9 @@ export default function BusSteeringSimulator() {
           <SectionLabel>Steering &amp; throttle</SectionLabel>
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <SteeringWheel angleDeg={steerInput} />
-              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} />
-              <div style={{ fontSize: 15, color: COL.textDim, margin: "-4px 0 8px" }}>← / → arrow keys nudge the lock — 0.15° steps near straight-ahead (±3°), 0.5° beyond that</div>
+              <SteeringWheel angleDeg={appliedSteerInput} />
+              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} large />
+              <div style={{ fontSize: 15, color: COL.textDim, margin: "-4px 0 8px" }}>← / → arrow keys nudge the lock 1° at a time — the wheel takes up to {LOCK_TO_LOCK_SECONDS}s to reach it lock-to-lock</div>
               <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
                 {[["Full lock left", -50], ["Straight", 0], ["Full lock right", 50]].map(([lbl, v]) => (
                   <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => setSteerInput(v)}>{lbl}</button>

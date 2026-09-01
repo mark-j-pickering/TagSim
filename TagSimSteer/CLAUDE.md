@@ -132,28 +132,54 @@ in place (harmless, just unused). Feel free to remove it.
   — that was tried and explicitly reverted because it breaks "circle centre
   stays exactly centred."
 
-## Steering input resolution (non-uniform, deliberately)
+## Steering input resolution and rate limiting
 
-`STEER_STEPS` (module-level, built once) is **not** a uniform step — it's
-0.15° resolution from −3° to 3°, then 0.5° steps out to full lock (±50°, the
-confirmed max front steer angle for this vehicle).
-This went through several iterations (0.25° → 0.1° → skip-first-two-steps →
-0.2° → 0.15°) chasing a "something going on" floating-point complaint; the
-current implementation builds fine values via integer arithmetic
-(`Math.round(i * 15) / 100`) rather than repeated float division specifically
-to avoid drift. If you touch this, keep values exact/clean and verify with a
-quick Node script (ascending, no duplicates, clean `toFixed(2)` output) before
-shipping — this bit us twice during development.
+`STEER_STEPS` (module-level, built once) is a uniform 1° step from −50° to
+50° (the confirmed max front steer angle for this vehicle). An earlier
+version used non-uniform resolution (fine near straight-ahead, coarse toward
+lock) to avoid collapsing small angles to "straight"; that's no longer needed
+now that `isStraight` is still `deltaFdeg === 0` exactly and steering changes
+are rate-limited/ramped anyway (see below), so 1° is fine everywhere.
 
 `SteppedSlider` maps a `<input type=range>`'s integer index onto
 `STEER_STEPS` via `closestSteerIndex()`; the underlying app state
 (`steerInput`) always stores the real angle value, not an index.
 
 **Sign convention**: the UI-facing `steerInput` state is *inverted* relative
-to the geometry angle — `deltaFdeg = -steerInput` — so that dragging the
-slider right steers the bus right, which was a deliberate late fix (the raw
-geometry angle has the opposite, more "mathematical" sign convention: positive
-= steer toward nearside). Don't remove this indirection.
+to the geometry angle — `deltaFdeg = -appliedSteerInput` — so that dragging
+the slider right steers the bus right, which was a deliberate late fix (the
+raw geometry angle has the opposite, more "mathematical" sign convention:
+positive = steer toward nearside). Don't remove this indirection.
+
+**`steerInput` is a target, not the applied angle.** The slider, arrow keys,
+and the "Full lock left/right"/"Straight" buttons all just move `steerInput`;
+a separate `appliedSteerInput` (state + `appliedSteerRef` for the imperative
+loop) chases it every frame, capped by `steerRampRate()`, and it's
+`appliedSteerInput` that feeds `deltaFdeg`/`computeGeometry` and the
+`SteeringWheel` graphic. This models the time it physically takes to wind the
+steering wheel — `LOCK_TO_LOCK_SECONDS` (3s) is the minimum time a full
+lock-to-lock sweep takes at max input speed, deliberately independent of
+vehicle speed (turning the wheel while parked still takes time).
+
+The rate is **progressive, not constant**: `steerRampRate(absAngleDeg)`
+returns a slower deg/s near dead-centre and a faster one near full lock
+(`STEER_RATE_RATIO`, currently 2×), matching how a real variable-ratio rack is
+geared slower near centre for stability and quicker near lock for
+manoeuvrability. `STEER_MIN_RATE`/`STEER_MAX_RATE` are solved analytically
+from `LOCK_TO_LOCK_SECONDS` and `STEER_RATE_RATIO` (see the comment above
+`STEER_STEPS`), not hand-tuned, so changing either constant keeps the overall
+lock-to-lock time correct. The ramp loop (a `useEffect` keyed on `steerInput`,
+separate from the drive/pose loop) always uses the rate at the *current*
+angle, not the target — so a sweep that passes through centre visibly slows
+down there, same as the real thing.
+
+The decorative `SteeringWheel` graphic's rotation (`wheelRotationDeg()`) is
+derived from the same progressive rate profile via a closed-form integral,
+rather than a flat multiplier — `STEERING_WHEEL_RATIO` (14.4, ~4 turns
+lock-to-lock) is kept only as the *average* ratio, used to derive the assumed
+constant physical hand-turning speed. Don't reintroduce a flat
+`angleDeg * STEERING_WHEEL_RATIO` transform here; it would visually disagree
+with the rate limit driving the actual front wheels.
 
 ## Key metrics reported (all in `computeGeometry`'s return value)
 
