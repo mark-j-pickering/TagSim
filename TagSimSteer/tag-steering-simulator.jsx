@@ -310,10 +310,12 @@ function convexHull(points) {
   return lower.concat(upper);
 }
 
-// Steering resolution: uniform 1° steps across the full ±50° lock range.
+// Steering resolution: uniform 0.5° steps across the full ±50° lock range. Built via integer
+// arithmetic (`Math.round(i * 5) / 10`) rather than repeated float addition to keep values
+// exact/clean — a prior version of this file hit float-drift issues doing it the naive way.
 const STEER_STEPS = (() => {
   const vals = [];
-  for (let i = -50; i <= 50; i++) vals.push(i);
+  for (let i = -100; i <= 100; i++) vals.push(Math.round(i * 5) / 10);
   return vals;
 })();
 
@@ -331,7 +333,7 @@ function closestSteerIndex(val) {
 // steering wheel lock-to-lock. MAX_LOCK_DEG is the confirmed ±50° front steer range;
 // LOCK_TO_LOCK_SECONDS is the minimum time a full lock-to-lock sweep takes at max input speed.
 const MAX_LOCK_DEG = 50;
-const LOCK_TO_LOCK_SECONDS = 3;
+const LOCK_TO_LOCK_SECONDS = 4;
 
 // Progressive (non-constant) ratio: real steering racks gear slower — more wheel turns per
 // degree of road-wheel angle — near straight-ahead for stability, and quicker near full lock for
@@ -1581,7 +1583,7 @@ export default function BusSteeringSimulator() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <SteeringWheel angleDeg={appliedSteerInput} />
               <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} large />
-              <div style={{ fontSize: 15, color: COL.textDim, margin: "-4px 0 8px" }}>← / → arrow keys nudge the lock 1° at a time — the wheel takes up to {LOCK_TO_LOCK_SECONDS}s to reach it lock-to-lock</div>
+              <div style={{ fontSize: 15, color: COL.textDim, margin: "-4px 0 8px" }}>← / → arrow keys nudge the lock 0.5° at a time — the wheel takes up to {LOCK_TO_LOCK_SECONDS}s to reach it lock-to-lock</div>
               <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
                 {[["Full lock left", -50], ["Straight", 0], ["Full lock right", 50]].map(([lbl, v]) => (
                   <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => setSteerInput(v)}>{lbl}</button>

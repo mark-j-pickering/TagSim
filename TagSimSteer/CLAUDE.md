@@ -134,12 +134,15 @@ in place (harmless, just unused). Feel free to remove it.
 
 ## Steering input resolution and rate limiting
 
-`STEER_STEPS` (module-level, built once) is a uniform 1° step from −50° to
-50° (the confirmed max front steer angle for this vehicle). An earlier
-version used non-uniform resolution (fine near straight-ahead, coarse toward
-lock) to avoid collapsing small angles to "straight"; that's no longer needed
-now that `isStraight` is still `deltaFdeg === 0` exactly and steering changes
-are rate-limited/ramped anyway (see below), so 1° is fine everywhere.
+`STEER_STEPS` (module-level, built once) is a uniform 0.5° step from −50° to
+50° (the confirmed max front steer angle for this vehicle), built via integer
+arithmetic (`Math.round(i * 5) / 10`) rather than repeated float addition to
+avoid drift — same lesson as the fine-resolution version that used to live
+here. An earlier version used non-uniform resolution (fine near
+straight-ahead, coarse toward lock) to avoid collapsing small angles to
+"straight"; that's no longer needed now that `isStraight` is still
+`deltaFdeg === 0` exactly and steering changes are rate-limited/ramped anyway
+(see below), so a uniform step is fine everywhere.
 
 `SteppedSlider` maps a `<input type=range>`'s integer index onto
 `STEER_STEPS` via `closestSteerIndex()`; the underlying app state
@@ -157,7 +160,7 @@ a separate `appliedSteerInput` (state + `appliedSteerRef` for the imperative
 loop) chases it every frame, capped by `steerRampRate()`, and it's
 `appliedSteerInput` that feeds `deltaFdeg`/`computeGeometry` and the
 `SteeringWheel` graphic. This models the time it physically takes to wind the
-steering wheel — `LOCK_TO_LOCK_SECONDS` (3s) is the minimum time a full
+steering wheel — `LOCK_TO_LOCK_SECONDS` (4s) is the minimum time a full
 lock-to-lock sweep takes at max input speed, deliberately independent of
 vehicle speed (turning the wheel while parked still takes time).
 
