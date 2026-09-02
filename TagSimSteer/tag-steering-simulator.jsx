@@ -405,9 +405,14 @@ const DRIVE_THE_TURN_TARGET_KMH = 10;
 // recommended default: small, universally supported for short SFX like these). Until real files
 // are present these are just harmless no-ops: a 404 makes play() reject, which is caught and
 // swallowed below rather than surfacing an error.
-const SOUND_HORN = "/sounds/horn.mp3";
-const SOUND_HANDBRAKE_ON = "/sounds/handbrake-on.mp3";
-const SOUND_HANDBRAKE_RELEASE = "/sounds/handbrake-release.mp3";
+// Prefixed with Vite's BASE_URL rather than a bare "/sounds/..." — this app is deployed under a
+// subpath (vite.config.js sets base to "/TagSim/" on GitHub Actions), and a leading-slash path
+// resolves against the domain root regardless of that subpath, 404ing there even though the exact
+// same code works fine in local dev (base "/"). BASE_URL already ends in "/", hence no leading
+// slash on "sounds/...".
+const SOUND_HORN = import.meta.env.BASE_URL + "sounds/horn.mp3";
+const SOUND_HANDBRAKE_ON = import.meta.env.BASE_URL + "sounds/handbrake-on.mp3";
+const SOUND_HANDBRAKE_RELEASE = import.meta.env.BASE_URL + "sounds/handbrake-release.mp3";
 
 function playSound(url) {
   const audio = new Audio(url);

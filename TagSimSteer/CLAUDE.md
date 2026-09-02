@@ -271,12 +271,22 @@ sitting at rest, so it can't stop. Two consequences, both load-bearing:
   the loop's own stale last-known pose.
 
 **Sound files aren't part of this repo.** `SOUND_HORN`/`SOUND_HANDBRAKE_ON`/`SOUND_HANDBRAKE_RELEASE`
-point at `/sounds/horn.mp3`, `/sounds/handbrake-on.mp3`, `/sounds/handbrake-release.mp3` — plain
-runtime paths (not bundled ES imports, unlike the bus photo/steering wheel image) so a missing file
-just 404s instead of breaking the build; `playSound()`/`startHorn()` swallow the resulting rejected
-`play()` promise. Drop real recordings into `public/sounds/` (see the README there) using those
-exact names. MP3 was picked as the suggested format for short SFX like these — small, universally
-supported — but any browser-playable format works since nothing transcodes them.
+point at `sounds/horn.mp3`, `sounds/handbrake-on.mp3`, `sounds/handbrake-release.mp3` under
+`import.meta.env.BASE_URL` — plain runtime paths (not bundled ES imports, unlike the bus
+photo/steering wheel image) so a missing file just 404s instead of breaking the build;
+`playSound()`/`startHorn()` swallow the resulting rejected `play()` promise. Drop real recordings
+into `public/sounds/` (see the README there) using those exact names. MP3 was picked as the
+suggested format for short SFX like these — small, universally supported — but any browser-playable
+format works since nothing transcodes them.
+
+**The `BASE_URL` prefix is load-bearing, not decoration — don't go back to a bare
+`"/sounds/..."`.** This app is deployed to GitHub Pages under a subpath (`vite.config.js` sets
+`base` to `/TagSim/` when `GITHUB_ACTIONS` is set); a leading-slash path resolves against the
+*domain* root regardless of that subpath, so it 404s on the deployed site even though the exact
+same code works fine in local dev (where `base` is `/`, so the two happen to coincide) — this was a
+real bug caught by testing the live deployment, not just local dev. `import.meta.env.BASE_URL` is
+Vite's own always-correct-for-the-current-build answer to "what's the base path," and already ends
+in a trailing slash, hence no leading slash on the `"sounds/..."` half.
 
 ## Key metrics reported (all in `computeGeometry`'s return value)
 

@@ -1,5 +1,6 @@
 Drop your own driver sound-effect recordings in here using these exact filenames
-(referenced directly by tag-steering-simulator.jsx as /sounds/<name>):
+(referenced directly by tag-steering-simulator.jsx as sounds/<name>, prefixed with
+Vite's BASE_URL so it still resolves correctly when deployed under a subpath):
 
   horn.mp3               - plays on loop while the horn (Space) is held, stops on release
   handbrake-on.mp3       - one-shot, plays ~2s after the bus comes to rest
