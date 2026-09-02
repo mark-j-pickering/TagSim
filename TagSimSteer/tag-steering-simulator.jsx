@@ -1779,8 +1779,16 @@ export default function BusSteeringSimulator() {
         <button
           className={"btn" + (animating ? " btnOn" : "")}
           onClick={() => {
-            if (animating) setSpeed(0);
-            else driveToTargetRef.current = DRIVE_THE_TURN_TARGET_KMH;
+            if (animating) {
+              // Also cancels a still-in-progress "Drive the turn" ramp — without this, clicking
+              // Stop before the ramp reaches DRIVE_THE_TURN_TARGET_KMH set speed to 0 but left
+              // driveToTargetRef pointed at 10, so the drive loop's very next frame saw the
+              // pending target and immediately re-accelerated instead of actually stopping.
+              driveToTargetRef.current = null;
+              setSpeed(0);
+            } else {
+              driveToTargetRef.current = DRIVE_THE_TURN_TARGET_KMH;
+            }
           }}
           style={{ position: "absolute", right: 10, bottom: 10, boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
         >

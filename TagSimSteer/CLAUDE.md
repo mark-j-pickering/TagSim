@@ -249,7 +249,13 @@ from held-key state, via the same imperative drive loop that already did pose in
   if ↑ were held, clamping to it and clearing the ref once reached, rather than snapping speed
   there instantly. Braking always clears `driveToTargetRef` (braking should win over any pending
   auto-ramp). While moving, the same button becomes an instant "■ Stop" (`setSpeed(0)`, no ramp —
-  a deliberate asymmetry with the throttle side, since a one-click panic stop is the point).
+  a deliberate asymmetry with the throttle side, since a one-click panic stop is the point) —
+  **and Stop's onClick must also clear `driveToTargetRef.current` itself**, not just call
+  `setSpeed(0)`. This was a real bug: clicking Stop before a "Drive the turn" ramp had reached its
+  target zeroed `speed` but left the ref pointed at 10, so the very next drive-loop frame saw the
+  still-pending target and immediately re-accelerated — the bus never actually reached a stable
+  rest, so the handbrake sound effects (which only fire after 2s continuously at rest, see above)
+  silently never triggered when driven from the buttons rather than the keyboard.
 
 **The drive loop now runs continuously from mount, not just while `speed > 0`.** It used to bail
 out entirely when not "animating"; now it has to keep watching for a throttle press even while
