@@ -148,6 +148,26 @@ straight-ahead, coarse toward lock) to avoid collapsing small angles to
 `STEER_STEPS` via `closestSteerIndex()`; the underlying app state
 (`steerInput`) always stores the real angle value, not an index.
 
+Keyboard steering has two speeds: plain ←/→ nudge one `STEER_STEPS` entry
+(0.5°) at a time; Shift+←/→ jumps by `QUARTER_TURN_STEER_DEG` (5°) instead —
+approximating a quarter *physical* turn of the wheel (90° of hand rotation),
+for winding on a chunk of lock quickly without reaching for the mouse. Not
+the naive `90 / STEERING_WHEEL_RATIO` (=6.25°): `STEERING_WHEEL_RATIO` is
+only the *average* ratio across the full sweep, but the rack is deliberately
+geared slower than that near dead-centre (`steerRampRate`, further up) —
+exactly where this key mostly gets used — so the average-ratio figure
+overshoots a real quarter turn there. 5° is a closer approximation for that
+near-centre case. It's also, deliberately, a whole degree: a fractional value
+like 6.25° sits exactly halfway between two `STEER_STEPS` entries, so
+`closestSteerIndex()`'s tie-break (first-found-smallest, scanning the steps
+ascending) picks a *different* neighbour depending on nudge direction —
++6.25 lands on 6.0°, -6.25 lands on -6.5° — making a left nudge and a right
+nudge unequal. A whole-degree value is itself an exact `STEER_STEPS`
+multiple, so added to any on-grid `steerInput` it lands exactly on-grid
+again with no tie to break, left and right symmetric. `End` sets
+`steerInput` straight to 0 — identical to clicking the "Straight" button,
+just from the keyboard.
+
 **Sign convention**: the UI-facing `steerInput` state is *inverted* relative
 to the geometry angle — `deltaFdeg = -appliedSteerInput` — so that dragging
 the slider right steers the bus right, which was a deliberate late fix (the
@@ -183,6 +203,74 @@ lock-to-lock) is kept only as the *average* ratio, used to derive the assumed
 constant physical hand-turning speed. Don't reintroduce a flat
 `angleDeg * STEERING_WHEEL_RATIO` transform here; it would visually disagree
 with the rate limit driving the actual front wheels.
+
+## Driving controls: throttle, brake, horn, handbrake sounds
+
+Speed is no longer a directly-set value (there used to be a draggable "Throttle" slider and a
+"Drive the turn" button that just snapped speed to a flat 12km/h). It's now simulated every frame
+from held-key state, via the same imperative drive loop that already did pose integration:
+
+- **↑ / ↓ = throttle / brake**, tracked as plain refs (`throttleHeldRef`/`brakeHeldRef`), not React
+  state — they change many times a second while held and never need to cause a render themselves,
+  only the derived `speed` does. Handled in the same keydown/keyup effect as the existing ←/→
+  steering-nudge keys (window-level listeners, ignored while an `INPUT`/`TEXTAREA` has focus).
+- **Acceleration** (`throttleAccel`) is power-limited, not constant-force: strong low-speed pull
+  tapering off toward `MAX_SPEED_KMH` (90), to a confirmed 0-90km/h in exactly `ZERO_TO_MAX_SECONDS`
+  (25s). `THROTTLE_ACCEL_LOW`/`HIGH` aren't hand-tuned — they're solved analytically from that
+  target and a chosen low/high ratio (`THROTTLE_ACCEL_RATIO`), the same closed-form technique
+  `STEER_MIN_RATE`/`STEER_MAX_RATE` use for the steering ramp (see the comment above
+  `THROTTLE_ACCEL_HIGH`). Changing `MAX_SPEED_KMH`, `ZERO_TO_MAX_SECONDS`, or the ratio keeps the
+  0-90 time exact — don't hand-edit the accel constants directly.
+- **Braking** (`brakeDecel`) ramps up the longer it's held — gentle service braking at first,
+  firming to a hard-but-controlled stop over `BRAKE_RAMP_SECONDS`, via `brakeHeldSinceRef` (a
+  timestamp reset every time the key transitions from up to down, not on OS key-repeat). Models a
+  driver leaning harder on the pedal the longer a stop is taking, not a permanent soft brake or an
+  instant panic stop.
+- **No key held = coast at constant speed.** Rolling resistance/engine braking isn't modelled —
+  consistent with the rest of the sim's steady-state-only physics (see "Domain model" above).
+- **Space = horn**, played on loop while held (`hornAudioRef`) and stopped on keyup. `e.preventDefault()`
+  on the Space keydown is load-bearing, not just for scroll: it also suppresses the browser's
+  native "Space activates the focused button" behaviour, which would otherwise double as an
+  unwanted click on whichever toggle button (Bus/Circle, Off-track, Construction, etc.) last had
+  focus.
+- **Handbrake sound effects** are driven by an effect keyed on `atRest` (`speed === 0`), not on
+  `speed` directly — that boolean only flips on an actual rest/moving transition, so the effect
+  doesn't re-run on every fractional-km/h change while driving. Coming to rest arms a
+  `HANDBRAKE_ENGAGE_DELAY_MS` (2s) timer; if the bus pulls away again before it fires, the timer is
+  cancelled (cleanup) and no sound plays at all — the handbrake was never actually set. If it does
+  fire, `handbrakeEngagedRef` flips on and the engage sound plays; pulling away after that plays
+  the release sound and clears the flag.
+- **A window `blur` handler releases every held key/sound state.** Alt-tabbing away mid-keypress
+  never delivers a `keyup`; without this the bus could keep silently accelerating, braking, or
+  honking in the background.
+- **The floating "Drive the turn"/"Stop" button is a convenience wrapper around the same physics,
+  not a separate speed control.** Clicking it while stopped sets `driveToTargetRef.current =
+  DRIVE_THE_TURN_TARGET_KMH` (10) — the drive loop then accelerates toward that target exactly as
+  if ↑ were held, clamping to it and clearing the ref once reached, rather than snapping speed
+  there instantly. Braking always clears `driveToTargetRef` (braking should win over any pending
+  auto-ramp). While moving, the same button becomes an instant "■ Stop" (`setSpeed(0)`, no ramp —
+  a deliberate asymmetry with the throttle side, since a one-click panic stop is the point).
+
+**The drive loop now runs continuously from mount, not just while `speed > 0`.** It used to bail
+out entirely when not "animating"; now it has to keep watching for a throttle press even while
+sitting at rest, so it can't stop. Two consequences, both load-bearing:
+- It skips the `setPose`/trail-sampling work while genuinely idle (`speed === 0` and neither pedal
+  held), so an idle bus doesn't force a render on every animation frame — only the cheap
+  held-key/speed check runs.
+- Anything that resets `pose` from *outside* the loop (Recenter, Load, the vehicle-dimension-change
+  reset effect) must also reset `poseRef.current` directly, in the same place. Previously this
+  didn't matter — the loop only started once "Drive the turn" was pressed, and resynced `poseRef`
+  from `pose` at that point. Now the loop is always running, so if you add another spot that resets
+  `pose` and forget `poseRef`, the very next animation frame will silently overwrite the reset with
+  the loop's own stale last-known pose.
+
+**Sound files aren't part of this repo.** `SOUND_HORN`/`SOUND_HANDBRAKE_ON`/`SOUND_HANDBRAKE_RELEASE`
+point at `/sounds/horn.mp3`, `/sounds/handbrake-on.mp3`, `/sounds/handbrake-release.mp3` — plain
+runtime paths (not bundled ES imports, unlike the bus photo/steering wheel image) so a missing file
+just 404s instead of breaking the build; `playSound()`/`startHorn()` swallow the resulting rejected
+`play()` promise. Drop real recordings into `public/sounds/` (see the README there) using those
+exact names. MP3 was picked as the suggested format for short SFX like these — small, universally
+supported — but any browser-playable format works since nothing transcodes them.
 
 ## Key metrics reported (all in `computeGeometry`'s return value)
 
