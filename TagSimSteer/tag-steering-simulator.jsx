@@ -255,11 +255,13 @@ function projectPosesForward(pose, geom, arcLength, steps) {
   return poses;
 }
 
-// ---------- driver marker icon (supplied artwork: "bcc bus driver head.svg") ----------
-const DRIVER_ICON_VB_W = 1087, DRIVER_ICON_VB_H = 1039;
-const DRIVER_ICON_HEAD_D = "M0 0 C1.19592366 -0.00429709 2.39184733 -0.00859419 3.6240111 -0.0130215 C4.97087592 -0.01276704 6.31774072 -0.01241991 7.6646055 -0.01199049 C9.08598057 -0.01515359 10.50735472 -0.01875211 11.92872769 -0.02274993 C15.87061305 -0.03253162 19.81248337 -0.03599055 23.75437918 -0.03847325 C28.02929697 -0.04222771 32.30420271 -0.05167409 36.57911277 -0.06037748 C45.0741247 -0.07672482 53.56913577 -0.08754194 62.0641582 -0.09665609 C69.12946996 -0.10439081 76.1947752 -0.11446119 83.26008165 -0.12605089 C84.27778045 -0.12771897 85.29547925 -0.12938704 86.34401741 -0.13110567 C88.41938924 -0.13451442 90.49476106 -0.13792595 92.57013288 -0.14134019 C120.65517192 -0.18706193 148.74022482 -0.21749533 176.82528627 -0.24550241 C178.54945381 -0.2472349 178.54945381 -0.2472349 180.30845302 -0.24900238 C225.78445815 -0.29468779 271.26046895 -0.33434188 316.73648943 -0.36102732 C328.00778772 -0.3676512 339.27908585 -0.37452457 350.55038393 -0.38148874 C351.79588453 -0.38225193 353.04138514 -0.38301511 354.32462819 -0.38380143 C394.71957788 -0.40875256 435.1144247 -0.46224141 475.50932087 -0.531507 C517.01215139 -0.60254311 558.51492656 -0.6476777 600.01781857 -0.65900809 C605.87562177 -0.66061309 611.73342484 -0.66250069 617.59122789 -0.66455263 C619.32062145 -0.66514195 619.32062145 -0.66514195 621.08495225 -0.66574319 C639.66629646 -0.67281093 658.24749646 -0.70705655 676.82878538 -0.75121364 C695.49483841 -0.79495287 714.16073365 -0.80951793 732.8268332 -0.79412038 C743.92561683 -0.78584185 755.02385123 -0.79997972 766.122546 -0.84583971 C773.52955959 -0.8742572 780.93620262 -0.87380891 788.34323028 -0.84957484 C792.5683351 -0.83658384 796.79239259 -0.83642471 801.01739629 -0.8713404 C804.85964748 -0.90284428 808.70001842 -0.89766908 812.54222601 -0.8629573 C814.57848419 -0.85409551 816.61479679 -0.88460004 818.65082294 -0.91659108 C827.3144964 -0.7861323 827.3144964 -0.7861323 830.84407942 1.87041713 C832.61588076 3.87497416 834.07450014 5.89747768 835.53622377 8.13340384 C836.4620062 9.19479083 837.40898668 10.23820801 838.37997377 11.25840384 C842.87235249 16.12074316 847.32533513 21.0054554 851.66122377 26.00840384 C854.08172452 28.75163802 856.55823019 31.44224952 859.03622377 34.13340384 C862.63635133 38.04321979 866.18039982 41.99206852 869.66122377 46.00840384 C872.08172452 48.75163802 874.55823019 51.44224952 877.03622377 54.13340384 C880.63635133 58.04321979 884.18039982 61.99206852 887.66122377 66.00840384 C890.08172452 68.75163802 892.55823019 71.44224952 895.03622377 74.13340384 C898.63635133 78.04321979 902.18039982 81.99206852 905.66122377 86.00840384 C908.08172452 88.75163802 910.55823019 91.44224952 913.03622377 94.13340384 C916.63635133 98.04321979 920.18039982 101.99206852 923.66122377 106.00840384 C926.08172452 108.75163802 928.55823019 111.44224952 931.03622377 114.13340384 C934.63635133 118.04321979 938.18039982 121.99206852 941.66122377 126.00840384 C944.08172452 128.75163802 946.55823019 131.44224952 949.03622377 134.13340384 C952.07510395 137.43369306 955.09778422 140.74289667 958.03622377 144.13340384 C961.39945015 148.01157397 964.86958048 151.78868195 968.34432924 155.56650931 C972.77846005 160.38925275 977.16140617 165.25681504 981.53622377 170.13340384 C983.03593505 171.80033031 984.53593698 173.46699533 986.03622377 175.13340384 C986.76712221 175.9493804 987.49802064 176.76535696 988.25106752 177.60606009 C989.85300792 179.37777879 991.47172518 181.13440458 993.10263002 182.87949759 C993.92634096 183.76766165 994.75005189 184.65582571 995.59872377 185.57090384 C996.72987611 186.77553274 996.72987611 186.77553274 997.88388002 188.00449759 C999.53622377 190.13340384 999.53622377 190.13340384 999.53622377 193.13340384 C949.04622377 193.13340384 898.55622377 193.13340384 846.53622377 193.13340384 C845.21622377 199.40340384 843.89622377 205.67340384 842.53622377 212.13340384 C841.64479082 216.24366914 840.74929953 220.35206035 839.83700502 224.45762259 C839.60087495 225.52058554 839.36474489 226.58354849 839.12145936 227.67872244 C829.36444525 271.44412012 818.04420807 314.16183316 799.53622377 355.13340384 C799.09310853 356.11599173 798.6499933 357.09857962 798.19345033 358.1109429 C780.9217158 396.04820056 758.24239463 431.1821585 731.53622377 463.13340384 C731.10648256 463.64951224 730.67674135 464.16562063 730.23397768 464.69736868 C717.32812445 480.15024764 703.55057981 494.71320478 688.53622377 508.13340384 C687.96194643 508.64709524 687.38766908 509.16078665 686.79598939 509.69004446 C666.99745626 527.27619875 645.35544135 542.73172358 622.53622377 556.13340384 C621.88895326 556.51561087 621.24168275 556.8978179 620.57479799 557.29160696 C584.1318041 578.68759716 544.77788202 593.97608338 503.53622377 603.13340384 C502.54042299 603.35480032 501.54462221 603.57619681 500.51864564 603.80430228 C487.09168996 606.72190177 473.60970393 608.77121069 459.97372377 610.38340384 C459.27700563 610.46648794 458.58028749 610.54957205 457.86245668 610.63517386 C440.84677056 612.63728567 423.91398663 613.34437037 406.78622377 613.32090384 C405.44545778 613.31949896 405.44545778 613.31949896 404.07760561 613.3180657 C355.61534724 613.20886801 307.5393415 606.67714521 261.53622377 591.13340384 C260.59665834 590.81790579 259.65709291 590.50240774 258.6890558 590.17734915 C216.56925512 575.86803471 177.71003065 554.29599822 143.10018861 526.39316946 C141.63263592 525.21106333 140.15696615 524.03905443 138.68075502 522.86777884 C131.89226808 517.42131601 125.52177019 511.59511473 119.17245424 505.65195853 C117.55826118 504.15385634 115.9281468 502.67570116 114.29013002 501.20371634 C109.26560018 496.68179461 104.45469919 492.14083235 100.10263002 486.94981009 C98.53680461 485.13407738 96.88720257 483.4839768 95.16122377 481.82090384 C91.42849842 478.14637243 88.1823545 474.13854376 84.90341127 470.05918509 C82.59724981 467.20883041 80.22828281 464.4225591 77.84872377 461.63340384 C60.67350029 441.0072081 45.96729134 418.33208634 32.53622377 395.13340384 C32.10889955 394.39589895 31.68157533 393.65839407 31.24130189 392.89854056 C-0.95871908 336.95037619 -21.25365146 275.25369209 -28.46377623 211.13340384 C-28.63949156 209.65299612 -28.63949156 209.65299612 -28.8187567 208.14268118 C-36.63051565 139.85653272 -27.52777785 66.41924585 -6.46377623 1.13340384 C-4.72738871 -0.60298368 -2.36442651 0.00371838 0 0 Z";
-const DRIVER_ICON_CAP_D = "M0 0 C318.45 0 636.9 0 965 0 C963.8750129 10.12488389 963.8750129 10.12488389 963.18344116 13.52584839 C963.02708159 14.30473262 962.87072203 15.08361685 962.70962429 15.88610363 C962.45576505 17.11979923 962.45576505 17.11979923 962.19677734 18.37841797 C962.01558633 19.27518659 961.83439531 20.1719552 961.64771366 21.09589863 C961.04746875 24.06208783 960.44167968 27.02711648 959.8359375 29.9921875 C959.40718536 32.10615123 958.97881365 34.22019214 958.55079651 36.33430481 C957.40169398 42.00549356 956.24797962 47.67573462 955.09330368 53.34579086 C953.162447 62.83258207 951.2395419 72.3209912 949.31545067 81.80915642 C948.83068951 84.19924285 948.34575557 86.58929424 947.86065102 88.97931099 C944.76839719 104.21489658 941.70344641 119.45538322 938.69140625 134.70703125 C929.52621397 181.08933298 919.86326389 227.2903774 907.86328125 273.0390625 C907.68785797 273.70807587 907.51243469 274.37708923 907.33169556 275.06637573 C906.62358314 277.7422452 905.87567811 280.37296567 905 283 C624.5 283 344 283 55 283 C53.53652273 278.60956818 52.43889291 274.67333919 51.55187988 270.177948 C51.41996618 269.51504511 51.28805248 268.85214222 51.15214139 268.16915137 C50.71294093 265.95707356 50.27932809 263.74393867 49.84570312 261.53076172 C49.52981131 259.93364008 49.21357725 258.33658611 48.89702892 256.73959446 C48.03484836 252.38466367 47.17754516 248.02878522 46.32108474 243.67272639 C45.41021603 239.04436867 44.49484643 234.4169011 43.58003235 229.7893219 C41.8208418 220.88656843 40.06586697 211.98298931 38.31263107 203.07906145 C36.90686828 195.93994166 35.49984676 188.80107114 34.09188843 181.66238403 C33.89324261 180.65518049 33.69459679 179.64797695 33.4899314 178.61025208 C33.08892854 176.57703972 32.68792369 174.54382776 32.28691685 172.51061618 C29.70766717 159.43254969 27.12957551 146.35425582 24.55461121 133.27534485 C24.36253006 132.29972861 24.17044891 131.32411237 23.97254711 130.318932 C23.78200046 129.35110808 23.59145381 128.38328416 23.39513302 127.38613224 C19.96589989 109.96851388 16.52916438 92.5524299 13.07730103 75.13928223 C11.55161789 67.44257703 10.03080408 59.74491444 8.51250648 52.04674911 C7.57702422 47.3044332 6.63921208 42.56260883 5.6953125 37.82196045 C4.84362035 33.54388471 3.99878401 29.26451834 3.15981102 24.98393059 C2.8652937 23.48764237 2.56824975 21.99184851 2.26827431 20.49664497 C1.87082513 18.51404614 1.48359925 16.52940596 1.09692383 14.54467773 C0.88272293 13.46194077 0.66852203 12.3792038 0.4478302 11.26365662 C0 8 0 8 0 0 Z";
-
+// ---------- driver marker icon (supplied artwork: "driver icon.svg") ----------
+// The source file was an unoptimized per-pixel raster trace (thousands of tiny <path> elements,
+// 400KB+) rather than real vector art -- same situation as the steering wheel icon below, same
+// fix: rasterized once to a PNG data URI here instead of inlined as SVG markup, for the same
+// visual result without bloating this file with pixel paths.
+const DRIVER_ICON_PX_W = 230, DRIVER_ICON_PX_H = 253;
+const DRIVER_ICON_IMG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAOYAAAD9CAMAAACfpfvRAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAACZUExURf/Zaf/WW//Zav/YY//eff/WXv/bcv/ee//WXf/XYv/efP/ZZv/bcf/cdf/ZZ//XYf/YZP/bbv/ff//WXP/YZv/XXv/cdP/dev/bb//XYP/def/XX//fgP/abv/deP/YZf/aa//fgv/ZaP/abf/cc//efv/dd//ddv/cdv/fgf/YYv/ffv/bcP/abP/ccv/cd//aav/dewAAAIR2YFEAAAAzdFJOU///////////////////////////////////////////////////////////////////AHGevY4AAAAJcEhZcwAADsIAAA7CARUoSoAAAAAZdEVYdFNvZnR3YXJlAFBhaW50Lk5FVCA1LjEuMTITAUd0AAAAuGVYSWZJSSoACAAAAAUAGgEFAAEAAABKAAAAGwEFAAEAAABSAAAAKAEDAAEAAAACAAAAMQECABEAAABaAAAAaYcEAAEAAABsAAAAAAAAAPJ2AQDoAwAA8nYBAOgDAABQYWludC5ORVQgNS4xLjEyAAADAACQBwAEAAAAMDIzMAGgAwABAAAAAQAAAAWgBAABAAAAlgAAAAAAAAACAAEAAgAEAAAAUjk4AAIABwAEAAAAMDEwMAAAAACDfy8cctDT3wAACzpJREFUeF7tndmC2zQUQDu0hemwtGWg7LRAWyhQlvz/x2FbJ4kka7mSriIn5DxF0vVyYjuxtfnB7n/BVfOSuGpeElfNS+KqeUl00nxwc8OnbdBH82biAz5vgh6aD2fLbR1Ofc1HRvLCNR8jedGaH6I48xF5W0BXE0HDLZlbQFPzA/z2kL0FFDWRO0L+FlDTfIKbBSVbQEnzDjOHjyncADqat4h5ULoBNDQ/wWoF5RtAQROnNZ8SsAGaNT/DaQ0Bm6BVE6U1nxGwDdo0n+K0hoCt0KL5EUprnhGxGRo0I/8iEwTMTKlHfBxJteZzYxTgKRET/NWQGkitptn/EJ8TMXFP1s09GcOo0/yC3V/zJRETL8iaeULeKKo02fcAXxExYV+6X5M3jArNb9j3NdaD9LdkLZA3kGJNZ/9dPiRk4juyZl6QN5JSzcOvyhoiJr4nZ2YbVSVlmj+w7wGsy8++N/qR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";
 // ---------- steering wheel icon (supplied artwork: "steering wheel-2.svg") ----------
 // The source file was an unoptimized per-pixel raster trace (7000+ tiny <path> elements,
 // 1MB+) rather than real vector art, so it's rasterized once to a PNG data URI here instead
@@ -352,6 +354,66 @@ function steerRampRate(absAngleDeg) {
   const a = Math.min(MAX_LOCK_DEG, Math.max(0, absAngleDeg));
   return STEER_MIN_RATE + STEER_RATE_K * a;
 }
+
+// ---------- driving controls: throttle / brake ----------
+// Speed is no longer a directly-set value — the up/down arrow keys drive it through this physics
+// each frame (see the drive loop in the component body); the side-panel "Speed" gauge is now a
+// read-only speedometer.
+const MAX_SPEED_KMH = 90;
+// Confirmed target: 0-90km/h in ZERO_TO_MAX_SECONDS flat out. Acceleration is power-limited, not
+// constant-force — strong low-speed pull that tapers off approaching top speed (real buses don't
+// pull as hard at 80km/h as they do off the line) — so THROTTLE_ACCEL_LOW/HIGH aren't hand-tuned
+// guesses, they're solved analytically from that target the same way STEER_MIN_RATE/STEER_MAX_RATE
+// are solved from LOCK_TO_LOCK_SECONDS above: with accel(v) linear in speed, accel(v) = HIGH + k*v
+// where k = (LOW-HIGH)/vmax, integrating dt = dv/accel(v) from 0 to vmax gives
+// time = vmax/(LOW-HIGH)·ln(LOW/HIGH) — solve that for HIGH given a chosen LOW/HIGH ratio (how much
+// harder it pulls off the line than near top speed) and ZERO_TO_MAX_SECONDS, same closed form as
+// the steering ramp. Changing MAX_SPEED_KMH, ZERO_TO_MAX_SECONDS, or the ratio keeps the 0-90 time
+// correct automatically — don't hand-edit THROTTLE_ACCEL_LOW/HIGH directly.
+const ZERO_TO_MAX_SECONDS = 25;
+const THROTTLE_ACCEL_RATIO = 3; // pulls this many times harder away from rest than near top speed
+const MAX_SPEED_MS = MAX_SPEED_KMH / 3.6;
+const THROTTLE_ACCEL_HIGH = (MAX_SPEED_MS * Math.log(THROTTLE_ACCEL_RATIO)) / (ZERO_TO_MAX_SECONDS * (THROTTLE_ACCEL_RATIO - 1)); // m/s^2, near top speed
+const THROTTLE_ACCEL_LOW = THROTTLE_ACCEL_HIGH * THROTTLE_ACCEL_RATIO; // m/s^2, accelerating away from rest
+function throttleAccel(speedKmh) {
+  const t = Math.min(1, speedKmh / MAX_SPEED_KMH);
+  return THROTTLE_ACCEL_LOW + (THROTTLE_ACCEL_HIGH - THROTTLE_ACCEL_LOW) * t;
+}
+// Braking ramps up the longer it's held: gentle service braking at first, firming up over
+// BRAKE_RAMP_SECONDS to a hard-but-controlled (not wheel-locking) stop — modelling a driver
+// leaning harder on the pedal the longer a stop is taking, rather than either a permanently soft
+// brake or an instant panic stop. BRAKE_DECEL_MAX (~0.55g) is representative of a firm stop with
+// good service brakes on dry road, not a true ABS emergency stop.
+const BRAKE_RAMP_SECONDS = 3;
+const BRAKE_DECEL_INITIAL = 1.5; // m/s^2
+const BRAKE_DECEL_MAX = 5.5; // m/s^2
+function brakeDecel(heldSeconds) {
+  const t = Math.min(1, heldSeconds / BRAKE_RAMP_SECONDS);
+  return BRAKE_DECEL_INITIAL + (BRAKE_DECEL_MAX - BRAKE_DECEL_INITIAL) * t;
+}
+// How long the bus must sit at 0 speed before the handbrake sound fires (see the handbrake effect
+// in the component body).
+const HANDBRAKE_ENGAGE_DELAY_MS = 2000;
+// The speed the "Drive the turn" button ramps up to (via the same throttle physics as holding ↑,
+// see driveToTargetRef) — a quick, one-click way to get the bus rolling at a sensible pace to see
+// the current turn, without having to hold the throttle key down yourself.
+const DRIVE_THE_TURN_TARGET_KMH = 10;
+
+// ---------- driver sound effects ----------
+// These audio files aren't part of the repo — drop your own recordings into `public/sounds/`
+// (created alongside this file) using these exact names, any browser-supported format (MP3 is the
+// recommended default: small, universally supported for short SFX like these). Until real files
+// are present these are just harmless no-ops: a 404 makes play() reject, which is caught and
+// swallowed below rather than surfacing an error.
+const SOUND_HORN = "/sounds/horn.mp3";
+const SOUND_HANDBRAKE_ON = "/sounds/handbrake-on.mp3";
+const SOUND_HANDBRAKE_RELEASE = "/sounds/handbrake-release.mp3";
+
+function playSound(url) {
+  const audio = new Audio(url);
+  audio.play().catch(() => {});
+  return audio;
+}
 const COL = {
   bg: "#0b1c30", panel: "#0e2338", panelAlt: "#0a1a2c",
   grid: "rgba(200,225,245,0.05)", gridMajor: "rgba(200,225,245,0.10)",
@@ -406,6 +468,16 @@ function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber
 // used only to derive the assumed constant physical hand-turning speed.
 const STEERING_WHEEL_RATIO = 14.4;
 const STEER_HAND_SPEED = (STEERING_WHEEL_RATIO * MAX_LOCK_DEG * 2) / LOCK_TO_LOCK_SECONDS; // deg/s, physical wheel
+// Shift+←/→ (see the key-handling effect below) nudges by approximately a quarter physical turn
+// of the wheel — 90° of hand rotation — a coarser, quicker alternative to the fine 0.5°
+// STEER_STEPS nudge, for winding on a chunk of lock fast. 5°, not 90/STEERING_WHEEL_RATIO=6.25°:
+// STEERING_WHEEL_RATIO is only the *average* ratio across the full sweep — the rack is
+// deliberately geared slower than that near dead-centre (see steerRampRate above), which is
+// exactly where this key is mostly used, so 6.25° overshoots a real quarter turn there. 5° is a
+// closer approximation for that near-centre case, and — same reasoning as before — a whole degree
+// keeps it an exact STEER_STEPS multiple, so left/right nudges stay symmetric with no
+// closestSteerIndex() tie to break.
+const QUARTER_TURN_STEER_DEG = 5;
 
 // Closed-form time to sweep the road-wheel angle from 0 to |roadAngleDeg| under the linear
 // rate(angle) profile above: time(0→x) = (1/STEER_RATE_K)·ln(rate(x)/STEER_MIN_RATE).
@@ -428,18 +500,50 @@ function SteeringWheel({ angleDeg, size = 216 }) {
   );
 }
 
-function VerticalSlider({ label, unit, value, min, max, step, onChange, accent = COL.amber, trackLength = 168 }) {
+// Speed is driven entirely by the ↑/↓ keys and the "Drive the turn"/"Stop" button now (see the
+// drive-loop physics) — there's nothing left for a control here to set, so this is a read-only
+// dial gauge, not a slider. Sweeps 270° (a gap at the bottom, classic speedometer layout) with
+// major ticks/labels every `step` km/h and a digital readout in that bottom gap.
+function SpeedGauge({ label, unit, value, max, step = 10, accent = COL.amber }) {
+  const cx = 100, cy = 100;
+  const START_ANGLE = 135, SWEEP = 270; // degrees; 0deg = 3 o'clock, clockwise (SVG y-down convention)
+  const polar = (r, angleDeg) => {
+    const rad = toRad(angleDeg);
+    return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
+  };
+  const angleForValue = (v) => START_ANGLE + (Math.min(max, Math.max(0, v)) / max) * SWEEP;
+  const arcPath = (r, a0, a1) => {
+    const p0 = polar(r, a0), p1 = polar(r, a1);
+    const largeArc = Math.abs(a1 - a0) > 180 ? 1 : 0;
+    return `M ${p0.x} ${p0.y} A ${r} ${r} 0 ${largeArc} 1 ${p1.x} ${p1.y}`;
+  };
+  const ticks = [];
+  for (let v = 0; v <= max; v += step) ticks.push(v);
+  const needleAngle = angleForValue(value);
+  const needleTip = polar(74, needleAngle);
+  const needleTail = polar(14, needleAngle + 180);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 76 }}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 150 }}>
       <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", textAlign: "center" }}>{label}</span>
-      <div style={{ position: "relative", width: 40, height: trackLength, margin: "6px 0" }}>
-        <input
-          type="range" min={min} max={max} step={step} value={value}
-          onChange={(e) => onChange(parseFloat(e.target.value))}
-          style={{ position: "absolute", top: "50%", left: "50%", width: trackLength, height: 4, transform: "translate(-50%, -50%) rotate(-90deg)", accentColor: accent }}
-        />
-      </div>
-      <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text }}>{value.toFixed(step < 1 ? 2 : 0)}{unit}</span>
+      <svg viewBox="0 0 200 200" width={150} height={150}>
+        <path d={arcPath(82, START_ANGLE, START_ANGLE + SWEEP)} fill="none" stroke="rgba(200,225,245,0.14)" strokeWidth="6" strokeLinecap="round" />
+        <path d={arcPath(82, START_ANGLE, needleAngle)} fill="none" stroke={accent} strokeWidth="6" strokeLinecap="round" opacity="0.85" />
+        {ticks.map((v) => {
+          const a = angleForValue(v);
+          const outer = polar(82, a), inner = polar(70, a), labelP = polar(56, a);
+          return (
+            <g key={v}>
+              <line x1={outer.x} y1={outer.y} x2={inner.x} y2={inner.y} stroke={COL.text} strokeWidth="2" />
+              <text x={labelP.x} y={labelP.y + 4} textAnchor="middle" fontFamily="'Space Mono',monospace" fontSize="11" fill={COL.textDim}>{v}</text>
+            </g>
+          );
+        })}
+        <line x1={needleTail.x} y1={needleTail.y} x2={needleTip.x} y2={needleTip.y} stroke={accent} strokeWidth="3" strokeLinecap="round" />
+        <circle cx={cx} cy={cy} r="7" fill={accent} stroke={COL.panelAlt} strokeWidth="2" />
+        <text x={cx} y="166" textAnchor="middle" fontFamily="'Space Mono',monospace" fontSize="22" fontWeight="700" fill={COL.text}>{Math.round(value)}</text>
+        <text x={cx} y="183" textAnchor="middle" fontFamily="'Space Mono',monospace" fontSize="10" fill={COL.textDim}>{unit}</text>
+      </svg>
     </div>
   );
 }
@@ -476,8 +580,9 @@ export default function BusSteeringSimulator() {
   const [lockoutSpeed, setLockoutSpeed] = useState(25);
   const [speed, setSpeed] = useState(0);
   const [showBand, setShowBand] = useState(true);
-  // "Driving" is just speed > 0 — not independent state — so dragging the throttle slider
-  // itself starts/stops the animation and keeps the Drive/Stop button in sync, not only the button.
+  // "Driving" is just speed > 0 — not independent state. Speed itself is simulated by the drive
+  // loop from the up/down arrow key state (see below); this is purely a derived display/UI flag,
+  // e.g. for showing the floating Stop button.
   const animating = speed > 0;
   const [showGeom, setShowGeom] = useState(false);
   const [showDims, setShowDims] = useState(false);
@@ -555,6 +660,19 @@ export default function BusSteeringSimulator() {
   const skipResetRef = useRef(false);
   const fileInputRef = useRef(null);
 
+  // Driver controls: up/down arrow key state read imperatively by the drive loop each frame (see
+  // below), rather than React state — these change many times a second while held and never need
+  // to trigger a render themselves, only the derived speed does.
+  const throttleHeldRef = useRef(false);
+  const brakeHeldRef = useRef(false);
+  const brakeHeldSinceRef = useRef(null); // performance.now() timestamp of the current brake press, for the progressive ramp
+  const hornAudioRef = useRef(null);
+  const handbrakeEngagedRef = useRef(false);
+  // Set by the "Drive the turn" button: a one-shot target (km/h) the drive loop accelerates toward
+  // using the same throttle physics as holding ↑, then clears once reached — a quick-start
+  // convenience rather than a second, separate speed control. Braking cancels it outright.
+  const driveToTargetRef = useRef(null);
+
   const geom = useMemo(
     () => computeGeometry({ Lfd, Ldt, Fo, Ro, Wb, Tw, deltaFdeg, tagRatio, lockoutOn, lockoutSpeed, speed }),
     [Lfd, Ldt, Fo, Ro, Wb, Tw, deltaFdeg, tagRatio, lockoutOn, lockoutSpeed, speed]
@@ -608,6 +726,7 @@ export default function BusSteeringSimulator() {
   // change invalidates any existing trail the same way — it was painted by a different-size bus.
   useEffect(() => {
     if (skipResetRef.current) { skipResetRef.current = false; return; }
+    poseRef.current = { x: 0, y: 0, theta: 0 }; // drive loop runs continuously now, so this must be resynced directly, not just the state
     setPose({ x: 0, y: 0, theta: 0 });
     clearTrail();
   }, [Lfd, Ldt, Fo, Ro, Wb, Tw]);
@@ -703,21 +822,79 @@ export default function BusSteeringSimulator() {
     reader.readAsText(file);
   }
 
-  // Left/Right arrow keys nudge the steering lock, unless focus is on a form control (which
-  // already has its own arrow-key behaviour, e.g. another slider).
+  function startHorn() {
+    if (hornAudioRef.current) return;
+    const audio = new Audio(SOUND_HORN);
+    audio.loop = true;
+    audio.play().catch(() => {});
+    hornAudioRef.current = audio;
+  }
+  function stopHorn() {
+    const audio = hornAudioRef.current;
+    if (audio) { audio.pause(); audio.currentTime = 0; }
+    hornAudioRef.current = null;
+  }
+
+  // The driver-operation keys: Left/Right nudge the steering lock (Shift+Left/Right jumps a
+  // coarser quarter-turn instead, see QUARTER_TURN_STEER_DEG above), End centres it (same as the
+  // "Straight" button); Up/Down are held-down throttle/brake, read imperatively by the drive loop
+  // below rather than causing a render per keystroke; Space is the horn, playing for as long as
+  // it's held. All are ignored while focus is on a form control (which already has its own
+  // arrow-key behaviour, e.g. another slider).
   useEffect(() => {
+    function isFormFocused(e) {
+      return e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA");
+    }
+    function nudgeByRoadDeg(current, deltaDeg) {
+      const target = Math.max(-MAX_LOCK_DEG, Math.min(MAX_LOCK_DEG, current + deltaDeg));
+      return STEER_STEPS[closestSteerIndex(target)];
+    }
     function onKeyDown(e) {
-      if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA")) return;
+      if (isFormFocused(e)) return;
       if (e.key === "ArrowLeft") {
         e.preventDefault();
-        setSteerInput((v) => STEER_STEPS[Math.max(0, closestSteerIndex(v) - 1)]);
+        if (e.shiftKey) setSteerInput((v) => nudgeByRoadDeg(v, -QUARTER_TURN_STEER_DEG));
+        else setSteerInput((v) => STEER_STEPS[Math.max(0, closestSteerIndex(v) - 1)]);
       } else if (e.key === "ArrowRight") {
         e.preventDefault();
-        setSteerInput((v) => STEER_STEPS[Math.min(STEER_STEPS.length - 1, closestSteerIndex(v) + 1)]);
+        if (e.shiftKey) setSteerInput((v) => nudgeByRoadDeg(v, QUARTER_TURN_STEER_DEG));
+        else setSteerInput((v) => STEER_STEPS[Math.min(STEER_STEPS.length - 1, closestSteerIndex(v) + 1)]);
+      } else if (e.key === "End") {
+        e.preventDefault();
+        setSteerInput(0);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        throttleHeldRef.current = true;
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        if (!brakeHeldRef.current) brakeHeldSinceRef.current = performance.now();
+        brakeHeldRef.current = true;
+      } else if (e.code === "Space") {
+        e.preventDefault();
+        if (!e.repeat) startHorn();
       }
     }
+    function onKeyUp(e) {
+      if (e.key === "ArrowUp") throttleHeldRef.current = false;
+      else if (e.key === "ArrowDown") { brakeHeldRef.current = false; brakeHeldSinceRef.current = null; }
+      else if (e.code === "Space") stopHorn();
+    }
+    function onBlur() {
+      // Losing window focus mid-keypress (alt-tab, etc.) never delivers a keyup — release
+      // everything so the bus doesn't silently keep accelerating/braking/honking in the background.
+      throttleHeldRef.current = false;
+      brakeHeldRef.current = false;
+      brakeHeldSinceRef.current = null;
+      stopHorn();
+    }
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
   }, []);
 
   // Steering rate limiting: chases appliedSteerInput toward the steerInput target every frame at
@@ -753,35 +930,82 @@ export default function BusSteeringSimulator() {
 
   // Dead-reckoning integration: reads the current geometry/speed from refs each frame, so changing
   // the steering lock mid-drive just changes the curvature the bus is following from where it is,
-  // rather than restarting the loop or resetting position. `poseRef` is seeded from the latest
-  // `pose` state whenever a drive starts, then driven forward imperatively each tick — trail
-  // sampling needs the freshly-integrated value synchronously, which a functional setPose update
-  // can't give us without pushing the sampling side effect into the updater itself (unsafe under
-  // StrictMode's double-invocation of updater functions).
+  // rather than restarting the loop or resetting position. `poseRef` is the source of truth during
+  // this imperative loop — trail sampling needs the freshly-integrated value synchronously, which
+  // a functional setPose update can't give us without pushing the sampling side effect into the
+  // updater itself (unsafe under StrictMode's double-invocation of updater functions). Any code
+  // that resets `pose` externally (Recenter, Load, the vehicle-dimension-change effect above) must
+  // also reset `poseRef.current` directly, since this loop now runs continuously from mount and
+  // would otherwise overwrite the reset with its own stale last-known pose on the very next frame.
+  //
+  // The loop itself never stops (previously it only ran while speed > 0): speed is now simulated
+  // here too, from the throttle/brake key state, so it has to keep watching for a throttle press
+  // even while sitting at rest. Pose/trail updates are skipped while genuinely idle (speed exactly
+  // 0 and neither pedal held) so an idle bus doesn't cause a render on every animation frame.
   useEffect(() => {
-    if (!animating) { lastTRef.current = null; return; }
     poseRef.current = pose;
     function step(t) {
       if (lastTRef.current == null) lastTRef.current = t;
       const dt = Math.min((t - lastTRef.current) / 1000, 0.05);
       lastTRef.current = t;
-      const g = geomRef.current;
-      const v = (speedRef.current * 1000) / 3600;
-      const omega = g.isStraight ? 0 : v / g.R;
-      const prev = poseRef.current;
-      const next = {
-        x: prev.x + v * dt * Math.cos(prev.theta),
-        y: prev.y + v * dt * Math.sin(prev.theta),
-        theta: prev.theta + omega * dt,
-      };
-      poseRef.current = next;
-      setPose(next);
-      maybeSampleTrail(next, g);
+
+      let nextSpeed = speedRef.current;
+      if (brakeHeldRef.current) {
+        driveToTargetRef.current = null; // braking always overrides/cancels the "Drive the turn" auto-ramp
+        const heldS = brakeHeldSinceRef.current != null ? (t - brakeHeldSinceRef.current) / 1000 : 0;
+        nextSpeed = Math.max(0, nextSpeed - brakeDecel(heldS) * 3.6 * dt);
+      } else if (throttleHeldRef.current || driveToTargetRef.current != null) {
+        nextSpeed = Math.min(MAX_SPEED_KMH, nextSpeed + throttleAccel(nextSpeed) * 3.6 * dt);
+        if (driveToTargetRef.current != null && nextSpeed >= driveToTargetRef.current) {
+          nextSpeed = driveToTargetRef.current; // clamp exactly to the target rather than overshoot it
+          driveToTargetRef.current = null;
+        }
+      }
+      if (nextSpeed !== speedRef.current) {
+        speedRef.current = nextSpeed;
+        setSpeed(nextSpeed);
+      }
+
+      if (speedRef.current > 0) {
+        const g = geomRef.current;
+        const v = (speedRef.current * 1000) / 3600;
+        const omega = g.isStraight ? 0 : v / g.R;
+        const prev = poseRef.current;
+        const next = {
+          x: prev.x + v * dt * Math.cos(prev.theta),
+          y: prev.y + v * dt * Math.sin(prev.theta),
+          theta: prev.theta + omega * dt,
+        };
+        poseRef.current = next;
+        setPose(next);
+        maybeSampleTrail(next, g);
+      }
       rafRef.current = requestAnimationFrame(step);
     }
     rafRef.current = requestAnimationFrame(step);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [animating]);
+  }, []);
+
+  // Handbrake sound effects: keyed on "at rest" as a boolean rather than on `speed` directly, so
+  // this only re-runs on the rest/moving transition, not on every fractional-km/h change while
+  // driving. Coming to rest arms a 2s timer (cancelled if the bus moves again before it fires); if
+  // that timer fires, the handbrake is considered engaged and stays that way until the bus next
+  // pulls away, at which point the release sound plays. Moving off again before the 2s is up means
+  // the handbrake was never actually set, so no release sound plays for that stop.
+  const atRest = speed === 0;
+  useEffect(() => {
+    if (atRest) {
+      const timer = setTimeout(() => {
+        handbrakeEngagedRef.current = true;
+        playSound(SOUND_HANDBRAKE_ON);
+      }, HANDBRAKE_ENGAGE_DELAY_MS);
+      return () => clearTimeout(timer);
+    }
+    if (handbrakeEngagedRef.current) {
+      handbrakeEngagedRef.current = false;
+      playSound(SOUND_HANDBRAKE_RELEASE);
+    }
+  }, [atRest]);
 
   // The auto-blend near straight-ahead (below) is already smooth by construction — it's a
   // continuous function of the steering angle, which itself moves in small steps. What needs an
@@ -925,14 +1149,14 @@ export default function BusSteeringSimulator() {
   };
   // Driver sits at the front-offside corner, ahead of the front axle — this fleet is
   // right-hand-drive (Australian), and the driver's position is forward of the front wheels.
-  // Icon is the supplied artwork (DRIVER_ICON_VIEWBOX/PATHS below), embedded as a nested SVG sized
-  // from a fixed real-world width so it scales with the vehicle and view zoom like the mirror/lights,
-  // rather than staying a fixed screen size.
+  // Icon is the supplied artwork (DRIVER_ICON_IMG above), sized from a fixed real-world width so
+  // it scales with the vehicle and view zoom like the mirror/lights, rather than staying a fixed
+  // screen size.
   const driverLocal = { x: geom.Lfd + geom.Fo - 0.80, y: -(halfWbody - 0.4) };
   const driverScreen = toScreen(displayedView, poseTransform(driverLocal, pose));
-  const DRIVER_ICON_WORLD_W = 0.55; // metres
+  const DRIVER_ICON_WORLD_W = 0.6875; // metres (0.55 * 1.25)
   const driverIconScreenW = DRIVER_ICON_WORLD_W * displayedView.scale;
-  const driverIconScreenH = driverIconScreenW * (DRIVER_ICON_VB_H / DRIVER_ICON_VB_W);
+  const driverIconScreenH = driverIconScreenW * (DRIVER_ICON_PX_H / DRIVER_ICON_PX_W);
 
   // Nearside mirror — mounted at the front-nearside body corner, angled backward and outward
   // along the nearside edge. The centre is only pushed out 70% of the half-length (rather than a
@@ -1303,18 +1527,16 @@ export default function BusSteeringSimulator() {
           <line x1={arrowScreen.headL.x} y1={arrowScreen.headL.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
           <line x1={arrowScreen.headR.x} y1={arrowScreen.headR.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
 
-          {/* driver marker — offside/front, right-hand-drive. Supplied artwork, embedded as a
-              nested SVG sized from a fixed real-world width so it scales with the vehicle and
-              view zoom like the mirror/lights, rather than staying a fixed screen size. Not
-              rotated with vehicle heading — a stylised location marker, not a facing indicator. */}
-          <svg
+          {/* driver marker — offside/front, right-hand-drive. Supplied artwork (rasterized, see
+              DRIVER_ICON_IMG above), sized from a fixed real-world width so it scales with the
+              vehicle and view zoom like the mirror/lights, rather than staying a fixed screen
+              size. Not rotated with vehicle heading — a stylised location marker, not a facing
+              indicator. */}
+          <image
+            href={DRIVER_ICON_IMG}
             x={driverScreen.x - driverIconScreenW / 2} y={driverScreen.y - driverIconScreenH / 2}
             width={driverIconScreenW} height={driverIconScreenH}
-            viewBox={`0 0 ${DRIVER_ICON_VB_W} ${DRIVER_ICON_VB_H}`}
-          >
-            <path d={DRIVER_ICON_HEAD_D} fill="#FED700" transform="translate(77.46377623081207,423.8665961623192)" />
-            <path d={DRIVER_ICON_CAP_D} fill="#0025FE" transform="translate(2,65)" />
-          </svg>
+          />
 
           {/* nearside mirror */}
           <polygon points={ptsToPath(mirrorScreen)} fill="#9aa5b1" stroke="#0b1c30" strokeWidth="0.8" />
@@ -1495,6 +1717,7 @@ export default function BusSteeringSimulator() {
               onClick={() => {
                 setRecenterTransition({ fromView: displayedView, startTime: performance.now() });
                 setRecenterT(0);
+                poseRef.current = { x: 0, y: 0, theta: 0 }; // drive loop runs continuously — resync it directly, not just the state
                 setPose({ x: 0, y: 0, theta: 0 });
                 setZoom(1);
               }}
@@ -1550,9 +1773,15 @@ export default function BusSteeringSimulator() {
             Trail paused — outside 1km² mapped area
           </div>
         )}
+        {/* Day-to-day driving is the up/down arrow keys (see the drive-loop physics above); this
+            button is a one-click convenience: start from rest by ramping to DRIVE_THE_TURN_TARGET_KMH
+            via that same throttle physics, or an immediate full stop once moving. */}
         <button
           className={"btn" + (animating ? " btnOn" : "")}
-          onClick={() => setSpeed(animating ? 0 : 12)}
+          onClick={() => {
+            if (animating) setSpeed(0);
+            else driveToTargetRef.current = DRIVE_THE_TURN_TARGET_KMH;
+          }}
           style={{ position: "absolute", right: 10, bottom: 10, boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
         >
           {animating ? "■ Stop" : "▶ Drive the turn"}
@@ -1578,19 +1807,28 @@ export default function BusSteeringSimulator() {
             <ReadCell label="Tail swing vs #8" value={geom.isStraight ? "0.0 m" : fmt(geom.tailSwing8) + " m"} accent={COL.tailSwing} />
           </div>
 
+          <SectionLabel>Driver controls</SectionLabel>
+          <div style={{ fontSize: 14, color: COL.textDim, lineHeight: 1.7, marginBottom: 10 }}>
+            <div>↑ / ↓ — Accelerate / brake. Braking starts gentle and firms up the longer it's held.</div>
+            <div>← / → — Nudge the steering lock 0.5° at a time (up to {LOCK_TO_LOCK_SECONDS}s lock-to-lock)</div>
+            <div>Shift + ← / → — Quarter-turn of the wheel at a time ({QUARTER_TURN_STEER_DEG}°)</div>
+            <div>End — Straight (centre the steering)</div>
+            <div>Space — Horn</div>
+            <div>Automatic — handbrake sets {HANDBRAKE_ENGAGE_DELAY_MS / 1000}s after coming to rest, releases on pulling away</div>
+          </div>
+
           <SectionLabel>Steering &amp; throttle</SectionLabel>
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <SteeringWheel angleDeg={appliedSteerInput} />
               <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} large />
-              <div style={{ fontSize: 15, color: COL.textDim, margin: "-4px 0 8px" }}>← / → arrow keys nudge the lock 0.5° at a time — the wheel takes up to {LOCK_TO_LOCK_SECONDS}s to reach it lock-to-lock</div>
-              <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
                 {[["Full lock left", -50], ["Straight", 0], ["Full lock right", 50]].map(([lbl, v]) => (
                   <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => setSteerInput(v)}>{lbl}</button>
                 ))}
               </div>
             </div>
-            <VerticalSlider label="Throttle" unit=" km/h" value={speed} min={0} max={60} step={1} onChange={setSpeed} accent={COL.amber} />
+            <SpeedGauge label="Speed" unit="km/h" value={speed} max={MAX_SPEED_KMH} step={10} accent={COL.amber} />
           </div>
 
           {/* reference photo: confirmed dimensions of the actual BCC Volvo/Scania tag-axle bus
