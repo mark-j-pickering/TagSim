@@ -424,7 +424,16 @@ function brakeDecel(heldSeconds) {
 // with d shrinking at the current speed (dd/dt = -v), v² and 2ad have identical derivatives once
 // they're equal, so a bus held at the cap traces exactly the same speed-vs-distance curve a real
 // constant-deceleration stop would.
-const BOUNDARY_GOVERNOR_MARGIN = 3; // metres of extra buffer so the cap reaches 0 slightly inside the line, not exactly on it
+//
+// The margin isn't a flat constant: boundaryPathDistance/boundaryGovernorCapKmh work off `pose`,
+// which tracks the drive axle (see main CLAUDE.md's coordinate-pipeline notes), not the physical
+// front of the bus — the nose sits Lfd+Fo further forward again. An early version used a flat 3m
+// pad here, sized only for integration slop, and the front overhang could still visibly poke past
+// the drawn boundary line (observed when testing the governor in a real browser). The margin is now
+// Lfd+Fo (the live vehicle geometry, not a hand-tuned number) plus a small fixed pad, so it's the
+// bumper — not just the reference point — that stops short of the line, leaving the bus's own
+// length as manoeuvring room to turn around rather than sitting nose-to-the-wall.
+const BOUNDARY_GOVERNOR_EXTRA_MARGIN = 2; // metres of pad beyond the bumper, for integration slop
 
 // Path-distance remaining, along the bus's current heading, before world position {x,y} crosses
 // the boundary square — not just axis-aligned distance, since the bus is usually travelling at an
@@ -442,9 +451,10 @@ function boundaryPathDistance(pose) {
 }
 
 // Maximum speed (km/h) the governor allows at the given remaining path-distance to the boundary.
-function boundaryGovernorCapKmh(pathDistance) {
+// `frontOverhang` is Lfd+Fo (reference point to bumper) — see the comment above.
+function boundaryGovernorCapKmh(pathDistance, frontOverhang) {
   if (!Number.isFinite(pathDistance)) return Infinity;
-  const d = Math.max(0, pathDistance - BOUNDARY_GOVERNOR_MARGIN);
+  const d = Math.max(0, pathDistance - frontOverhang - BOUNDARY_GOVERNOR_EXTRA_MARGIN);
   return Math.sqrt(2 * BRAKE_DECEL_INITIAL * d) * 3.6; // m/s -> km/h
 }
 
@@ -713,6 +723,11 @@ export default function BusSteeringSimulator() {
   const trailModeRef = useRef(trailMode);
   const trailPausedRef = useRef(false);
   const boundaryLimitingRef = useRef(false);
+  // Lfd+Fo (reference point to front bumper), mirrored for the drive loop below — that loop is an
+  // imperative useEffect with an empty dependency array (see its own comment), so it can't read
+  // Lfd/Fo as live component state; it reads this ref instead, kept in sync every render alongside
+  // geomRef/speedRef/trailModeRef just below.
+  const frontOverhangRef = useRef(0);
   const poseRef = useRef({ x: 0, y: 0, theta: 0 }); // live pose during the drive loop, source of truth for trail sampling
 
   const [pose, setPose] = useState({ x: 0, y: 0, theta: 0 });
@@ -746,6 +761,7 @@ export default function BusSteeringSimulator() {
   geomRef.current = geom;
   speedRef.current = speed;
   trailModeRef.current = trailMode;
+  frontOverhangRef.current = Lfd + Fo;
 
   function clearTrail() {
     trailRef.current = [];
@@ -1039,7 +1055,7 @@ export default function BusSteeringSimulator() {
       // that's simply parked facing the boundary from a safe distance.
       let limiting = false;
       if (trailModeRef.current) {
-        const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current));
+        const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current), frontOverhangRef.current);
         if (nextSpeed > capKmh) {
           nextSpeed = Math.max(0, capKmh);
           limiting = true;

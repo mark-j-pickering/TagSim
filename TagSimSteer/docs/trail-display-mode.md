@@ -247,13 +247,28 @@ ribbon polygons at the boundary.
   position/heading has nothing to release explicitly — steering away from
   the boundary relaxes it immediately. Uses the gentle end of the brake
   ramp (`BRAKE_DECEL_INITIAL`, not `BRAKE_DECEL_MAX`) so the assumed
-  stopping distance is conservative, plus a small `BOUNDARY_GOVERNOR_MARGIN`
-  buffer. A "Approaching mapped area limit — slowing" indicator (same style
-  as the "Trail paused" one) shows whenever the clamp actually reduces speed
-  that frame (not merely whenever the heading is generally aimed at a wall,
-  which would also light up for a bus simply parked facing the boundary).
-  Uses the same `pose.x/y` reference point as the recording-pause check
-  above, not the full body footprint.
+  stopping distance is conservative. A "Approaching mapped area limit —
+  slowing" indicator (same style as the "Trail paused" one) shows whenever
+  the clamp actually reduces speed that frame (not merely whenever the
+  heading is generally aimed at a wall, which would also light up for a bus
+  simply parked facing the boundary).
+  The stopping-distance margin is `Lfd + Fo` (reference point to physical
+  front bumper) plus a small fixed `BOUNDARY_GOVERNOR_EXTRA_MARGIN` pad —
+  not a flat constant. `boundaryPathDistance`/the recording-pause check in
+  `maybeSampleTrail` both key off `pose.x/y`, which tracks the *drive axle*
+  (see main CLAUDE.md's coordinate-pipeline notes), not the front of the
+  bus — an earlier version used a flat 3m margin here, sized only for
+  integration slop, and the front overhang could still visibly poke past
+  the drawn boundary line (caught by testing the governor in a real
+  browser, not by inspection). Sizing the margin off live `Lfd`/`Fo` state
+  instead means the bumper itself — not just the reference point — stops
+  short of the line, leaving the bus's own length as room to turn around
+  rather than stopping nose-to-the-wall. Since the drive loop is an
+  imperative `useEffect` with an empty dependency array (see its own
+  comment), it can't read `Lfd`/`Fo` as live state directly — a
+  `frontOverhangRef`, kept in sync every render alongside
+  `geomRef`/`speedRef`/`trailModeRef`, carries the current `Lfd + Fo` into
+  it instead.
 - **Controls**: "Trail" toggle and "Clear" button added to the existing
   bottom-centre display-toggle row (alongside Off-track/Construction/
   Dimensions); a trail legend entry appears in the top-right panel when
