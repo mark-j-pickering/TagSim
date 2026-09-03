@@ -403,6 +403,51 @@ function brakeDecel(heldSeconds) {
   const t = Math.min(1, heldSeconds / BRAKE_RAMP_SECONDS);
   return BRAKE_DECEL_INITIAL + (BRAKE_DECEL_MAX - BRAKE_DECEL_INITIAL) * t;
 }
+
+// ---------- boundary speed governor ----------
+// While driving in trail mode, cap the maximum speed as a function of remaining path-distance to
+// the 1km² trail-recording boundary (TRAIL_BOUND_HALF) so the bus slows to a stop right at the
+// edge instead of driving through it. Deliberately a live speed *ceiling* recomputed every frame,
+// not a forced-brake override that seizes control: there's no reverse gear in this sim, so a hard
+// stop that also blocked the throttle would strand the driver at the wall with no way back. A
+// ceiling that's just a function of current position/heading releases itself the instant the
+// driver steers away from the boundary, with no separate "release" state to manage.
+//
+// Uses BRAKE_DECEL_INITIAL — the gentle end of the brake ramp, not BRAKE_DECEL_MAX — as the
+// assumed constant deceleration in the standard v² = 2·a·d stopping-distance formula below. This
+// deliberately overestimates the distance a real stop needs (actual braking firms up over
+// BRAKE_RAMP_SECONDS rather than starting at full force), so the governor starts capping speed a
+// bit earlier than strictly necessary rather than risking the bus not stopping in time.
+//
+// Clamping speed to sqrt(2·a·d) every frame (rather than applying a separate deceleration impulse)
+// already reproduces the feel of smooth constant-a braking rather than a series of jarring snaps:
+// with d shrinking at the current speed (dd/dt = -v), v² and 2ad have identical derivatives once
+// they're equal, so a bus held at the cap traces exactly the same speed-vs-distance curve a real
+// constant-deceleration stop would.
+const BOUNDARY_GOVERNOR_MARGIN = 3; // metres of extra buffer so the cap reaches 0 slightly inside the line, not exactly on it
+
+// Path-distance remaining, along the bus's current heading, before world position {x,y} crosses
+// the boundary square — not just axis-aligned distance, since the bus is usually travelling at an
+// angle to the walls. Independent of speed (a heading either closes on a wall or it doesn't, and
+// how fast cancels out of "distance until crossing at this heading"), so it only needs pose.
+// Returns Infinity if the current heading isn't closing on either wall (no cap needed).
+function boundaryPathDistance(pose) {
+  const cosT = Math.cos(pose.theta), sinT = Math.sin(pose.theta);
+  const axisDistance = (coord, dirComp) => {
+    if (Math.abs(dirComp) < 1e-6) return Infinity; // heading is parallel to this axis — that wall never gets closer
+    const axisRemaining = dirComp > 0 ? TRAIL_BOUND_HALF - coord : coord + TRAIL_BOUND_HALF;
+    return Math.max(0, axisRemaining) / Math.abs(dirComp); // metres of axis travel left -> metres of path at this heading
+  };
+  return Math.min(axisDistance(pose.x, cosT), axisDistance(pose.y, sinT));
+}
+
+// Maximum speed (km/h) the governor allows at the given remaining path-distance to the boundary.
+function boundaryGovernorCapKmh(pathDistance) {
+  if (!Number.isFinite(pathDistance)) return Infinity;
+  const d = Math.max(0, pathDistance - BOUNDARY_GOVERNOR_MARGIN);
+  return Math.sqrt(2 * BRAKE_DECEL_INITIAL * d) * 3.6; // m/s -> km/h
+}
+
 // How long the bus must sit at 0 speed before the handbrake sound fires (see the handbrake effect
 // in the component body).
 const HANDBRAKE_ENGAGE_DELAY_MS = 2000;
@@ -661,9 +706,13 @@ export default function BusSteeringSimulator() {
   const [trailMode, setTrailMode] = useState(false);
   const [trailVersion, setTrailVersion] = useState(0); // bumped to force a re-render as samples accumulate
   const [trailPaused, setTrailPaused] = useState(false); // mirrors trailPausedRef, only for display
+  // Mirrors boundaryLimitingRef, only for display — true whenever the boundary speed governor (see
+  // boundaryGovernorCapKmh) is actively reducing speed this frame.
+  const [boundaryLimiting, setBoundaryLimiting] = useState(false);
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
   const trailModeRef = useRef(trailMode);
   const trailPausedRef = useRef(false);
+  const boundaryLimitingRef = useRef(false);
   const poseRef = useRef({ x: 0, y: 0, theta: 0 }); // live pose during the drive loop, source of truth for trail sampling
 
   const [pose, setPose] = useState({ x: 0, y: 0, theta: 0 });
@@ -958,7 +1007,9 @@ export default function BusSteeringSimulator() {
   // The loop itself never stops (previously it only ran while speed > 0): speed is now simulated
   // here too, from the throttle/brake key state, so it has to keep watching for a throttle press
   // even while sitting at rest. Pose/trail updates are skipped while genuinely idle (speed exactly
-  // 0 and neither pedal held) so an idle bus doesn't cause a render on every animation frame.
+  // 0 and neither pedal held) so an idle bus doesn't cause a render on every animation frame. The
+  // boundary speed governor (see boundaryGovernorCapKmh) also lives here, right after nextSpeed is
+  // otherwise decided, so it applies uniformly regardless of which control produced that speed.
   useEffect(() => {
     poseRef.current = pose;
     function step(t) {
@@ -978,6 +1029,27 @@ export default function BusSteeringSimulator() {
           driveToTargetRef.current = null;
         }
       }
+
+      // Boundary speed governor (trail mode only — the 1km² boundary isn't a concept outside it):
+      // cap nextSpeed so the bus can't be driven through TRAIL_BOUND_HALF, whichever control put it
+      // there (throttle key or the "Drive the turn" auto-ramp both land here). See
+      // boundaryGovernorCapKmh for why a plain clamp is enough to feel like a smooth stop.
+      // `limiting` tracks whether the clamp actually bit this frame (not just whether the heading
+      // is generally aimed at a wall), so the "slowing" indicator below doesn't light up for a bus
+      // that's simply parked facing the boundary from a safe distance.
+      let limiting = false;
+      if (trailModeRef.current) {
+        const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current));
+        if (nextSpeed > capKmh) {
+          nextSpeed = Math.max(0, capKmh);
+          limiting = true;
+        }
+      }
+      if (limiting !== boundaryLimitingRef.current) {
+        boundaryLimitingRef.current = limiting;
+        setBoundaryLimiting(limiting);
+      }
+
       if (nextSpeed !== speedRef.current) {
         speedRef.current = nextSpeed;
         setSpeed(nextSpeed);
@@ -1817,6 +1889,14 @@ export default function BusSteeringSimulator() {
         {trailMode && trailPaused && (
           <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.tag, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
             Trail paused — outside 1km² mapped area
+          </div>
+        )}
+        {/* Shown whenever the boundary speed governor (see boundaryGovernorCapKmh) is actively
+            reducing speed this frame — suppressed once trailPaused takes over (i.e. the boundary's
+            already been reached), so only one of the two shows. */}
+        {trailMode && boundaryLimiting && !trailPaused && (
+          <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.trail, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
+            Approaching mapped area limit — slowing
           </div>
         )}
         {/* Day-to-day driving is the up/down arrow keys (see the drive-loop physics above); this

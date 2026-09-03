@@ -236,6 +236,24 @@ ribbon polygons at the boundary.
   chassis-relative like the other long-line reference geometry, since the
   bound doesn't move with the bus. A matching legend entry ("Mapped area
   boundary") appears alongside the other trail legend rows.
+- **Boundary speed governor**: driving can no longer cross `TRAIL_BOUND_HALF`
+  in trail mode — `boundaryPathDistance()`/`boundaryGovernorCapKmh()` cap the
+  drive loop's `nextSpeed` to `sqrt(2·BRAKE_DECEL_INITIAL·d)` each frame,
+  where `d` is the remaining path-distance to the boundary along the bus's
+  current heading (not just axis-aligned distance). Deliberately a speed
+  *ceiling*, not a forced-brake mode that seizes control: this sim has no
+  reverse gear, so a hard stop that also blocked the throttle would strand
+  the driver at the wall. A ceiling that's purely a function of live
+  position/heading has nothing to release explicitly — steering away from
+  the boundary relaxes it immediately. Uses the gentle end of the brake
+  ramp (`BRAKE_DECEL_INITIAL`, not `BRAKE_DECEL_MAX`) so the assumed
+  stopping distance is conservative, plus a small `BOUNDARY_GOVERNOR_MARGIN`
+  buffer. A "Approaching mapped area limit — slowing" indicator (same style
+  as the "Trail paused" one) shows whenever the clamp actually reduces speed
+  that frame (not merely whenever the heading is generally aimed at a wall,
+  which would also light up for a bus simply parked facing the boundary).
+  Uses the same `pose.x/y` reference point as the recording-pause check
+  above, not the full body footprint.
 - **Controls**: "Trail" toggle and "Clear" button added to the existing
   bottom-centre display-toggle row (alongside Off-track/Construction/
   Dimensions); a trail legend entry appears in the top-right panel when
