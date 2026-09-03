@@ -413,6 +413,16 @@ function brakeDecel(heldSeconds) {
 // ceiling that's just a function of current position/heading releases itself the instant the
 // driver steers away from the boundary, with no separate "release" state to manage.
 //
+// "Away from the boundary" has to mean the bus's actual curved path, not just its current
+// heading. An earlier version measured straight-line distance along `pose.theta` only: a bus
+// stopped nose-on to a wall stays capped near 0 forever even at full lock, because dialing in
+// steering doesn't move `pose.theta` — only driving does (see the pose-integration effect below),
+// and the cap was preventing exactly the motion needed to start turning away. Deadlocked, with no
+// way to leave. `boundaryPathDistance` now follows the arc the bus would actually drive at its
+// current curvature, so a tight-enough turn that curves back inside the square (or never reaches
+// a wall at all) reports a long or infinite distance and releases the cap, even while still
+// pointed straight at the wall.
+//
 // Uses BRAKE_DECEL_INITIAL — the gentle end of the brake ramp, not BRAKE_DECEL_MAX — as the
 // assumed constant deceleration in the standard v² = 2·a·d stopping-distance formula below. This
 // deliberately overestimates the distance a real stop needs (actual braking firms up over
@@ -433,21 +443,70 @@ function brakeDecel(heldSeconds) {
 // Lfd+Fo (the live vehicle geometry, not a hand-tuned number) plus a small fixed pad, so it's the
 // bumper — not just the reference point — that stops short of the line, leaving the bus's own
 // length as manoeuvring room to turn around rather than sitting nose-to-the-wall.
-const BOUNDARY_GOVERNOR_EXTRA_MARGIN = 2; // metres of pad beyond the bumper, for integration slop
+const BOUNDARY_GOVERNOR_EXTRA_MARGIN = 12; // metres of pad beyond the bumper, for integration slop
 
-// Path-distance remaining, along the bus's current heading, before world position {x,y} crosses
-// the boundary square — not just axis-aligned distance, since the bus is usually travelling at an
-// angle to the walls. Independent of speed (a heading either closes on a wall or it doesn't, and
-// how fast cancels out of "distance until crossing at this heading"), so it only needs pose.
-// Returns Infinity if the current heading isn't closing on either wall (no cap needed).
-function boundaryPathDistance(pose) {
-  const cosT = Math.cos(pose.theta), sinT = Math.sin(pose.theta);
-  const axisDistance = (coord, dirComp) => {
-    if (Math.abs(dirComp) < 1e-6) return Infinity; // heading is parallel to this axis — that wall never gets closer
-    const axisRemaining = dirComp > 0 ? TRAIL_BOUND_HALF - coord : coord + TRAIL_BOUND_HALF;
-    return Math.max(0, axisRemaining) / Math.abs(dirComp); // metres of axis travel left -> metres of path at this heading
+// Path-distance remaining, along the bus's actual driven path — straight if steering is centred,
+// else the arc of radius `geom.R` about the live turn centre — before world position {x,y} first
+// leaves the boundary square. Independent of speed (a path either closes on a wall or it doesn't,
+// and how fast cancels out of "distance until crossing along this path"), so it only needs
+// pose+geom. Returns Infinity if the path never reaches a wall (heading parallel to both axes in
+// the straight case; a turn radius tight enough to stay inside the square forever in the curved
+// case).
+//
+// Straight case: same axis-distance logic as before — walk each axis independently and take
+// whichever wall is reached first; correct with no corner-clipping needed, since starting inside
+// the square means the *other* axis is still in-range at whatever moment the first one reaches
+// its bound (if it weren't, that earlier moment would already have been the answer).
+//
+// Curved case: solves for the first arc-length `s` at which x(s) or y(s) hits ±TRAIL_BOUND_HALF,
+// using the same closed-form unicycle projection `projectPosesForward` uses for the trail preview
+// (x(s)=Cx+R·sin(theta0+s/R), y(s)=Cy-R·cos(theta0+s/R) around the world-frame turn centre
+// (Cx,Cy)), just solved for "s where a wall is hit" instead of stepped forward by a fixed length.
+// The same starting-inside-the-square argument as the straight case means the first such `s`
+// across all four walls is the true first exit — no corner-clipping needed there either.
+function boundaryPathDistance(pose, geom) {
+  if (!geom || geom.isStraight) {
+    const cosT = Math.cos(pose.theta), sinT = Math.sin(pose.theta);
+    const axisDistance = (coord, dirComp) => {
+      if (Math.abs(dirComp) < 1e-6) return Infinity; // heading is parallel to this axis — that wall never gets closer
+      const axisRemaining = dirComp > 0 ? TRAIL_BOUND_HALF - coord : coord + TRAIL_BOUND_HALF;
+      return Math.max(0, axisRemaining) / Math.abs(dirComp); // metres of axis travel left -> metres of path at this heading
+    };
+    return Math.min(axisDistance(pose.x, cosT), axisDistance(pose.y, sinT));
+  }
+
+  const R = geom.R;
+  const theta0 = pose.theta;
+  const Cx = pose.x - R * Math.sin(theta0);
+  const Cy = pose.y + R * Math.cos(theta0);
+  const period = 2 * Math.PI * Math.abs(R); // arc-length of one full lap around the turn circle
+
+  // Smallest non-negative `s` (mod one lap) that reaches world-frame heading `theta`.
+  const sFor = (theta) => {
+    const s = (theta - theta0) * R;
+    return ((s % period) + period) % period;
   };
-  return Math.min(axisDistance(pose.x, cosT), axisDistance(pose.y, sinT));
+
+  const candidates = [];
+  // x(s) = Cx + R·sin(theta(s)) = V  =>  sin(theta) = (V - Cx) / R  (two branches: asin and π-asin)
+  for (const V of [TRAIL_BOUND_HALF, -TRAIL_BOUND_HALF]) {
+    const k = (V - Cx) / R;
+    if (Math.abs(k) <= 1) {
+      const base = Math.asin(k);
+      candidates.push(sFor(base), sFor(Math.PI - base));
+    }
+  }
+  // y(s) = Cy - R·cos(theta(s)) = V  =>  cos(theta) = (Cy - V) / R  (two branches: ±acos)
+  for (const V of [TRAIL_BOUND_HALF, -TRAIL_BOUND_HALF]) {
+    const k = (Cy - V) / R;
+    if (Math.abs(k) <= 1) {
+      const base = Math.acos(k);
+      candidates.push(sFor(base), sFor(-base));
+    }
+  }
+
+  const valid = candidates.filter(Number.isFinite);
+  return valid.length ? Math.min(...valid) : Infinity;
 }
 
 // Maximum speed (km/h) the governor allows at the given remaining path-distance to the boundary.
@@ -1055,7 +1114,7 @@ export default function BusSteeringSimulator() {
       // that's simply parked facing the boundary from a safe distance.
       let limiting = false;
       if (trailModeRef.current) {
-        const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current), frontOverhangRef.current);
+        const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current, geomRef.current), frontOverhangRef.current);
         if (nextSpeed > capKmh) {
           nextSpeed = Math.max(0, capKmh);
           limiting = true;
