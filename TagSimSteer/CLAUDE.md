@@ -213,6 +213,34 @@ branches (circular vs straight-line versions).
   visible area. If you add more far-extending geometry, make sure it stays
   inside the `<g clipPath="url(#mapClip)">` group.
 
+## Porting to 3D / C#
+
+`computeGeometry` (and its small helper functions — `wheelStaticCorners`,
+`wheelLocalPts`, `rotatePt`, the `WHEEL_HALF_LEN`/`WHEEL_HALF_W`/`DUAL_GAP`
+constants) has been ported to plain C# at
+`TagSim3D/Geometry/TagBusGeometry.cs`. Rationale: this simulator was
+originally built to visually confirm the steering geometry calculations, and
+that job was done long ago — the geometry model itself has been stable for a
+long time, while almost everything else in this file (view modes, trail
+rendering, colour coding, dimension lines) is 2D-plan-view display sugar with
+no 3D equivalent. So the geometry engine is the one thing worth extracting
+now, ahead of any 3D engine decision, rather than waiting for a full 3D
+project to exist first.
+
+**This JS file stays the source of truth for the kinematic model.** If a bug
+or a tweak to the geometry math turns up here (in `computeGeometry` or its
+helpers) — record it in this section, even briefly, so it's a page any future
+TagSim3D work reads before touching `TagBusGeometry.cs`. Don't assume the C#
+port silently stays in sync; nothing currently automates that.
+
+- *(none logged yet)*
+
+Not ported: `innerDriveRadius` (already dead/unused here — see "Known rough
+edges" below) and the dead-reckoning pose-integration loop (lives in the
+"Drive the turn" effect, not in `computeGeometry` itself — see "Coordinate
+pipeline" above). See `TagSim3D/README.md` for why and what porting that
+loop would need.
+
 ## Known rough edges / things not yet done
 
 - `DUAL_HALF_LEN`/`DUAL_HALF_W` are now dead code (see wheel numbering
