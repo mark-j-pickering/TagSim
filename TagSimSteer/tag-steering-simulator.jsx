@@ -223,6 +223,18 @@ const TRAIL_MIN_SPACING = 0.2; // metres between recorded trail samples
 const TRAIL_MIN_SPACING_SQ = TRAIL_MIN_SPACING * TRAIL_MIN_SPACING;
 const TRAIL_RENDER_EVERY = 5; // force a re-render every N recorded samples, not every one
 const TRAIL_BOUND_HALF = 500; // metres — recording area capped to a 1000x1000m (1km²) square centred on the origin
+
+// Screen-space outline of the trail-recording bound — unlike longLineScreen/longBandPoints (which
+// are chassis-relative and follow the bus via poseTransform), this square is anchored at the world
+// origin and never moves with the vehicle, so it's just four world corners run straight through
+// toScreen with no pose transform.
+function mapBoundaryPoints(view) {
+  const corners = [
+    { x: TRAIL_BOUND_HALF, y: TRAIL_BOUND_HALF }, { x: TRAIL_BOUND_HALF, y: -TRAIL_BOUND_HALF },
+    { x: -TRAIL_BOUND_HALF, y: -TRAIL_BOUND_HALF }, { x: -TRAIL_BOUND_HALF, y: TRAIL_BOUND_HALF },
+  ].map((p) => toScreen(view, p));
+  return ptsToPath(corners);
+}
 const TRAIL_PREVIEW_LENGTH = 40; // metres ahead of the bus the dashed centreline preview projects
 const TRAIL_PREVIEW_STEPS = 40; // segments across that length — plenty smooth even at full-lock radii
 const TRAIL_PREVIEW_FRONT_LENGTH = 20; // metres ahead the (shorter, dotted) front wheel track preview projects
@@ -1265,28 +1277,31 @@ export default function BusSteeringSimulator() {
   // plain ref (mutated per-frame in the drive loop, see maybeSampleTrail) so it doesn't itself
   // trigger a render — trailVersion state is bumped periodically instead, purely to force this
   // component to re-run and pick up the latest trailRef.current.
+  //
+  // Perf note: `pose` (and therefore `displayedView`, which tracks the bus/turn-centre every
+  // frame) changes on every RAF tick while driving, not just when a new trail sample lands — so
+  // rebuilding these straight off `trailSamples` in the render body meant redoing an O(n) pass
+  // (or, for the body hull below, an O(n) convex-hull recompute) ~60 times/sec, with cost growing
+  // with trail length. The world-space vertex/hull lists below are memoized on `trailVersion`
+  // (bumped only every TRAIL_RENDER_EVERY samples) instead, since they don't depend on the view —
+  // only the cheap per-vertex `toScreen` projection still has to re-run every frame, which is
+  // unavoidable since the camera itself can move every frame.
   const trailSamples = trailRef.current;
-  const trailPolygonPoints = trailMode && trailSamples.length >= 2
-    ? ptsToPath([
-        ...trailSamples.map((s) => toScreen(displayedView, s.left)),
-        ...trailSamples.map((s) => toScreen(displayedView, s.right)).reverse(),
-      ])
-    : null;
+  const trailWorldRibbons = useMemo(() => {
+    if (!trailMode || trailSamples.length < 2) return null;
+    const ribbon = (leftKey, rightKey) => [
+      ...trailSamples.map((s) => s[leftKey]),
+      ...trailSamples.map((s) => s[rightKey]).reverse(),
+    ];
+    return { drive: ribbon("left", "right"), front: ribbon("frontLeft", "frontRight"), tag: ribbon("tagLeft", "tagRight") };
+  }, [trailMode, trailVersion]);
+  const trailPolygonPoints = trailWorldRibbons && ptsToPath(trailWorldRibbons.drive.map((p) => toScreen(displayedView, p)));
   // Second and third bands: the front and tag axles' own tracks, each sampled at that axle's own
   // along-chassis offset (see singleAxleBandHalfWidth) — separate ribbons since they follow
   // different curves than the drive-axle band above once the bus is turning.
-  const frontTrailPolygonPoints = trailMode && trailSamples.length >= 2
-    ? ptsToPath([
-        ...trailSamples.map((s) => toScreen(displayedView, s.frontLeft)),
-        ...trailSamples.map((s) => toScreen(displayedView, s.frontRight)).reverse(),
-      ])
-    : null;
-  const tagTrailPolygonPoints = trailMode && trailSamples.length >= 2
-    ? ptsToPath([
-        ...trailSamples.map((s) => toScreen(displayedView, s.tagLeft)),
-        ...trailSamples.map((s) => toScreen(displayedView, s.tagRight)).reverse(),
-      ])
-    : null;
+  const frontTrailPolygonPoints = trailWorldRibbons && ptsToPath(trailWorldRibbons.front.map((p) => toScreen(displayedView, p)));
+  const tagTrailPolygonPoints = trailWorldRibbons && ptsToPath(trailWorldRibbons.tag.map((p) => toScreen(displayedView, p)));
+
   // Body footprint band: the ground actually driven over by the whole body, including the front
   // and rear overhang "mowing the grass" wider through a turn — not just the corridor traced by a
   // single reference point at x=0. For each pair of consecutive samples, take all 4 body corners
@@ -1304,19 +1319,37 @@ export default function BusSteeringSimulator() {
   // laps overlap. Small per-step hulls don't have that failure mode — each is simple (never self-
   // intersects) and convexHull always winds them the same direction, so overlapping hulls from
   // different laps only ever *add* to the winding number (never cancel to zero).
+  //
+  // Each hull is computed once, in world space (poseTransform only, no toScreen), and cached below
+  // keyed on trailVersion — convexHull commutes with any invertible affine map, including
+  // toScreen's scale+reflect+translate, so hull(toScreen(pts)) and toScreen(hull(pts)) trace the
+  // identical polygon. Re-projecting a handful of cached hull vertices through toScreen every frame
+  // is far cheaper than re-sorting all 8 corner points and rebuilding the whole path string on
+  // every RAF tick, which is what made this the main cost of a long trail. The live "cap" hull
+  // (last recorded sample -> current pose) is also built in world space, for the same reason and so
+  // its winding matches the cached hulls exactly — a mismatched winding would locally cancel under
+  // the nonzero fill rule right behind the bus.
+  const curedBodyHullsWorld = useMemo(() => {
+    if (!trailMode || trailSamples.length < 2) return [];
+    const corners = [geom.bodyCorners.FL, geom.bodyCorners.FR, geom.bodyCorners.RL, geom.bodyCorners.RR];
+    const worldCornersAt = (s) => corners.map((c) => poseTransform(c, { x: s.poseX, y: s.poseY, theta: s.theta }));
+    const hulls = [];
+    for (let i = 1; i < trailSamples.length; i++) {
+      hulls.push(convexHull([...worldCornersAt(trailSamples[i - 1]), ...worldCornersAt(trailSamples[i])]));
+    }
+    return hulls;
+  }, [trailMode, trailVersion, Lfd, Fo, Ldt, Ro, Wb]);
   const bodyTrailPathD = trailMode && trailSamples.length >= 1
     ? (() => {
-        const poseAt = (s) => ({ x: s.poseX, y: s.poseY, theta: s.theta });
-        const cornersAt = (poseLike) => [geom.bodyCorners.FL, geom.bodyCorners.FR, geom.bodyCorners.RL, geom.bodyCorners.RR]
-          .map((c) => toScreen(displayedView, poseTransform(c, poseLike)));
-        const hullPath = (poseA, poseB) => {
-          const hull = convexHull([...cornersAt(poseA), ...cornersAt(poseB)]);
-          return `M ${hull.map((p) => `${p.x} ${p.y}`).join(" L ")} Z`;
-        };
-        const steps = [];
-        for (let i = 1; i < trailSamples.length; i++) steps.push(hullPath(poseAt(trailSamples[i - 1]), poseAt(trailSamples[i])));
-        steps.push(hullPath(poseAt(trailSamples[trailSamples.length - 1]), pose));
-        return steps.join(" ");
+        const hullToPathD = (hull) => `M ${hull.map((p) => { const s = toScreen(displayedView, p); return `${s.x} ${s.y}`; }).join(" L ")} Z`;
+        const corners = [geom.bodyCorners.FL, geom.bodyCorners.FR, geom.bodyCorners.RL, geom.bodyCorners.RR];
+        const worldCornersAt = (poseLike) => corners.map((c) => poseTransform(c, poseLike));
+        const lastSample = trailSamples[trailSamples.length - 1];
+        const capHull = convexHull([
+          ...worldCornersAt({ x: lastSample.poseX, y: lastSample.poseY, theta: lastSample.theta }),
+          ...worldCornersAt(pose),
+        ]);
+        return [...curedBodyHullsWorld, capHull].map(hullToPathD).join(" ");
       })()
     : null;
 
@@ -1437,6 +1470,13 @@ export default function BusSteeringSimulator() {
           </defs>
           <g clipPath="url(#mapClip)">
           <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />
+
+          {/* trail-recording bound: the 1km² square (TRAIL_BOUND_HALF) trail sampling is capped
+              to, drawn so the limit is visible before it's hit rather than only discovered via the
+              "Trail paused" indicator. World-anchored, not chassis-relative — see mapBoundaryPoints. */}
+          {trailMode && (
+            <polygon points={mapBoundaryPoints(displayedView)} fill="none" stroke={COL.trail} strokeWidth="1.4" strokeDasharray="12 8" opacity="0.5" />
+          )}
 
           {/* body footprint trail — the ground actually driven over by the body, bottom layer,
               under everything else including the off-track band and the vehicle itself, so it
@@ -1690,6 +1730,7 @@ export default function BusSteeringSimulator() {
           {trailMode && <LegendDot color={COL.trail} label="Trail — drive axle corridor" />}
           {trailMode && <LegendDot color={COL.front} label="Trail — front axle track" />}
           {trailMode && <LegendDot color={COL.tag} label="Trail — tag axle track" />}
+          {trailMode && <LegendDot color={COL.trail} label="Mapped area boundary (1km²)" />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
         </div>
         <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", boxShadow: "0 2px 8px rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden" }}>

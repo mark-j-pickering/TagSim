@@ -230,9 +230,33 @@ ribbon polygons at the boundary.
   500 || |pose.y| > 500` pauses recording (no wrap, no truncation) with a
   small "Trail paused — outside 1km² mapped area" indicator. Not yet
   exercised by hand at the boundary (would take a very long real-time drive
-  to reach) — reviewed by code inspection only.
+  to reach) — reviewed by code inspection only. The bound is now also drawn
+  on the map itself: `mapBoundaryPoints()` renders the 1000×1000m square as
+  a dashed outline (in trail mode only), world-anchored rather than
+  chassis-relative like the other long-line reference geometry, since the
+  bound doesn't move with the bus. A matching legend entry ("Mapped area
+  boundary") appears alongside the other trail legend rows.
 - **Controls**: "Trail" toggle and "Clear" button added to the existing
   bottom-centre display-toggle row (alongside Off-track/Construction/
   Dimensions); a trail legend entry appears in the top-right panel when
   trail mode is on. Trail is cleared automatically on vehicle-dimension
   changes (same trigger that already resets `pose`).
+- **Per-frame render cost**: the three axle-track ribbons and the body hull
+  path were originally rebuilt straight from `trailSamples` in the render
+  body. Since `pose` (and the view that tracks it) updates every RAF tick
+  while driving, not just when a new sample lands, this meant redoing an
+  O(n) pass — for the body hull, an O(n) convex-hull recompute with a fresh
+  path string — on every frame, with cost scaling with trail length (the
+  reported slowdown on long trails). Fixed by memoizing the *world-space*
+  vertex/hull data on `trailVersion` (only changes every
+  `TRAIL_RENDER_EVERY` samples): the ribbons cache the raw world points,
+  the body band caches actual hull results. Per frame, only a cheap
+  `toScreen` projection of that cached data re-runs, since the camera
+  itself can still move every frame. This relies on convex hull commuting
+  with any invertible affine map — `hull(toScreen(pts))` and
+  `toScreen(hull(pts))` trace the same polygon — so caching hulls in world
+  space and re-projecting them is equivalent to the original screen-space
+  computation, just far cheaper. The live "cap" hull (last sample → current
+  pose) is still computed fresh every frame (cheap, O(1)) but now also in
+  world space first, so its winding direction matches the cached hulls
+  exactly.
