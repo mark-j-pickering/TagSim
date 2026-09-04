@@ -9,8 +9,28 @@ import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
 // square content never letterboxes or stretches — see `vbSize` in the component body.
 const VB = 1000;
 const MARGIN = 60;
-const MIN_ZOOM = 0.02; // low enough to zoom out to roughly the full 1km² trail-recording area
+const BUS_VIEW_LENGTHS = 3; // "Bus" view mode: vehicle-lengths of world space shown across the map's shorter side
+const CLOSE_RADIUS_M = 15; // 'B' key: close-up view radius around the bus, see computeView's "close" mode
+const CLOSE_FORWARD_BIAS = 1 / 3; // how far back from the front bumper (as a fraction of overall length) the close-up centres on
+const MIN_ZOOM = 0.02; // low enough to zoom out to roughly the full 1km² trail-recording area (S/M presets — see TRAIL_SIZE_PRESETS)
 const MAX_ZOOM = 6;
+
+// Trail-recording/boundary square half-extent presets (metres) — S/M/L, selectable in Advanced
+// settings. "half" is the same quantity the rest of the file already calls TRAIL_BOUND_HALF, so M
+// (500) reproduces the previously-fixed default (1000x1000m, 1km²) exactly; S and L are half and
+// double that side length (0.25km² / 4km²).
+const TRAIL_SIZE_PRESETS = [
+  { key: "s", label: "S", half: 250 },
+  { key: "m", label: "M", half: 500 },
+  { key: "l", label: "L", half: 1000 },
+];
+const TRAIL_BOUND_HALF_DEFAULT = 500;
+// "0.25km²" / "1km²" / "4km²" — a boundary half-extent's full-square area, for the legend/paused
+// labels. Trims a trailing ".00" so whole-number areas (the M/L presets) don't print "1.00km²".
+function boundaryAreaLabel(half) {
+  const km2 = ((2 * half) / 1000) ** 2;
+  return `${km2.toFixed(2).replace(/\.?0+$/, "")}km²`;
+}
 
 // ---------- math helpers ----------
 const toRad = (d) => (d * Math.PI) / 180;
@@ -112,11 +132,24 @@ function poseTransform(p, pose) {
 
 function computeView(geom, pose, viewMode, vb) {
   if (viewMode === "bus") {
-    // Fixed scale: the vehicle's own length occupies a bit over half the map's shorter side,
-    // regardless of steering — camera just follows the bus.
+    // Fixed scale: the map's shorter side always shows BUS_VIEW_LENGTHS vehicle-lengths' worth of
+    // world space, regardless of steering — camera just follows the bus.
     const vehicleLength = geom.Lfd + geom.Fo + geom.Ldt + geom.Ro;
-    const scale = ((vb.min / 3) / vehicleLength) * 1.7;
+    const scale = vb.min / (BUS_VIEW_LENGTHS * vehicleLength);
     return { scale, originX: vb.w / 2 + pose.y * scale, originY: vb.h / 2 + pose.x * scale };
+  }
+  if (viewMode === "close") {
+    // 'B' key: a tight, continuously-tracking close-up — CLOSE_RADIUS_M around a reference point
+    // biased CLOSE_FORWARD_BIAS of the way back from the front bumper (not the drive-axle pose
+    // origin the way "bus" mode is, and not the vehicle's geometric midpoint either), so more of the
+    // fixed radius extends ahead of the bus than behind it — forward real estate is what matters
+    // when driving, not what's already passed.
+    const front = geom.Lfd + geom.Fo; // chassis-local x of the front bumper
+    const vehicleLength = geom.Lfd + geom.Fo + geom.Ldt + geom.Ro;
+    const refChassisX = front - vehicleLength * CLOSE_FORWARD_BIAS;
+    const refWorld = poseTransform({ x: refChassisX, y: 0 }, pose);
+    const scale = (vb.min / 2 - MARGIN) / CLOSE_RADIUS_M;
+    return { scale, originX: vb.w / 2 + refWorld.y * scale, originY: vb.h / 2 + refWorld.x * scale };
   }
   let center, fitExtent;
   if (geom.isStraight) {
@@ -128,6 +161,22 @@ function computeView(geom, pose, viewMode, vb) {
   }
   const scale = (vb.min / 2 - MARGIN) / fitExtent;
   return { scale, originX: vb.w / 2 + center.y * scale, originY: vb.h / 2 + center.x * scale };
+}
+
+// Fits an arbitrary world-space rectangle into the viewport — unlike computeView's own fitting
+// (which always assumes a roughly-circular extent about a live pose/turn-centre), this is for the
+// 'A'/'M' keys' one-shot "frame this fixed region" snapshots: trail bounds or the boundary square,
+// neither of which is generally square-ish around a centred point the way a turning circle is.
+// World x spans the *screen's* vertical axis and world y its horizontal one (see toScreen), so the
+// two are fitted independently and the tighter of the two constraints wins. Each span is floored at
+// FIT_MIN_SPAN_M so a near-stationary trail (or a single sample) doesn't zoom in absurdly tight.
+const FIT_MIN_SPAN_M = 20;
+function fitBoundsView(bounds, vb, margin) {
+  const worldYSpan = Math.max(FIT_MIN_SPAN_M, bounds.yMax - bounds.yMin);
+  const worldXSpan = Math.max(FIT_MIN_SPAN_M, bounds.xMax - bounds.xMin);
+  const scale = Math.min((vb.w - 2 * margin) / worldYSpan, (vb.h - 2 * margin) / worldXSpan);
+  const cx = (bounds.xMin + bounds.xMax) / 2, cy = (bounds.yMin + bounds.yMax) / 2;
+  return { scale, originX: vb.w / 2 + cy * scale, originY: vb.h / 2 + cx * scale };
 }
 
 function toScreen(view, p) {
@@ -225,16 +274,17 @@ function singleAxleBandHalfWidth(Tw) {
 const TRAIL_MIN_SPACING = 0.2; // metres between recorded trail samples
 const TRAIL_MIN_SPACING_SQ = TRAIL_MIN_SPACING * TRAIL_MIN_SPACING;
 const TRAIL_RENDER_EVERY = 5; // force a re-render every N recorded samples, not every one
-const TRAIL_BOUND_HALF = 500; // metres — recording area capped to a 1000x1000m (1km²) square centred on the origin
 
 // Screen-space outline of the trail-recording bound — unlike longLineScreen/longBandPoints (which
 // are chassis-relative and follow the bus via poseTransform), this square is anchored at the world
 // origin and never moves with the vehicle, so it's just four world corners run straight through
-// toScreen with no pose transform.
-function mapBoundaryPoints(view) {
+// toScreen with no pose transform. `trailBoundHalf` is the live, user-selectable half-extent (see
+// TRAIL_SIZE_PRESETS) — passed in explicitly like the rest of this file's geometry helpers rather
+// than read off a module constant, since it can now change at runtime.
+function mapBoundaryPoints(view, trailBoundHalf) {
   const corners = [
-    { x: TRAIL_BOUND_HALF, y: TRAIL_BOUND_HALF }, { x: TRAIL_BOUND_HALF, y: -TRAIL_BOUND_HALF },
-    { x: -TRAIL_BOUND_HALF, y: -TRAIL_BOUND_HALF }, { x: -TRAIL_BOUND_HALF, y: TRAIL_BOUND_HALF },
+    { x: trailBoundHalf, y: trailBoundHalf }, { x: trailBoundHalf, y: -trailBoundHalf },
+    { x: -trailBoundHalf, y: -trailBoundHalf }, { x: -trailBoundHalf, y: trailBoundHalf },
   ].map((p) => toScreen(view, p));
   return ptsToPath(corners);
 }
@@ -412,8 +462,9 @@ function brakeDecel(heldSeconds) {
 
 // ---------- boundary speed governor ----------
 // While driving in trail mode, cap the maximum speed as a function of remaining path-distance to
-// the 1km² trail-recording boundary (TRAIL_BOUND_HALF) so the bus slows to a stop right at the
-// edge instead of driving through it. Deliberately a live speed *ceiling* recomputed every frame,
+// the trail-recording boundary (its half-extent — see TRAIL_SIZE_PRESETS/trailBoundHalf — is a live,
+// user-selectable value, not a fixed constant) so the bus slows to a stop right at the edge instead
+// of driving through it. Deliberately a live speed *ceiling* recomputed every frame,
 // not a forced-brake override that seizes control: there's no reverse gear in this sim, so a hard
 // stop that also blocked the throttle would strand the driver at the wall with no way back. A
 // ceiling that's just a function of current position/heading releases itself the instant the
@@ -464,7 +515,7 @@ const BOUNDARY_GOVERNOR_EXTRA_MARGIN = 12; // metres of pad beyond the bumper, f
 // the square means the *other* axis is still in-range at whatever moment the first one reaches
 // its bound (if it weren't, that earlier moment would already have been the answer).
 //
-// Curved case: solves for the first arc-length `s` at which x(s) or y(s) hits ±TRAIL_BOUND_HALF,
+// Curved case: solves for the first arc-length `s` at which x(s) or y(s) hits ±trailBoundHalf,
 // using the same closed-form unicycle projection `projectPosesForward` uses for the trail preview
 // (x(s)=Cx+R·sin(theta0+s/R), y(s)=Cy-R·cos(theta0+s/R) around the world-frame turn centre
 // (Cx,Cy)), just solved for "s where a wall is hit" instead of stepped forward by a fixed length.
@@ -477,11 +528,11 @@ const BOUNDARY_GOVERNOR_EXTRA_MARGIN = 12; // metres of pad beyond the bumper, f
 // heading alone, not the curved path, because the curved-path distance grows the moment auto-steer
 // starts correcting — using it as the trigger would make auto-steer switch itself off the instant it
 // switched on.
-function boundaryWallAhead(pose) {
+function boundaryWallAhead(pose, trailBoundHalf) {
   const cosT = Math.cos(pose.theta), sinT = Math.sin(pose.theta);
   const axisDistance = (axis, coord, dirComp) => {
     if (Math.abs(dirComp) < 1e-6) return { axis, distance: Infinity }; // heading is parallel to this axis — that wall never gets closer
-    const axisRemaining = dirComp > 0 ? TRAIL_BOUND_HALF - coord : coord + TRAIL_BOUND_HALF;
+    const axisRemaining = dirComp > 0 ? trailBoundHalf - coord : coord + trailBoundHalf;
     return { axis, distance: Math.max(0, axisRemaining) / Math.abs(dirComp) }; // metres of axis travel left -> metres of path at this heading
   };
   const x = axisDistance("x", pose.x, cosT);
@@ -489,9 +540,9 @@ function boundaryWallAhead(pose) {
   return x.distance <= y.distance ? x : y;
 }
 
-function boundaryPathDistance(pose, geom) {
+function boundaryPathDistance(pose, geom, trailBoundHalf) {
   if (!geom || geom.isStraight) {
-    return boundaryWallAhead(pose).distance;
+    return boundaryWallAhead(pose, trailBoundHalf).distance;
   }
 
   const R = geom.R;
@@ -508,7 +559,7 @@ function boundaryPathDistance(pose, geom) {
 
   const candidates = [];
   // x(s) = Cx + R·sin(theta(s)) = V  =>  sin(theta) = (V - Cx) / R  (two branches: asin and π-asin)
-  for (const V of [TRAIL_BOUND_HALF, -TRAIL_BOUND_HALF]) {
+  for (const V of [trailBoundHalf, -trailBoundHalf]) {
     const k = (V - Cx) / R;
     if (Math.abs(k) <= 1) {
       const base = Math.asin(k);
@@ -516,7 +567,7 @@ function boundaryPathDistance(pose, geom) {
     }
   }
   // y(s) = Cy - R·cos(theta(s)) = V  =>  cos(theta) = (Cy - V) / R  (two branches: ±acos)
-  for (const V of [TRAIL_BOUND_HALF, -TRAIL_BOUND_HALF]) {
+  for (const V of [trailBoundHalf, -trailBoundHalf]) {
     const k = (Cy - V) / R;
     if (Math.abs(k) <= 1) {
       const base = Math.acos(k);
@@ -894,6 +945,10 @@ export default function BusSteeringSimulator() {
   // Trail display mode: paints the corridor the vehicle has actually driven, rather than just the
   // instantaneous turning circle. See docs/trail-display-mode.md for the design.
   const [trailMode, setTrailMode] = useState(false);
+  // S/M/L trail-recording/boundary square half-extent (see TRAIL_SIZE_PRESETS), adjustable in
+  // Advanced settings. Changing it doesn't retroactively affect an already-recorded trail — only
+  // where the boundary itself is drawn and where the governor/auto-steer/sampling cutoff sits.
+  const [trailBoundHalf, setTrailBoundHalf] = useState(TRAIL_BOUND_HALF_DEFAULT);
   const [trailVersion, setTrailVersion] = useState(0); // bumped to force a re-render as samples accumulate
   const [trailPaused, setTrailPaused] = useState(false); // mirrors trailPausedRef, only for display
   // Mirrors boundaryLimitingRef, only for display — true whenever the boundary speed governor (see
@@ -904,6 +959,7 @@ export default function BusSteeringSimulator() {
   const [autoSteerActive, setAutoSteerActive] = useState(false);
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
   const trailModeRef = useRef(trailMode);
+  const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason frontOverhangRef exists
   const trailPausedRef = useRef(false);
   const boundaryLimitingRef = useRef(false);
   const autoSteerActiveRef = useRef(false);
@@ -938,6 +994,11 @@ export default function BusSteeringSimulator() {
   const throttleHeldRef = useRef(false);
   const brakeHeldRef = useRef(false);
   const brakeHeldSinceRef = useRef(null); // performance.now() timestamp of the current brake press, for the progressive ramp
+  // Page Down: brake to a full stop without having to hold the key down — set once on keydown, left
+  // set across the keyup (unlike brakeHeldRef), and cleared once speed actually reaches 0 or an
+  // accelerate input (↑ or Page Up) overrides it. Drives the exact same progressive brakeDecel ramp
+  // as physically holding ↓ (see the drive loop below), just without needing continuous holding.
+  const autoBrakeRef = useRef(false);
   const hornAudioRef = useRef(null);
   const handbrakeEngagedRef = useRef(false);
   // Set by the "Drive the turn" button: a one-shot target (km/h) the drive loop accelerates toward
@@ -952,6 +1013,7 @@ export default function BusSteeringSimulator() {
   geomRef.current = geom;
   speedRef.current = speed;
   trailModeRef.current = trailMode;
+  trailBoundHalfRef.current = trailBoundHalf;
   frontOverhangRef.current = Lfd + Fo;
   LfdRef.current = Lfd;
 
@@ -963,12 +1025,14 @@ export default function BusSteeringSimulator() {
   }
 
   // Appends a trail sample for `nextPose` if trail mode is on, the bus has moved far enough since
-  // the last sample, and we're still within the capped 1km² recording area. Called from the drive
-  // loop below with a plain value (never from inside a setState updater — this repo runs under
-  // StrictMode, which double-invokes updater functions to catch impure ones, and this mutates a ref).
+  // the last sample, and we're still within the capped recording area (see trailBoundHalfRef — the
+  // S/M/L size selection in Advanced settings). Called from the drive loop below with a plain value
+  // (never from inside a setState updater — this repo runs under StrictMode, which double-invokes
+  // updater functions to catch impure ones, and this mutates a ref).
   function maybeSampleTrail(nextPose, g) {
     if (!trailModeRef.current) return;
-    const outOfBounds = Math.abs(nextPose.x) > TRAIL_BOUND_HALF || Math.abs(nextPose.y) > TRAIL_BOUND_HALF;
+    const half = trailBoundHalfRef.current;
+    const outOfBounds = Math.abs(nextPose.x) > half || Math.abs(nextPose.y) > half;
     if (outOfBounds !== trailPausedRef.current) {
       trailPausedRef.current = outOfBounds;
       setTrailPaused(outOfBounds);
@@ -1138,11 +1202,36 @@ export default function BusSteeringSimulator() {
         setSteerInput(0);
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
+        autoBrakeRef.current = false; // accelerating overrides a still-running Page Down auto-brake
         throttleHeldRef.current = true;
       } else if (e.key === "ArrowDown") {
         e.preventDefault();
         if (!brakeHeldRef.current) brakeHeldSinceRef.current = performance.now();
         brakeHeldRef.current = true;
+      } else if (e.key === "PageUp") {
+        e.preventDefault();
+        autoBrakeRef.current = false; // same override as ArrowUp above
+        driveToTargetRef.current = MAX_SPEED_KMH; // reuses the same throttle-toward-target ramp as "Drive the turn"
+      } else if (e.key === "PageDown") {
+        e.preventDefault();
+        if (!brakeHeldRef.current && !autoBrakeRef.current) brakeHeldSinceRef.current = performance.now();
+        autoBrakeRef.current = true;
+      } else if (e.key.toLowerCase() === "a" && !e.repeat) {
+        // Switch to the "trail" view mode (see computeEffectiveView) — smoothly frames the recorded
+        // trail's extents, then keeps tracking live as the trail grows and the bus drives, exactly
+        // like Bus/Circle/'B' already do, rather than freezing a one-shot snapshot.
+        e.preventDefault();
+        selectViewModeRef.current("trail");
+      } else if (e.key.toLowerCase() === "m" && !e.repeat) {
+        // Switch to the "grid" view mode: frames the current S/M/L boundary square. Trail-mode only
+        // — the boundary isn't a concept outside it (same gating the governor/auto-steer use).
+        e.preventDefault();
+        if (trailModeRef.current) selectViewModeRef.current("grid");
+      } else if (e.key.toLowerCase() === "b" && !e.repeat) {
+        // Switch to the "close" view mode (see computeView) — a tight, continuously-tracking 15m
+        // radius biased toward the front of the bus.
+        e.preventDefault();
+        selectViewModeRef.current("close");
       } else if (e.code === "Space") {
         e.preventDefault();
         if (!e.repeat) startHorn();
@@ -1150,8 +1239,13 @@ export default function BusSteeringSimulator() {
     }
     function onKeyUp(e) {
       if (e.key === "ArrowUp") throttleHeldRef.current = false;
-      else if (e.key === "ArrowDown") { brakeHeldRef.current = false; brakeHeldSinceRef.current = null; }
-      else if (e.code === "Space") stopHorn();
+      else if (e.key === "ArrowDown") {
+        brakeHeldRef.current = false;
+        // Leave the ramp's start time alone if Page Down's auto-brake is still carrying it — only a
+        // physical ↓ press/release pair owns resetting it, otherwise releasing ↓ mid-way through an
+        // auto-brake would restart the progressive ramp from gentle again.
+        if (!autoBrakeRef.current) brakeHeldSinceRef.current = null;
+      } else if (e.code === "Space") stopHorn();
     }
     function onBlur() {
       // Losing window focus mid-keypress (alt-tab, etc.) never delivers a keyup — release
@@ -1226,10 +1320,16 @@ export default function BusSteeringSimulator() {
       lastTRef.current = t;
 
       let nextSpeed = speedRef.current;
-      if (brakeHeldRef.current) {
-        driveToTargetRef.current = null; // braking always overrides/cancels the "Drive the turn" auto-ramp
+      if (brakeHeldRef.current || autoBrakeRef.current) {
+        driveToTargetRef.current = null; // braking always overrides/cancels a pending accelerate-to-target ramp
         const heldS = brakeHeldSinceRef.current != null ? (t - brakeHeldSinceRef.current) / 1000 : 0;
         nextSpeed = Math.max(0, nextSpeed - brakeDecel(heldS) * 3.6 * dt);
+        if (nextSpeed === 0 && autoBrakeRef.current) {
+          // Page Down's job is done — clear it so the next ↓ press starts a fresh ramp rather than
+          // inheriting this one's (long-since-elapsed) start time.
+          autoBrakeRef.current = false;
+          if (!brakeHeldRef.current) brakeHeldSinceRef.current = null;
+        }
       } else if (throttleHeldRef.current || driveToTargetRef.current != null) {
         nextSpeed = Math.min(MAX_SPEED_KMH, nextSpeed + throttleAccel(nextSpeed) * 3.6 * dt);
         if (driveToTargetRef.current != null && nextSpeed >= driveToTargetRef.current) {
@@ -1238,8 +1338,8 @@ export default function BusSteeringSimulator() {
         }
       }
 
-      // Boundary speed governor (trail mode only — the 1km² boundary isn't a concept outside it):
-      // cap nextSpeed so the bus can't be driven through TRAIL_BOUND_HALF, whichever control put it
+      // Boundary speed governor (trail mode only — the boundary isn't a concept outside it):
+      // cap nextSpeed so the bus can't be driven through trailBoundHalfRef.current, whichever control put it
       // there (throttle key or the "Drive the turn" auto-ramp both land here). See
       // boundaryGovernorCapKmh for why a plain clamp is enough to feel like a smooth stop.
       // `limiting` tracks whether the clamp actually bit this frame (not just whether the heading
@@ -1247,7 +1347,7 @@ export default function BusSteeringSimulator() {
       // that's simply parked facing the boundary from a safe distance.
       let limiting = false;
       if (trailModeRef.current) {
-        const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current, geomRef.current), frontOverhangRef.current);
+        const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current, geomRef.current, trailBoundHalfRef.current), frontOverhangRef.current);
         if (nextSpeed > capKmh) {
           // Remember the speed to restore to once this cap releases — see preSlowdownSpeedRef's
           // declaration and the restore below. Normally that's just the current (pre-clamp) speed,
@@ -1296,7 +1396,7 @@ export default function BusSteeringSimulator() {
         }
       } else {
         if (!autoSteerActiveRef.current && t >= autoSteerCooldownUntilRef.current) {
-          const wall = boundaryWallAhead(poseRef.current);
+          const wall = boundaryWallAhead(poseRef.current, trailBoundHalfRef.current);
           const leadDistance = autoSteerLeadDistance(nextSpeed, frontOverhangRef.current);
           if (wall.distance < leadDistance) {
             autoSteerActiveRef.current = true;
@@ -1376,7 +1476,28 @@ export default function BusSteeringSimulator() {
   // explicit animated pan is only a genuine mode switch (the Bus/Circle button). Outside of that
   // short transition, the camera tracks its target exactly every frame — no drift, no lag — so a
   // circle centre stays pinned dead-centre while turning, and bus-centric tracks the bus exactly.
+  // 'A'/'M' (below) are just two more entries in this same function, not a separate override system:
+  // "trail" fits the recorded trail's bounds (plus the current pose, so it never excludes the bus
+  // itself even if the trail is short or off) and "grid" fits the current S/M/L boundary square —
+  // both recomputed fresh on every call, so they track live exactly like "bus"/"close" do, rather
+  // than freezing a snapshot at the moment the key was pressed.
   function computeEffectiveView(mode) {
+    if (mode === "close") return computeView(geom, pose, "close", vbSize); // 'B' key — its own fixed framing, no bus/circle blend
+    if (mode === "trail") {
+      const trail = trailRef.current;
+      let xMin = pose.x, xMax = pose.x, yMin = pose.y, yMax = pose.y;
+      for (const s of trail) {
+        if (s.poseX < xMin) xMin = s.poseX;
+        if (s.poseX > xMax) xMax = s.poseX;
+        if (s.poseY < yMin) yMin = s.poseY;
+        if (s.poseY > yMax) yMax = s.poseY;
+      }
+      return fitBoundsView({ xMin, xMax, yMin, yMax }, vbSize, MARGIN);
+    }
+    if (mode === "grid") {
+      const h = trailBoundHalf;
+      return fitBoundsView({ xMin: -h, xMax: h, yMin: -h, yMax: h }, vbSize, MARGIN);
+    }
     const busView = computeView(geom, pose, "bus", vbSize);
     if (mode === "bus") return busView;
     const circleView = computeView(geom, pose, "circle", vbSize);
@@ -1409,6 +1530,11 @@ export default function BusSteeringSimulator() {
     setTransitionT(0);
     setViewMode(newMode);
   }
+  // Redefined every render, so mirrored into a ref for the keydown effect below (mounted once) to
+  // call the always-current version — same reason the drive loop reads refs instead of closed-over
+  // state. 'A'/'M'/'B' all just call this with "trail"/"grid"/"close".
+  const selectViewModeRef = useRef(selectViewMode);
+  selectViewModeRef.current = selectViewMode;
 
   useEffect(() => {
     if (!transition) return;
@@ -1808,7 +1934,10 @@ export default function BusSteeringSimulator() {
           style={{ width: "100%", height: "100%", background: COL.panelAlt, borderRadius: 4, border: "1px solid rgba(200,225,245,0.14)", overflow: "hidden" }}
         >
           <defs>
-            <pattern id="grid" width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
+            {/* x/y anchor the tile to the world origin (screen position (originX,originY) is where
+                world (0,0) lands — see toScreen) rather than the SVG viewport's own (0,0) corner, so
+                the grid reads as ground the camera pans over, not a texture glued to the screen. */}
+            <pattern id="grid" x={displayedView.originX} y={displayedView.originY} width={gridPx} height={gridPx} patternUnits="userSpaceOnUse">
               <path d={`M ${gridPx} 0 L 0 0 0 ${gridPx}`} fill="none" stroke={COL.grid} strokeWidth="1" />
             </pattern>
             <clipPath id="mapClip">
@@ -1818,11 +1947,11 @@ export default function BusSteeringSimulator() {
           <g clipPath="url(#mapClip)">
           <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />
 
-          {/* trail-recording bound: the 1km² square (TRAIL_BOUND_HALF) trail sampling is capped
-              to, drawn so the limit is visible before it's hit rather than only discovered via the
+          {/* trail-recording bound: the square (trailBoundHalf, S/M/L in Advanced settings) trail
+              sampling is capped to, drawn so the limit is visible before it's hit rather than only discovered via the
               "Trail paused" indicator. World-anchored, not chassis-relative — see mapBoundaryPoints. */}
           {trailMode && (
-            <polygon points={mapBoundaryPoints(displayedView)} fill="none" stroke={COL.trail} strokeWidth="1.4" strokeDasharray="12 8" opacity="0.5" />
+            <polygon points={mapBoundaryPoints(displayedView, trailBoundHalf)} fill="none" stroke={COL.trail} strokeWidth="1.4" strokeDasharray="12 8" opacity="0.5" />
           )}
 
           {/* body footprint trail — the ground actually driven over by the body, bottom layer,
@@ -2077,7 +2206,7 @@ export default function BusSteeringSimulator() {
           {trailMode && <LegendDot color={COL.trail} label="Trail — drive axle corridor" />}
           {trailMode && <LegendDot color={COL.front} label="Trail — front axle track" />}
           {trailMode && <LegendDot color={COL.tag} label="Trail — tag axle track" />}
-          {trailMode && <LegendDot color={COL.trail} label="Mapped area boundary (1km²)" />}
+          {trailMode && <LegendDot color={COL.trail} label={`Mapped area boundary (${boundaryAreaLabel(trailBoundHalf)})`} />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
         </div>
         <div style={{ position: "absolute", left: 10, bottom: 10, display: "flex", boxShadow: "0 2px 8px rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden" }}>
@@ -2105,7 +2234,7 @@ export default function BusSteeringSimulator() {
           >
             Circle
           </button>
-          {viewMode === "bus" && (
+          {(viewMode === "bus" || viewMode === "close" || viewMode === "trail") && (
             <button
               onClick={() => {
                 setRecenterTransition({ fromView: displayedView, startTime: performance.now() });
@@ -2163,7 +2292,7 @@ export default function BusSteeringSimulator() {
         </div>
         {trailMode && trailPaused && (
           <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.tag, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
-            Trail paused — outside 1km² mapped area
+            Trail paused — outside {boundaryAreaLabel(trailBoundHalf)} mapped area
           </div>
         )}
         {/* Shown whenever the boundary speed governor (see boundaryGovernorCapKmh) is actively
@@ -2189,11 +2318,13 @@ export default function BusSteeringSimulator() {
           className={"btn" + (animating ? " btnOn" : "")}
           onClick={() => {
             if (animating) {
-              // Also cancels a still-in-progress "Drive the turn" ramp — without this, clicking
-              // Stop before the ramp reaches DRIVE_THE_TURN_TARGET_KMH set speed to 0 but left
-              // driveToTargetRef pointed at 10, so the drive loop's very next frame saw the
-              // pending target and immediately re-accelerated instead of actually stopping.
+              // Also cancels a still-in-progress "Drive the turn"/Page Up accelerate ramp and a
+              // still-running Page Down auto-brake — without clearing driveToTargetRef, clicking
+              // Stop before the ramp reaches its target set speed to 0 but left the ref pointed at
+              // the target, so the drive loop's very next frame saw the pending target and
+              // immediately re-accelerated instead of actually stopping.
               driveToTargetRef.current = null;
+              autoBrakeRef.current = false;
               setSpeed(0);
             } else {
               driveToTargetRef.current = DRIVE_THE_TURN_TARGET_KMH;
@@ -2227,10 +2358,14 @@ export default function BusSteeringSimulator() {
           <SectionLabel>Driver controls</SectionLabel>
           <div style={{ fontSize: 14, color: COL.textDim, lineHeight: 1.7, marginBottom: 10 }}>
             <div>↑ / ↓ — Accelerate / brake. Braking starts gentle and firms up the longer it's held.</div>
+            <div>Page Up / Page Down — Accelerate to top speed / brake to a stop, hands-free — keeps going after release until it gets there or the other one is pressed</div>
             <div>← / → — Nudge the steering lock 0.5° at a time (up to {LOCK_TO_LOCK_SECONDS}s lock-to-lock)</div>
             <div>Shift + ← / → — Quarter-turn of the wheel at a time ({QUARTER_TURN_STEER_DEG}°)</div>
             <div>End — Straight (centre the steering)</div>
             <div>Space — Horn</div>
+            <div>A — Smoothly zoom to fit the recorded trail</div>
+            <div>M — Smoothly zoom to fit the mapped-area boundary (trail mode only)</div>
+            <div>B — Close-up {CLOSE_RADIUS_M}m view, tracking the bus (biased toward what's ahead)</div>
             <div>Automatic — handbrake sets {HANDBRAKE_ENGAGE_DELAY_MS / 1000}s after coming to rest, releases on pulling away</div>
           </div>
 
@@ -2259,6 +2394,26 @@ export default function BusSteeringSimulator() {
       {/* advanced settings: full window width, below both the map and side panel, collapsed by default */}
       <div style={{ padding: "10px 10px 0" }}>
         <Collapsible title="Advanced settings" open={advancedOpen} onToggle={() => setAdvancedOpen((v) => !v)}>
+          <SectionLabel>Trail mode</SectionLabel>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ fontSize: 15, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Mapped area size — {boundaryAreaLabel(trailBoundHalf)} ({trailBoundHalf * 2}m)
+            </span>
+            <div style={{ display: "flex", gap: 6 }}>
+              {TRAIL_SIZE_PRESETS.map((p) => (
+                <button
+                  key={p.key}
+                  className={"btn" + (trailBoundHalf === p.half ? " btnOn" : "")}
+                  title={`${p.half * 2}m square — ${boundaryAreaLabel(p.half)}`}
+                  onClick={() => setTrailBoundHalf(p.half)}
+                  style={{ minWidth: 32 }}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
           <SectionLabel>Tag axle behaviour</SectionLabel>
           <Slider label="Tag axle sync ratio (1 = ideal Ackermann)" unit="×" value={tagRatio} min={0} max={1.3} step={0.05} onChange={setTagRatio} accent={COL.tag} />
 
