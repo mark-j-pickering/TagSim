@@ -15,6 +15,9 @@ const MAX_ZOOM = 6;
 // ---------- math helpers ----------
 const toRad = (d) => (d * Math.PI) / 180;
 const toDeg = (r) => (r * 180) / Math.PI;
+// Signed angle difference, wrapped to (-π, π] — used to measure heading error the short way round
+// regardless of which side of the ±180° seam the two angles fall on.
+const wrapAngle = (r) => Math.atan2(Math.sin(r), Math.cos(r));
 
 function rotatePt(p, ang) {
   const c = Math.cos(ang), s = Math.sin(ang);
@@ -372,17 +375,20 @@ function steerRampRate(absAngleDeg) {
 // each frame (see the drive loop in the component body); the side-panel "Speed" gauge is now a
 // read-only speedometer.
 const MAX_SPEED_KMH = 90;
-// Confirmed target: 0-90km/h in ZERO_TO_MAX_SECONDS flat out. Acceleration is power-limited, not
-// constant-force — strong low-speed pull that tapers off approaching top speed (real buses don't
-// pull as hard at 80km/h as they do off the line) — so THROTTLE_ACCEL_LOW/HIGH aren't hand-tuned
-// guesses, they're solved analytically from that target the same way STEER_MIN_RATE/STEER_MAX_RATE
-// are solved from LOCK_TO_LOCK_SECONDS above: with accel(v) linear in speed, accel(v) = HIGH + k*v
-// where k = (LOW-HIGH)/vmax, integrating dt = dv/accel(v) from 0 to vmax gives
+// 0-90km/h in ZERO_TO_MAX_SECONDS flat out — the original confirmed-real-bus figure was 25s, halved
+// here for a snappier feel (twice the acceleration, both from the up-arrow and any automated speed
+// increase — "Drive the turn", the boundary auto-steer's post-slowdown speed restore — since they all
+// share this same throttleAccel curve). Acceleration is power-limited, not constant-force — strong
+// low-speed pull that tapers off approaching top speed (real buses don't pull as hard at 80km/h as
+// they do off the line) — so THROTTLE_ACCEL_LOW/HIGH aren't hand-tuned guesses, they're solved
+// analytically from that target the same way STEER_MIN_RATE/STEER_MAX_RATE are solved from
+// LOCK_TO_LOCK_SECONDS above: with accel(v) linear in speed, accel(v) = HIGH + k*v where
+// k = (LOW-HIGH)/vmax, integrating dt = dv/accel(v) from 0 to vmax gives
 // time = vmax/(LOW-HIGH)·ln(LOW/HIGH) — solve that for HIGH given a chosen LOW/HIGH ratio (how much
 // harder it pulls off the line than near top speed) and ZERO_TO_MAX_SECONDS, same closed form as
 // the steering ramp. Changing MAX_SPEED_KMH, ZERO_TO_MAX_SECONDS, or the ratio keeps the 0-90 time
 // correct automatically — don't hand-edit THROTTLE_ACCEL_LOW/HIGH directly.
-const ZERO_TO_MAX_SECONDS = 25;
+const ZERO_TO_MAX_SECONDS = 12.5;
 const THROTTLE_ACCEL_RATIO = 3; // pulls this many times harder away from rest than near top speed
 const MAX_SPEED_MS = MAX_SPEED_KMH / 3.6;
 const THROTTLE_ACCEL_HIGH = (MAX_SPEED_MS * Math.log(THROTTLE_ACCEL_RATIO)) / (ZERO_TO_MAX_SECONDS * (THROTTLE_ACCEL_RATIO - 1)); // m/s^2, near top speed
@@ -464,15 +470,28 @@ const BOUNDARY_GOVERNOR_EXTRA_MARGIN = 12; // metres of pad beyond the bumper, f
 // (Cx,Cy)), just solved for "s where a wall is hit" instead of stepped forward by a fixed length.
 // The same starting-inside-the-square argument as the straight case means the first such `s`
 // across all four walls is the true first exit — no corner-clipping needed there either.
+// Distance-to and identity ("x" = a vertical wall, "y" = a horizontal one) of whichever wall the
+// bus's *current heading* — ignoring any curvature already dialled in — would reach first. This is
+// the straight-line case of boundaryPathDistance below, pulled out on its own because the boundary
+// auto-steer (further down) also needs it directly: it wants "is a wall closing in" measured against
+// heading alone, not the curved path, because the curved-path distance grows the moment auto-steer
+// starts correcting — using it as the trigger would make auto-steer switch itself off the instant it
+// switched on.
+function boundaryWallAhead(pose) {
+  const cosT = Math.cos(pose.theta), sinT = Math.sin(pose.theta);
+  const axisDistance = (axis, coord, dirComp) => {
+    if (Math.abs(dirComp) < 1e-6) return { axis, distance: Infinity }; // heading is parallel to this axis — that wall never gets closer
+    const axisRemaining = dirComp > 0 ? TRAIL_BOUND_HALF - coord : coord + TRAIL_BOUND_HALF;
+    return { axis, distance: Math.max(0, axisRemaining) / Math.abs(dirComp) }; // metres of axis travel left -> metres of path at this heading
+  };
+  const x = axisDistance("x", pose.x, cosT);
+  const y = axisDistance("y", pose.y, sinT);
+  return x.distance <= y.distance ? x : y;
+}
+
 function boundaryPathDistance(pose, geom) {
   if (!geom || geom.isStraight) {
-    const cosT = Math.cos(pose.theta), sinT = Math.sin(pose.theta);
-    const axisDistance = (coord, dirComp) => {
-      if (Math.abs(dirComp) < 1e-6) return Infinity; // heading is parallel to this axis — that wall never gets closer
-      const axisRemaining = dirComp > 0 ? TRAIL_BOUND_HALF - coord : coord + TRAIL_BOUND_HALF;
-      return Math.max(0, axisRemaining) / Math.abs(dirComp); // metres of axis travel left -> metres of path at this heading
-    };
-    return Math.min(axisDistance(pose.x, cosT), axisDistance(pose.y, sinT));
+    return boundaryWallAhead(pose).distance;
   }
 
   const R = geom.R;
@@ -515,6 +534,108 @@ function boundaryGovernorCapKmh(pathDistance, frontOverhang) {
   if (!Number.isFinite(pathDistance)) return Infinity;
   const d = Math.max(0, pathDistance - frontOverhang - BOUNDARY_GOVERNOR_EXTRA_MARGIN);
   return Math.sqrt(2 * BRAKE_DECEL_INITIAL * d) * 3.6; // m/s -> km/h
+}
+
+// ---------- boundary auto-steer ----------
+// Complements the speed governor above: rather than only slowing to a stop at the wall, nudge the
+// steering itself to curve the bus away as it closes in, so a driver who doesn't react gets an
+// assisted turn instead of riding the governor all the way down to a dead stop. Trail-mode only,
+// same as the governor — the boundary is a trail-mode-only concept.
+//
+// Engages once the wall ahead (boundaryWallAhead — the bus's actual heading, not its current curved
+// path; see that function's comment for why) is closer than the distance the bus covers in
+// AUTO_STEER_LEAD_SECONDS at its current speed — enough time to wind the wheel most of the way to
+// full lock (see LOCK_TO_LOCK_SECONDS) and drive the resulting arc, plus the same bumper/pad margin
+// the speed governor uses.
+//
+// Deliberately tied to the steering actuator's own time constant rather than the governor's braking
+// distance — an earlier version reused boundaryGovernorCapKmh's stopping-distance formula here, which
+// at highway speed is 400m+; on a 1000m-wide square that's most of the map, so auto-steer was
+// engaging almost everywhere, and the instant it reflected off one wall it would find a *different*
+// wall "ahead" of the new heading and immediately re-engage — a runaway chain of corrections that
+// tightened into a bus stuck spinning at full lock. (Caught from a real saved trail, not the original
+// unit tests, which only ever exercised a single engage→disengage cycle in isolation.)
+const AUTO_STEER_LEAD_SECONDS = LOCK_TO_LOCK_SECONDS;
+function autoSteerLeadDistance(speedKmh, frontOverhang) {
+  const v = speedKmh / 3.6;
+  return v * AUTO_STEER_LEAD_SECONDS + frontOverhang + BOUNDARY_GOVERNOR_EXTRA_MARGIN;
+}
+
+// Even with a tighter trigger distance, disengaging right next to a wall (a corner, where a second
+// wall sits close along the *new* heading too) could re-arm and chain into another correction before
+// the bus has actually put any distance behind it — the same runaway pattern above, just from a
+// different cause. AUTO_STEER_COOLDOWN_MS blocks re-engagement for a few seconds after any disengage,
+// giving the bus time to actually clear the area under its own new heading first.
+const AUTO_STEER_COOLDOWN_MS = 3000;
+
+// The target heading, frozen the instant auto-steer engages, is a mirror reflection of the current
+// heading about the wall's normal — the same "angle of incidence equals angle of reflection" a ball
+// takes off a cushion: hitting a wall square-on turns the bus around to head straight back out;
+// clipping it at a shallow angle only nudges the heading enough to run parallel and clear it. Frozen
+// rather than recomputed every frame so the target doesn't drift as the turn itself changes which
+// wall would technically be reached first.
+function reflectedHeading(theta, axis) {
+  return axis === "x" ? Math.PI - theta : -theta; // vertical wall flips the x-component of heading, horizontal flips y
+}
+
+// Steering is "bang-coast": full lock toward the target the whole time auto-steer is active, released
+// (steerInput -> 0) the instant a lookahead predicts that coasting from here would reach the target —
+// not a moment later, and not reacting to raw heading error.
+//
+// An earlier version here was a plain proportional heading-error controller (full lock while error was
+// large, easing off and releasing once error crossed a couple of degrees) — reused from a family of
+// "chase a shrinking target" controllers elsewhere in the file (the steering ramp itself, throttle,
+// etc). It looked fine in an isolated single-cycle check, but a real saved trail showed the bus ending
+// up 60-70° past the intended mirror heading, sometimes worse. The reason: appliedSteerInput's own
+// rate limit is deliberately SLOW near dead-centre (steerRampRate, for realism), so a wheel that's
+// still wound up several tens of degrees when heading crosses the "close enough" threshold keeps
+// unwinding — and the bus keeps sweeping — for a long time afterward. Waiting for heading error to
+// shrink before releasing is exactly backwards; by the time it's small, it's already too late to stop
+// in time.
+//
+// The fix (autoSteerCoastSweepDeg below) is the angular equivalent of the boundary speed governor's
+// own v²=2ad "start braking once your stopping distance equals the remaining distance" logic: every
+// frame, simulate forward — cheaply, a few dozen steps — what heading the bus would coast to if
+// steerInput were set to 0 right now, given the *actual* current appliedSteerInput and its own
+// steerRampRate-limited unwind. Release the moment that predicted heading has reached (or just passed)
+// the target. Verified against a spread of entry angles (5°-175°) and speeds (10-90km/h): final
+// heading now lands within a few degrees of the true mirror target in every case, instead of tens of
+// degrees off.
+//
+// Either way, this is what actually "honours the max rate of steering input" — auto-steer only ever
+// sets `steerInput` targets (full lock, or 0), exactly as a manual slider drag or "Full lock" button
+// click would; the existing rate-limited chase from steerInput to appliedSteerInput (see the
+// steering-rate-limiting effect in the component below) is what carries the wheel there.
+const AUTO_STEER_RELEASE_TOLERANCE_DEG = 1; // treat a predicted final error under this as "close enough"
+
+// Simulates forward from `appliedSteerDeg` (deg) at constant speed `speedMs`, assuming steerInput is
+// set to 0 starting now, until the wheel unwinds back to centre (steerRampRate's own progressive
+// rate — see the steering-rate-limiting effect). Returns the total heading swept during that coast, in
+// degrees, signed the same way pose.theta itself changes (i.e. subtract it from a heading-error figure
+// the same way `omega*dt` would each frame). `Lfd` is passed in rather than read from module scope
+// since it's a live, adjustable vehicle dimension, not a constant.
+// Also projects speed forward during the coast (toward MAX_SPEED_KMH via throttleAccel) rather than
+// holding it constant — the boundary governor's cap releases as the turn opens up the path ahead, so
+// the bus is usually still accelerating the whole way through a bounce, not cruising at a fixed speed.
+// Holding speed constant in the lookahead systematically under-predicted the sweep (the real coast
+// happens faster, at higher speed, than the snapshot at the moment of the check), which was part of
+// why an earlier version of this held the turn longer than it should have.
+function autoSteerCoastSweepDeg(appliedSteerDeg, speedKmh, Lfd) {
+  if (Math.abs(appliedSteerDeg) < 0.01) return 0;
+  let a = appliedSteerDeg;
+  let v = speedKmh;
+  let sweepRad = 0;
+  const dtSub = 0.05;
+  for (let i = 0; i < 160; i++) { // up to 8s of coast — comfortably more than a full unwind ever takes
+    const maxStep = steerRampRate(Math.abs(a)) * dtSub;
+    if (Math.abs(a) <= maxStep) a = 0;
+    else a -= Math.sign(a) * maxStep;
+    v = Math.min(MAX_SPEED_KMH, v + throttleAccel(v) * 3.6 * dtSub);
+    if (a === 0) break;
+    const R = Lfd / Math.tan(toRad(-a)); // same deltaFdeg=-appliedSteerInput convention as computeGeometry
+    sweepRad += (v / 3.6 / R) * dtSub;
+  }
+  return toDeg(sweepRad);
 }
 
 // How long the bus must sit at 0 speed before the handbrake sound fires (see the handbrake effect
@@ -778,15 +899,26 @@ export default function BusSteeringSimulator() {
   // Mirrors boundaryLimitingRef, only for display — true whenever the boundary speed governor (see
   // boundaryGovernorCapKmh) is actively reducing speed this frame.
   const [boundaryLimiting, setBoundaryLimiting] = useState(false);
+  // Mirrors autoSteerActiveRef, only for display — true while the boundary auto-steer (see
+  // "boundary auto-steer" above) is actively steering the bus away from a wall.
+  const [autoSteerActive, setAutoSteerActive] = useState(false);
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
   const trailModeRef = useRef(trailMode);
   const trailPausedRef = useRef(false);
   const boundaryLimitingRef = useRef(false);
+  const autoSteerActiveRef = useRef(false);
+  const autoSteerTargetThetaRef = useRef(0); // world heading auto-steer is chasing, frozen at engage — see reflectedHeading
+  const autoSteerCooldownUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't re-engage — see AUTO_STEER_COOLDOWN_MS
+  // Speed at the instant the boundary governor first starts capping it, so it can be restored (see
+  // driveToTargetRef below) once the bus has cleared the wall and the cap releases — otherwise a bus
+  // that isn't actively holding the throttle through the corner would just stay at the reduced speed.
+  const preSlowdownSpeedRef = useRef(null);
   // Lfd+Fo (reference point to front bumper), mirrored for the drive loop below — that loop is an
   // imperative useEffect with an empty dependency array (see its own comment), so it can't read
   // Lfd/Fo as live component state; it reads this ref instead, kept in sync every render alongside
   // geomRef/speedRef/trailModeRef just below.
   const frontOverhangRef = useRef(0);
+  const LfdRef = useRef(7); // live Lfd, for autoSteerCoastSweepDeg — same reason frontOverhangRef exists
   const poseRef = useRef({ x: 0, y: 0, theta: 0 }); // live pose during the drive loop, source of truth for trail sampling
 
   const [pose, setPose] = useState({ x: 0, y: 0, theta: 0 });
@@ -821,6 +953,7 @@ export default function BusSteeringSimulator() {
   speedRef.current = speed;
   trailModeRef.current = trailMode;
   frontOverhangRef.current = Lfd + Fo;
+  LfdRef.current = Lfd;
 
   function clearTrail() {
     trailRef.current = [];
@@ -1116,6 +1249,16 @@ export default function BusSteeringSimulator() {
       if (trailModeRef.current) {
         const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current, geomRef.current), frontOverhangRef.current);
         if (nextSpeed > capKmh) {
+          // Remember the speed to restore to once this cap releases — see preSlowdownSpeedRef's
+          // declaration and the restore below. Normally that's just the current (pre-clamp) speed,
+          // but if a *previous* restore ramp is still in progress (driveToTargetRef already pointing
+          // at a higher speed) — e.g. a second wall/corner catches the bus before it's back up from
+          // the first one — preserve that higher target instead. Otherwise this would quietly ratchet
+          // the restored speed down to whatever partial speed the bus had reached so far, rather than
+          // the original speed the approach actually started at.
+          if (!boundaryLimitingRef.current) {
+            preSlowdownSpeedRef.current = driveToTargetRef.current != null ? driveToTargetRef.current : nextSpeed;
+          }
           nextSpeed = Math.max(0, capKmh);
           limiting = true;
         }
@@ -1123,6 +1266,63 @@ export default function BusSteeringSimulator() {
       if (limiting !== boundaryLimitingRef.current) {
         boundaryLimitingRef.current = limiting;
         setBoundaryLimiting(limiting);
+        // Cap just released (wall cleared, whether by auto-steer below or the driver's own hand on the
+        // wheel) — restore the pre-slowdown cruising speed automatically, the same one-shot ramp the
+        // "Drive the turn" button uses, so the bus speeds back up even if nobody's actively holding the
+        // throttle through the corner. Braking wins if the driver's doing that instead.
+        if (!limiting && preSlowdownSpeedRef.current != null) {
+          if (!brakeHeldRef.current) driveToTargetRef.current = preSlowdownSpeedRef.current;
+          preSlowdownSpeedRef.current = null;
+        }
+      }
+
+      // Boundary auto-steer (trail mode only, see the "boundary auto-steer" comment above): while not
+      // already engaged and past the post-disengage cooldown (AUTO_STEER_COOLDOWN_MS), watch for a
+      // wall closing in on the bus's current heading; once engaged, hold full lock toward the frozen
+      // reflected target heading until autoSteerCoastSweepDeg predicts that releasing right now would
+      // reach it, then hand a centred wheel back to the driver and start the cooldown before it's
+      // allowed to re-arm. `desired` only ever takes one of two values for the life of one engagement
+      // (full lock one way or the other, decided once at engage from the sign of the heading error), so
+      // re-issuing `setSteerInput` only on an actual change — rather than every frame — both avoids
+      // needlessly restarting the steering-rate-limiting effect's own rAF chase and just falls out of
+      // the bang-coast design rather than needing a separate throttling threshold.
+      if (!trailModeRef.current) {
+        // Trail mode turned off mid-turn — the boundary stops existing as a concept, so just drop
+        // out (leave the wheel wherever it was; unlike a normal disengage below this isn't "the
+        // turn finished," it's the feature being switched off, so it shouldn't yank the wheel too).
+        if (autoSteerActiveRef.current) {
+          autoSteerActiveRef.current = false;
+          setAutoSteerActive(false);
+        }
+      } else {
+        if (!autoSteerActiveRef.current && t >= autoSteerCooldownUntilRef.current) {
+          const wall = boundaryWallAhead(poseRef.current);
+          const leadDistance = autoSteerLeadDistance(nextSpeed, frontOverhangRef.current);
+          if (wall.distance < leadDistance) {
+            autoSteerActiveRef.current = true;
+            autoSteerTargetThetaRef.current = reflectedHeading(poseRef.current.theta, wall.axis);
+            setAutoSteerActive(true);
+          }
+        }
+        if (autoSteerActiveRef.current) {
+          const errorDeg = toDeg(wrapAngle(autoSteerTargetThetaRef.current - poseRef.current.theta));
+          const coastSweepDeg = autoSteerCoastSweepDeg(appliedSteerRef.current, nextSpeed, LfdRef.current);
+          const predictedFinalErrorDeg = errorDeg - coastSweepDeg;
+          const wouldReachOrPassTarget =
+            Math.sign(predictedFinalErrorDeg) !== Math.sign(errorDeg) || Math.abs(predictedFinalErrorDeg) < AUTO_STEER_RELEASE_TOLERANCE_DEG;
+          if (wouldReachOrPassTarget) {
+            autoSteerActiveRef.current = false;
+            autoSteerCooldownUntilRef.current = t + AUTO_STEER_COOLDOWN_MS;
+            setAutoSteerActive(false);
+            setSteerInput(0); // release now — coasting the rest of the way is exactly what got us here
+          } else {
+            // errorDeg>0 means theta needs to increase to reach the target; steerInput>0 -> deltaFdeg<0
+            // -> theta decreases (see deltaFdeg's declaration above), so closing a positive error needs
+            // a negative steerInput — hence the sign flip here.
+            const desired = -(Math.sign(errorDeg) || 1) * MAX_LOCK_DEG;
+            if (desired !== steerTargetRef.current) setSteerInput(desired);
+          }
+        }
       }
 
       if (nextSpeed !== speedRef.current) {
@@ -1967,11 +2167,19 @@ export default function BusSteeringSimulator() {
           </div>
         )}
         {/* Shown whenever the boundary speed governor (see boundaryGovernorCapKmh) is actively
-            reducing speed this frame — suppressed once trailPaused takes over (i.e. the boundary's
-            already been reached), so only one of the two shows. */}
-        {trailMode && boundaryLimiting && !trailPaused && (
+            reducing speed this frame — suppressed once trailPaused or auto-steer takes over (i.e.
+            the boundary's already been reached, or the bus is already being turned away from it),
+            so only one of the three indicators shows at a time. */}
+        {trailMode && boundaryLimiting && !trailPaused && !autoSteerActive && (
           <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.trail, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
             Approaching mapped area limit — slowing
+          </div>
+        )}
+        {/* Shown whenever the boundary auto-steer (see "boundary auto-steer" above) is actively turning
+            the bus away from the mapped-area wall it was closing in on. */}
+        {trailMode && autoSteerActive && !trailPaused && (
+          <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.trail, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
+            Approaching mapped area limit — auto-steering away
           </div>
         )}
         {/* Day-to-day driving is the up/down arrow keys (see the drive-loop physics above); this
