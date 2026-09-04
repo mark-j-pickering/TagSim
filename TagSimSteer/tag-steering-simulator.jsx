@@ -16,15 +16,17 @@ const MIN_ZOOM = 0.02; // low enough to zoom out to roughly the full 1km² trail
 const MAX_ZOOM = 6;
 
 // Trail-recording/boundary square half-extent presets (metres) — S/M/L, selectable in Advanced
-// settings. "half" is the same quantity the rest of the file already calls TRAIL_BOUND_HALF, so M
-// (500) reproduces the previously-fixed default (1000x1000m, 1km²) exactly; S and L are half and
-// double that side length (0.25km² / 4km²).
+// settings. "half" is the same quantity the rest of the file already calls TRAIL_BOUND_HALF; M (500)
+// reproduces the original fixed size (1000x1000m, 1km²) this was generalized from, S and L are half
+// and double that side length (0.25km² / 4km²). Defaults to S — small enough to reach a wall (and so
+// exercise the boundary governor/auto-steer) from a short test drive, rather than requiring several
+// hundred metres of straight-line driving first.
 const TRAIL_SIZE_PRESETS = [
   { key: "s", label: "S", half: 250 },
   { key: "m", label: "M", half: 500 },
   { key: "l", label: "L", half: 1000 },
 ];
-const TRAIL_BOUND_HALF_DEFAULT = 500;
+const TRAIL_BOUND_HALF_DEFAULT = 250;
 // "0.25km²" / "1km²" / "4km²" — a boundary half-extent's full-square area, for the legend/paused
 // labels. Trims a trailing ".00" so whole-number areas (the M/L presets) don't print "1.00km²".
 function boundaryAreaLabel(half) {
@@ -38,6 +40,11 @@ const toDeg = (r) => (r * 180) / Math.PI;
 // Signed angle difference, wrapped to (-π, π] — used to measure heading error the short way round
 // regardless of which side of the ±180° seam the two angles fall on.
 const wrapAngle = (r) => Math.atan2(Math.sin(r), Math.cos(r));
+// pose.theta accumulates continuously without ever wrapping (see the drive loop's own comment on
+// why — dead-reckoning integration, not modulo'd), so a raw heading readout would show numbers like
+// "935.6°" after a few turns. This is display-only normalization to a conventional 0-360° compass
+// range; nothing that actually drives the sim reads it back.
+const headingDegDisplay = (r) => ((toDeg(r) % 360) + 360) % 360;
 
 function rotatePt(p, ang) {
   const c = Math.cos(ang), s = Math.sin(ang);
@@ -640,43 +647,67 @@ function reflectedHeading(theta, axis) {
   return axis === "x" ? Math.PI - theta : -theta; // vertical wall flips the x-component of heading, horizontal flips y
 }
 
-// Steering is "bang-coast-trim", three phases:
+// Steering is "bang-coast", looped:
 //
 // 1. BANG: full lock toward the target while autoSteerCoastSweepDeg's lookahead (below) predicts the
 //    remaining heading error hasn't yet shrunk to what coasting to centre would close out.
 // 2. RELEASE: steerInput -> 0, waiting for appliedSteerInput to actually unwind back near centre (it
 //    still keeps curving the bus while it does).
-// 3. TRIM: once settled, check the *actual* resulting heading error. If it's still outside tolerance,
-//    close it with small, closed-loop corrective nudges (AUTO_STEER_TRIM_GAIN/MAX_DEG below) — capped
-//    small enough that their own rate-limit lag can't itself cause a fresh large overshoot — repeating
-//    until it's genuinely within FINAL_TOLERANCE_DEG.
+// 3. Check the *actual* resulting heading error. Close enough (or out of retries) -> done. Otherwise
+//    -> back to BANG for another full pass at whatever error remains.
 //
-// An earlier version was pure bang-coast with no trim: release the instant the lookahead predicts
-// convergence, then leave the result to whatever coasting actually produces. That's correct verified
-// against constant-speed test cases, but it's still fundamentally *open-loop* for the coast itself —
-// it trusts a single upfront prediction rather than checking the outcome. Real drives couple in things
-// the lookahead doesn't fully model (most importantly the boundary speed governor's own cap changing
-// *during* the turn, since it's independently recomputed every frame off the bus's evolving curved
-// path) and a real saved trail showed the release-only version landing up to ~25° off on a difficult
-// near-head-on corner case, despite the same lookahead measuring only ~2° error in isolated testing.
-// Trimming closes that gap deterministically: it doesn't matter *why* the open-loop coast missed, only
-// that the actual result is checked and corrected, so the final heading converges to the true mirror
-// target regardless of what happened along the way. (An even earlier, pre-bang-coast version tried
-// closed-loop proportional control for the *whole* turn — see the file history — and overshot badly
-// for the opposite reason: it eased off too early, well before the wound-up wheel had actually caught
-// up. Bang-coast still does the bulk of the turn; trim only ever has to correct the last few degrees,
-// where a small proportional nudge's own lag is too small to matter.)
+// An earlier version released once and trusted the result: correct against constant-speed test cases,
+// but fundamentally *open-loop* for the coast itself — a single upfront prediction, never checked. Real
+// drives couple in things the lookahead doesn't fully model (most importantly the boundary speed
+// governor's own cap changing *during* the turn, independently recomputed every frame off the bus's
+// evolving curved path), and a real saved trail showed it landing up to ~25° off on a difficult
+// near-head-on corner, despite the same lookahead measuring only ~2° in isolated testing.
+//
+// The fix that followed replaced the naive release with a small closed-loop proportional trim —
+// closer, but wrong in a different way: `clamp(-GAIN*error, ±MAX_DEG)` saturates at MAX_DEG/GAIN of
+// error (a few degrees), so for anything past that it was really a fixed-amplitude bang-bang command,
+// and bang-bang plus actuator lag is a textbook recipe for a sustained, undamped oscillation — which a
+// real trail promptly demonstrated (heading swinging back and forth for 1000+ samples, never settling).
+// The narrow scenarios tested before shipping it happened to never cross that saturation threshold.
+//
+// Looping the *same* full-lock bang-coast pass again avoids inventing a second, differently-tuned
+// controller at all: the coast-prediction is already verified accurate across the whole 5°-175° entry
+// range regardless of error size, so re-running it on whatever residual is left converges geometrically
+// (observed: 1 retry closes a ~20° residual to under 1°) with no new gain to mistune and no saturation
+// regime to oscillate in. AUTO_STEER_MAX_RETRIES bounds it in case something keeps perturbing the
+// result — at which point it simply accepts the residual and moves on rather than looping forever.
 //
 // Either way, this is what actually "honours the max rate of steering input" — auto-steer only ever
-// sets `steerInput` targets (full lock, 0, or a small trim value), exactly as a manual slider drag or
-// "Full lock" button click would; the existing rate-limited chase from steerInput to appliedSteerInput
-// (see the steering-rate-limiting effect in the component below) is what carries the wheel there.
+// sets `steerInput` targets (full lock or 0), exactly as a manual slider drag or "Full lock" button
+// click would; the existing rate-limited chase from steerInput to appliedSteerInput (see the
+// steering-rate-limiting effect in the component below) is what carries the wheel there.
 const AUTO_STEER_RELEASE_TOLERANCE_DEG = 1; // treat a predicted final error under this as "close enough" to release
 const AUTO_STEER_SETTLED_DEG = 0.3; // |appliedSteerInput| below this counts as "wheel back at centre" (coast finished)
-const AUTO_STEER_TRIM_TOLERANCE_DEG = 2; // settled error under this needs no trim pass at all
-const AUTO_STEER_TRIM_FINAL_TOLERANCE_DEG = 0.5; // trimming continues until error is under this
-const AUTO_STEER_TRIM_GAIN = 2; // deg of trim steerInput per deg of residual error
-const AUTO_STEER_TRIM_MAX_DEG = 12; // trim commands never exceed this — small enough that their own lag can't overshoot meaningfully
+const AUTO_STEER_FINAL_TOLERANCE_DEG = 1.5; // settled error under this is accepted; otherwise retry
+const AUTO_STEER_MAX_RETRIES = 4; // safety cap on bang-coast retries for one engagement
+
+// Bang no longer always commands full lock — that reacted the same way (yanking the wheel hard)
+// whether the turn genuinely needed it or there was plenty of room to come round gently, which read
+// as the bus visibly over-steering on every single engagement, not just the tight ones. Chosen once
+// per bang pass instead, from actual room available (see chooseBangLockDeg below): impliedR = how
+// wide a turn radius would sweep the required heading change over the distance actually available;
+// the lock angle that produces that radius (a = atan(Lfd/impliedR)) is what's commanded. Closed-form
+// from the same steady-state turn geometry computeGeometry itself uses (R = Lfd/tan(deltaF)) — not a
+// tuned gain, which is exactly the class of fix that caused the earlier proportional-trim oscillation
+// bug (see the "boundary auto-steer" comment above). Plenty of room -> wide, gentle radius -> small
+// angle; tight room -> naturally escalates toward MAX_LOCK_DEG. The release-timing in the bang phase
+// below still guarantees the correct final target regardless of which angle this picks (that
+// guarantee comes from the coast-prediction, not from always using full lock), so accuracy doesn't
+// depend on getting this exactly right — a bad estimate just means a wider or tighter turn, not a
+// missed target.
+const MIN_BANG_LOCK_DEG = 8; // floor — avoids picking an unrealistically gentle angle when there's a lot of room for a small turn
+function chooseBangLockDeg(requiredSweepDeg, availableDistanceM, Lfd) {
+  if (!Number.isFinite(availableDistanceM) || availableDistanceM <= 0) return MAX_LOCK_DEG;
+  const requiredSweepRad = Math.max(toRad(1), Math.abs(toRad(requiredSweepDeg)));
+  const impliedR = availableDistanceM / requiredSweepRad;
+  const impliedLockDeg = toDeg(Math.atan(Lfd / impliedR));
+  return Math.max(MIN_BANG_LOCK_DEG, Math.min(MAX_LOCK_DEG, impliedLockDeg));
+}
 
 // Simulates forward from `appliedSteerDeg` (deg) at constant speed `speedMs`, assuming steerInput is
 // set to 0 starting now, until the wheel unwinds back to centre (steerRampRate's own progressive
@@ -879,6 +910,17 @@ function ReadCell({ label, value, accent }) {
   );
 }
 
+// Compact, border-less sibling of ReadCell — sized to sit under SpeedGauge's narrow (150px) column
+// rather than in the wide radius-grid table.
+function HeadingReadout({ label, value, accent }) {
+  return (
+    <div style={{ textAlign: "center" }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 16, color: accent || COL.text }}>{value}</div>
+    </div>
+  );
+}
+
 // ---------- main component ----------
 export default function BusSteeringSimulator() {
   const [Lfd, setLfd] = useState(7.0);
@@ -976,13 +1018,20 @@ export default function BusSteeringSimulator() {
   // Mirrors autoSteerActiveRef, only for display — true while the boundary auto-steer (see
   // "boundary auto-steer" above) is actively steering the bus away from a wall.
   const [autoSteerActive, setAutoSteerActive] = useState(false);
+  // Once true, stays true for the rest of the session — lets the Desired Heading readout keep
+  // showing the last computed target (dimmed) between engagements instead of "—", while still
+  // reading "—" before the very first engagement, when autoSteerTargetThetaRef is just its unset
+  // default rather than an actual computed reflection.
+  const [autoSteerEverEngaged, setAutoSteerEverEngaged] = useState(false);
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
   const trailModeRef = useRef(trailMode);
   const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason frontOverhangRef exists
   const trailPausedRef = useRef(false);
   const boundaryLimitingRef = useRef(false);
   const autoSteerActiveRef = useRef(false);
-  const autoSteerPhaseRef = useRef("bang"); // "bang" | "releasing" | "trimming" — see the "boundary auto-steer" comment above
+  const autoSteerPhaseRef = useRef("bang"); // "bang" | "releasing" — see the "boundary auto-steer" comment above
+  const autoSteerRetryCountRef = useRef(0); // bang-coast retries used so far this engagement — see AUTO_STEER_MAX_RETRIES
+  const autoSteerBangLockDegRef = useRef(MAX_LOCK_DEG); // this pass's chosen lock magnitude — see chooseBangLockDeg
   const autoSteerTargetThetaRef = useRef(0); // world heading auto-steer is chasing, frozen at engage — see reflectedHeading
   const autoSteerCooldownUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't re-engage — see AUTO_STEER_COOLDOWN_MS
   const autoSteerCooldownPoseRef = useRef(null); // world {x,y} at the moment of the last disengage — see AUTO_STEER_COOLDOWN_MIN_DISTANCE_M
@@ -1250,9 +1299,12 @@ export default function BusSteeringSimulator() {
         if (trailModeRef.current) selectViewModeRef.current("grid");
       } else if (e.key.toLowerCase() === "b" && !e.repeat) {
         // Switch to the "close" view mode (see computeView) — a tight, continuously-tracking 15m
-        // radius biased toward the front of the bus.
+        // radius biased toward the front of the bus. Also resets the manual scroll-wheel zoom to a
+        // fixed 70% — CLOSE_RADIUS_M's raw fit already crops fairly tight, and a deliberate, repeatable
+        // framing here matters more than whatever zoom was left over from previous driving.
         e.preventDefault();
         selectViewModeRef.current("close");
+        setZoom(0.7);
       } else if (e.code === "Space") {
         e.preventDefault();
         if (!e.repeat) startHorn();
@@ -1421,8 +1473,12 @@ export default function BusSteeringSimulator() {
           if (wall.distance < leadDistance) {
             autoSteerActiveRef.current = true;
             autoSteerPhaseRef.current = "bang";
+            autoSteerRetryCountRef.current = 0;
             autoSteerTargetThetaRef.current = reflectedHeading(poseRef.current.theta, wall.axis);
+            const initialErrorDeg = toDeg(wrapAngle(autoSteerTargetThetaRef.current - poseRef.current.theta));
+            autoSteerBangLockDegRef.current = chooseBangLockDeg(initialErrorDeg, wall.distance, LfdRef.current);
             setAutoSteerActive(true);
+            setAutoSteerEverEngaged(true);
           }
         }
         if (autoSteerActiveRef.current) {
@@ -1447,31 +1503,33 @@ export default function BusSteeringSimulator() {
               // errorDeg>0 means theta needs to increase to reach the target; steerInput>0 ->
               // deltaFdeg<0 -> theta decreases (see deltaFdeg's declaration above), so closing a
               // positive error needs a negative steerInput — hence the sign flip here. `desired` only
-              // ever takes one of two values for the life of the bang phase (full lock one way or the
-              // other, decided once from the sign of the heading error at first bang), so re-issuing
+              // ever takes one of two values for the life of one bang phase (this pass's chosen lock
+              // angle — see autoSteerBangLockDegRef/chooseBangLockDeg — one way or the other, decided
+              // from the sign of the heading error at the start of that pass), so re-issuing
               // setSteerInput only on an actual change avoids needlessly restarting the
               // steering-rate-limiting effect's own rAF chase.
-              const desired = -(Math.sign(errorDeg) || 1) * MAX_LOCK_DEG;
+              const desired = -(Math.sign(errorDeg) || 1) * autoSteerBangLockDegRef.current;
               if (desired !== steerTargetRef.current) setSteerInput(desired);
             }
-          } else if (phase === "releasing") {
-            // Wait for the coast to actually finish (wheel back near centre) before judging the
-            // result — appliedSteerInput is still curving the bus right up until it gets there.
-            if (Math.abs(appliedSteerRef.current) < AUTO_STEER_SETTLED_DEG) {
-              if (Math.abs(errorDeg) < AUTO_STEER_TRIM_TOLERANCE_DEG) finishEngagement();
-              else autoSteerPhaseRef.current = "trimming";
-            }
           } else {
-            // trimming: closed-loop correction of whatever the open-loop coast got wrong — see the
-            // "boundary auto-steer" comment above for why this, not a bigger predictive model, is the
-            // fix. Small and bounded (AUTO_STEER_TRIM_MAX_DEG) so its own rate-limit lag stays
-            // negligible; typically converges in a single pass since each correction is proportional
-            // to whatever error remains.
-            if (Math.abs(errorDeg) < AUTO_STEER_TRIM_FINAL_TOLERANCE_DEG) {
-              finishEngagement();
-            } else {
-              const desired = Math.max(-AUTO_STEER_TRIM_MAX_DEG, Math.min(AUTO_STEER_TRIM_MAX_DEG, -AUTO_STEER_TRIM_GAIN * errorDeg));
-              if (Math.abs(desired - steerTargetRef.current) > 0.3) setSteerInput(desired);
+            // releasing: wait for the coast to actually finish (wheel back near centre) before
+            // judging the result — appliedSteerInput is still curving the bus right up until it gets
+            // there. Once settled, either accept the result or loop back to "bang" for another full
+            // pass at whatever error remains — see the "boundary auto-steer" comment above for why
+            // retrying the same trusted mechanism, not a separate trim controller, is the fix.
+            if (Math.abs(appliedSteerRef.current) < AUTO_STEER_SETTLED_DEG) {
+              if (Math.abs(errorDeg) < AUTO_STEER_FINAL_TOLERANCE_DEG || autoSteerRetryCountRef.current >= AUTO_STEER_MAX_RETRIES) {
+                finishEngagement();
+              } else {
+                autoSteerRetryCountRef.current += 1;
+                // Fresh room/error reading for the retry — the residual is usually much smaller than
+                // the original engagement, so this naturally picks a gentler angle than the first
+                // pass did, rather than defaulting back to full lock for what's typically a small
+                // correction.
+                const wall = boundaryWallAhead(poseRef.current, trailBoundHalfRef.current);
+                autoSteerBangLockDegRef.current = chooseBangLockDeg(errorDeg, wall.distance, LfdRef.current);
+                autoSteerPhaseRef.current = "bang";
+              }
             }
           }
         }
@@ -2432,7 +2490,25 @@ export default function BusSteeringSimulator() {
                 ))}
               </div>
             </div>
-            <SpeedGauge label="Speed" unit="km/h" value={speed} max={MAX_SPEED_KMH} step={10} accent={COL.amber} />
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 150 }}>
+              <SpeedGauge label="Speed" unit="km/h" value={speed} max={MAX_SPEED_KMH} step={10} accent={COL.amber} />
+              {/* Desired heading is the boundary auto-steer's frozen reflection target (see the
+                  "boundary auto-steer" comment above) — each new engagement's target is itself the
+                  reflection of wherever the bus was actually heading at that moment, which, right
+                  after a previous bounce, is close to *that* bounce's own desired heading, hence one
+                  bounce's target visibly following on from the last. Stays on screen (dimmed) between
+                  engagements rather than dropping to a dash, so it reads as "last commanded target"
+                  rather than disappearing; only ever shows "—" before the very first engagement of
+                  the session, when there's no computed target yet at all. */}
+              <div style={{ display: "flex", gap: 14, marginTop: 6 }}>
+                <HeadingReadout
+                  label="Desired"
+                  value={autoSteerEverEngaged ? fmt(headingDegDisplay(autoSteerTargetThetaRef.current), 1) + "°" : "—"}
+                  accent={autoSteerActive ? COL.trail : COL.textDim}
+                />
+                <HeadingReadout label="Actual" value={fmt(headingDegDisplay(pose.theta), 1) + "°"} />
+              </div>
+            </div>
           </div>
 
           {/* reference photo: confirmed dimensions of the actual BCC Volvo/Scania tag-axle bus
@@ -2457,7 +2533,20 @@ export default function BusSteeringSimulator() {
                   key={p.key}
                   className={"btn" + (trailBoundHalf === p.half ? " btnOn" : "")}
                   title={`${p.half * 2}m square — ${boundaryAreaLabel(p.half)}`}
-                  onClick={() => setTrailBoundHalf(p.half)}
+                  onClick={() => {
+                    // If 'M' (the "grid" view mode) is currently framing the boundary square, a
+                    // changed size needs to visibly re-fit — computeEffectiveView("grid") already
+                    // reads the live trailBoundHalf, so it recomputes correctly on the very next
+                    // render, but with no transition triggered it just snaps instantly, which reads
+                    // as "didn't update" for a change that (S<->M) can be a fairly subtle resize. Kick
+                    // off the same recenter-style blend the Recenter button uses — frozen current
+                    // view eased toward the live (about to reflect the new size) zoomedView.
+                    if (viewMode === "grid") {
+                      setRecenterTransition({ fromView: displayedView, startTime: performance.now() });
+                      setRecenterT(0);
+                    }
+                    setTrailBoundHalf(p.half);
+                  }}
                   style={{ minWidth: 32 }}
                 >
                   {p.label}
