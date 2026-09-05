@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
+import { buildCornerCourse, projectToCourse } from "./src/course.js";
 
 // ---------- constants ----------
 // VB is the height of the SVG's abstract coordinate space, always 1000 units — it's the reference
@@ -220,6 +221,45 @@ function longBandPoints(yLo, yHi, pose, view) {
     { x: 1000, y: yHi }, { x: 1000, y: yLo }, { x: -1000, y: yLo }, { x: -1000, y: yHi },
   ].map((p) => toScreen(view, poseTransform(p, pose)));
   return ptsToPath(corners);
+}
+
+// One continuous SVG path per lane edge (left/right) of a course built by buildCornerCourse (see
+// src/course.js) — straight -> arc -> straight, world-anchored like the trail-recording boundary,
+// not chassis-relative. `offset` is the chassis-local-y-style distance from the centerline (+left);
+// courseLanePaths itself calls this with ±laneHalfWidth for the two edges.
+//
+// The arc portion reuses the same "concentric circles share one screen-space start angle" trick as
+// sweptRing()'s ringStartAngle/ringWorldSweep: toScreen is a similarity transform (uniform scale,
+// orientation-reversing, no shear — see toScreen's own comment), so every radius about the same
+// centre maps through the identical angle, and offsetting a point along the segment's local-left
+// axis at the entry/exit tangent points is exactly radial motion toward/away from that same centre
+// — the straight and arc pieces of one edge meet with no gap or kink to paper over.
+function courseEdgePath(course, view, offset) {
+  const [entry, arc, exit] = course.segments;
+  const edgePt = (seg, s) => toScreen(view, poseTransform({ x: s, y: offset }, { x: seg.start.x, y: seg.start.y, theta: seg.theta }));
+  const p0 = edgePt(entry, 0), p1 = edgePt(entry, entry.length);
+  const p3 = edgePt(exit, exit.length);
+
+  const edgeRadius = (arc.radius - arc.dir * offset) * view.scale;
+  const Cscreen = toScreen(view, arc.center);
+  const startWorld = { x: arc.center.x + arc.radius * Math.cos(arc.startAngle), y: arc.center.y + arc.radius * Math.sin(arc.startAngle) };
+  const a0 = Math.atan2(toScreen(view, startWorld).y - Cscreen.y, toScreen(view, startWorld).x - Cscreen.x);
+  const worldSweep = arc.dir * (arc.arcLength / arc.radius);
+  const MAX_SWEEP = 2 * Math.PI * 0.999; // same cap as arcPathFromWorldSweep — one SVG arc command can't exceed a full turn
+  const screenDelta = Math.max(-MAX_SWEEP, Math.min(MAX_SWEEP, -worldSweep));
+  const a1 = a0 + screenDelta;
+  const largeArc = Math.abs(screenDelta) > Math.PI ? 1 : 0;
+  const sweepFlag = screenDelta > 0 ? 1 : 0;
+  const a1x = Cscreen.x + edgeRadius * Math.cos(a1), a1y = Cscreen.y + edgeRadius * Math.sin(a1);
+
+  return `M ${p0.x} ${p0.y} L ${p1.x} ${p1.y} A ${edgeRadius} ${edgeRadius} 0 ${largeArc} ${sweepFlag} ${a1x} ${a1y} L ${p3.x} ${p3.y}`;
+}
+
+function courseLanePaths(course, view) {
+  return {
+    left: courseEdgePath(course, view, course.laneHalfWidth),
+    right: courseEdgePath(course, view, -course.laneHalfWidth),
+  };
 }
 
 // Radial dimension line: from a fixed chassis point (e.g. a body corner) inward/outward along the
@@ -832,6 +872,10 @@ const STEER_HAND_SPEED = (STEERING_WHEEL_RATIO * MAX_LOCK_DEG * 2) / LOCK_TO_LOC
 // closestSteerIndex() tie to break.
 const QUARTER_TURN_STEER_DEG = 5;
 
+// Keys that count as "manual driving input" for exiting autopilot (see exitSimMode) — steering,
+// throttle, and brake, but not view-mode keys or the horn.
+const DRIVING_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "End"]);
+
 // Closed-form time to sweep the road-wheel angle from 0 to |roadAngleDeg| under the linear
 // rate(angle) profile above: time(0→x) = (1/STEER_RATE_K)·ln(rate(x)/STEER_MIN_RATE).
 function wheelRotationDeg(roadAngleDeg) {
@@ -952,6 +996,29 @@ export default function BusSteeringSimulator() {
   const [showDims, setShowDims] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [viewMode, setViewMode] = useState("circle");
+
+  // A single fixed test corner (see src/course.js) for the autopilot below and its "Course" overlay
+  // — same straight/arc/straight lane the headless ML env checks off-track against, so a human can
+  // see and drive the same course a trained policy will eventually be scored on. Starts at the
+  // origin, matching the bus's own reset/mount pose (see poseRef's initial value below).
+  const course = useMemo(
+    () => buildCornerCourse({ start: { x: 0, y: 0, theta: 0 }, entryLength: 25, exitLength: 45, radius: 25, turnDeg: 90, direction: "left", laneHalfWidth: 5 }),
+    []
+  );
+  const [showCourse, setShowCourse] = useState(true);
+
+  // "manual" (keyboard/slider, as always) vs "sim" (autopilot drives steering — see the effect
+  // below). controlModeRef mirrors controlMode for the imperative keyboard-handler effect, which
+  // only runs once on mount and so can't read the state value directly.
+  const [controlMode, setControlMode] = useState("manual");
+  const controlModeRef = useRef("manual");
+  controlModeRef.current = controlMode;
+  // Any manual driving input (steering, throttle/brake) drops straight back to manual control — an
+  // autopilot that had to be explicitly switched off before you could touch the wheel would be a
+  // worse interface than one that just gets out of the way the instant you do.
+  function exitSimMode() {
+    if (controlModeRef.current === "sim") setControlMode("manual");
+  }
 
   // Map sizing: the map wrapper's height is pinned to the side panel's own rendered height (so the
   // two columns line up exactly), and its width just follows normal flex layout (100% of whatever
@@ -1259,6 +1326,9 @@ export default function BusSteeringSimulator() {
     }
     function onKeyDown(e) {
       if (isFormFocused(e)) return;
+      // Steering/throttle/brake keys are "manual input" — anything else (view-mode keys, horn)
+      // isn't actually driving the bus, so it doesn't kick the autopilot off.
+      if (DRIVING_KEYS.has(e.key)) exitSimMode();
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         if (e.shiftKey) setSteerInput((v) => nudgeByRoadDeg(v, -QUARTER_TURN_STEER_DEG));
@@ -1368,6 +1438,29 @@ export default function BusSteeringSimulator() {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [steerInput]);
+
+  // Autopilot: while controlMode is "sim", drives steering off the same lateral-offset projection
+  // the headless ML off-track check uses (projectToCourse, see src/course.js) — a simple
+  // proportional controller, not a trained policy, just enough to actually get around the corner as
+  // a live demo of the same course a policy will eventually be scored on. It only ever calls
+  // setSteerInput/driveToTargetRef, the exact same entry points the slider and "Drive the turn"
+  // button use — so it rides the existing ramp/drive-loop physics unmodified, and handing control
+  // back on manual input (exitSimMode) is just letting this effect's cleanup cancel its own rAF loop.
+  const AUTOPILOT_TARGET_KMH = 15;
+  const AUTOPILOT_STEER_KP = 6;
+  useEffect(() => {
+    if (controlMode !== "sim") return;
+    driveToTargetRef.current = AUTOPILOT_TARGET_KMH;
+    let raf;
+    function tick() {
+      const proj = projectToCourse(course, poseRef.current);
+      const steerTargetDeg = Math.max(-MAX_LOCK_DEG, Math.min(MAX_LOCK_DEG, AUTOPILOT_STEER_KP * proj.lateral));
+      setSteerInput(steerTargetDeg);
+      raf = requestAnimationFrame(tick);
+    }
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [controlMode, course]);
 
   // Dead-reckoning integration: reads the current geometry/speed from refs each frame, so changing
   // the steering lock mid-drive just changes the curvature the bus is following from where it is,
@@ -2064,6 +2157,20 @@ export default function BusSteeringSimulator() {
             <polygon points={mapBoundaryPoints(displayedView, trailBoundHalf)} fill="none" stroke={COL.trail} strokeWidth="1.4" strokeDasharray="12 8" opacity="0.5" />
           )}
 
+          {/* single-corner test course (see src/course.js) — same straight/arc/straight lane the
+              headless ML env's off-track check uses, drawn as painted road-edge lines so a human can
+              see and drive the identical course a trained policy will eventually be scored on.
+              World-anchored, not chassis-relative, like the trail-recording boundary above. */}
+          {showCourse && (() => {
+            const { left, right } = courseLanePaths(course, displayedView);
+            return (
+              <g>
+                <path d={left} fill="none" stroke={COL.outline} strokeWidth="2" strokeDasharray="14 10" opacity="0.55" />
+                <path d={right} fill="none" stroke={COL.outline} strokeWidth="2" strokeDasharray="14 10" opacity="0.55" />
+              </g>
+            );
+          })()}
+
           {/* body footprint trail — the ground actually driven over by the body, bottom layer,
               under everything else including the off-track band and the vehicle itself, so it
               reads as ground shading rather than competing with what's painted on top later. */}
@@ -2380,6 +2487,15 @@ export default function BusSteeringSimulator() {
           </button>
         )}
         <div style={{ position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)", display: "flex", gap: 4, whiteSpace: "nowrap" }}>
+          <button className={"btn" + (showCourse ? " btnOn" : "")} onClick={() => setShowCourse((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Course</button>
+          <button
+            className={"btn" + (controlMode === "sim" ? " btnOn" : "")}
+            onClick={() => setControlMode((m) => (m === "sim" ? "manual" : "sim"))}
+            title="Autopilot steers the single test corner (see the Course toggle) using a simple lateral-offset controller — any manual steering/throttle/brake input hands control straight back"
+            style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
+          >
+            {controlMode === "sim" ? "Autopilot: ON" : "Autopilot"}
+          </button>
           <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Off-track</button>
           <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
           <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
@@ -2427,6 +2543,7 @@ export default function BusSteeringSimulator() {
         <button
           className={"btn" + (animating ? " btnOn" : "")}
           onClick={() => {
+            exitSimMode();
             if (animating) {
               // Also cancels a still-in-progress "Drive the turn"/Page Up accelerate ramp and a
               // still-running Page Down auto-brake — without clearing driveToTargetRef, clicking
@@ -2483,10 +2600,10 @@ export default function BusSteeringSimulator() {
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <SteeringWheel angleDeg={appliedSteerInput} />
-              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={setSteerInput} accent={COL.front} large />
+              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { exitSimMode(); setSteerInput(v); }} accent={COL.front} large />
               <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
                 {[["Full lock left", -50], ["Straight", 0], ["Full lock right", 50]].map(([lbl, v]) => (
-                  <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => setSteerInput(v)}>{lbl}</button>
+                  <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => { exitSimMode(); setSteerInput(v); }}>{lbl}</button>
                 ))}
               </div>
             </div>
