@@ -121,6 +121,14 @@ export function poseTransform(p, pose) {
   return { x: pose.x + p.x * c - p.y * s, y: pose.y + p.x * s + p.y * c };
 }
 
+// The bus's body corners (widest fixed points — Wb is wider than Tw on the
+// reference bus, see DEFAULT_VEHICLE) transformed into world space at the
+// current pose. Checked once per step against a course boundary, this is
+// equivalent to a swept-path check without needing to track history.
+export function worldEnvelopePoints(pose, geom) {
+  return Object.values(geom.bodyCorners).map((p) => poseTransform(p, pose));
+}
+
 // ---------- steering: resolution + rate limiting ----------
 export const MAX_LOCK_DEG = 50;
 export const LOCK_TO_LOCK_SECONDS = 4;
