@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite"
+    "dev": "vite",
+    "train": "node src/trainRun.js"
   },
   "dependencies": {
     "react": "^18.3.1",
