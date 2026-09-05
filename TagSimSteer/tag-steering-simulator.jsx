@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
-import { buildCornerCourse, projectToCourse } from "./src/course.js";
+import { createEnv, observe, DEFAULT_COURSE_OPTIONS, CRUISE_SPEED_KMH } from "./src/env.js";
+import { createPolicy, makePolicyFn } from "./src/policy.js";
+import trainedPolicyData from "./src/trained-policy.json";
 
 // ---------- constants ----------
 // VB is the height of the SVG's abstract coordinate space, always 1000 units — it's the reference
@@ -997,15 +999,23 @@ export default function BusSteeringSimulator() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [viewMode, setViewMode] = useState("circle");
 
-  // A single fixed test corner (see src/course.js) for the autopilot below and its "Course" overlay
-  // — same straight/arc/straight lane the headless ML env checks off-track against, so a human can
-  // see and drive the same course a trained policy will eventually be scored on. Starts at the
-  // origin, matching the bus's own reset/mount pose (see poseRef's initial value below).
-  const course = useMemo(
-    () => buildCornerCourse({ start: { x: 0, y: 0, theta: 0 }, entryLength: 25, exitLength: 45, radius: 25, turnDeg: 90, direction: "left", laneHalfWidth: 5 }),
-    []
-  );
+  // A single fixed test corner (see src/env.js/course.js) for the autopilot below and its "Course"
+  // overlay — the exact same course + vehicle the headless ML env trains/scores against (DEFAULT_COURSE_OPTIONS),
+  // so a human can see and drive the identical course the trained policy was trained on. Starts at
+  // the origin, matching the bus's own reset/mount pose (see poseRef's initial value below).
+  const policyEnv = useMemo(() => createEnv(DEFAULT_COURSE_OPTIONS), []);
+  const course = policyEnv.course;
   const [showCourse, setShowCourse] = useState(true);
+
+  // The policy trained by `npm run train` (src/trainRun.js), loaded as a static JSON blob rather
+  // than re-training in the browser — trainedPolicyData.sizes must match createPolicy's default
+  // architecture, since the weight layout in trainedPolicyData.params is only meaningful for the
+  // exact [in,out] shapes it was trained with.
+  const trainedPolicy = useMemo(() => createPolicy(trainedPolicyData.sizes), []);
+  const trainedPolicyFn = useMemo(
+    () => makePolicyFn(trainedPolicy, trainedPolicyData.params, trainedPolicyData.actionScale),
+    [trainedPolicy]
+  );
 
   // "manual" (keyboard/slider, as always) vs "sim" (autopilot drives steering — see the effect
   // below). controlModeRef mirrors controlMode for the imperative keyboard-handler effect, which
@@ -1015,9 +1025,17 @@ export default function BusSteeringSimulator() {
   controlModeRef.current = controlMode;
   // Any manual driving input (steering, throttle/brake) drops straight back to manual control — an
   // autopilot that had to be explicitly switched off before you could touch the wheel would be a
-  // worse interface than one that just gets out of the way the instant you do.
+  // worse interface than one that just gets out of the way the instant you do. Syncing steerInput to
+  // the bus's actual current angle here (rather than leaving it at whatever it was before autopilot
+  // engaged) matters because the autopilot drives appliedSteerInput directly, never touching
+  // steerInput itself (see the autopilot effect's own comment) — without this, a relative nudge
+  // (arrow keys) right after disengaging would jump from a stale pre-autopilot value instead of
+  // continuing smoothly from wherever the bus actually is.
   function exitSimMode() {
-    if (controlModeRef.current === "sim") setControlMode("manual");
+    if (controlModeRef.current === "sim") {
+      setSteerInput(appliedSteerRef.current);
+      setControlMode("manual");
+    }
   }
 
   // Map sizing: the map wrapper's height is pinned to the side panel's own rendered height (so the
@@ -1439,28 +1457,43 @@ export default function BusSteeringSimulator() {
     return () => cancelAnimationFrame(raf);
   }, [steerInput]);
 
-  // Autopilot: while controlMode is "sim", drives steering off the same lateral-offset projection
-  // the headless ML off-track check uses (projectToCourse, see src/course.js) — a simple
-  // proportional controller, not a trained policy, just enough to actually get around the corner as
-  // a live demo of the same course a policy will eventually be scored on. It only ever calls
-  // setSteerInput/driveToTargetRef, the exact same entry points the slider and "Drive the turn"
-  // button use — so it rides the existing ramp/drive-loop physics unmodified, and handing control
-  // back on manual input (exitSimMode) is just letting this effect's cleanup cancel its own rAF loop.
-  const AUTOPILOT_TARGET_KMH = 15;
-  const AUTOPILOT_STEER_KP = 6;
+  // Autopilot: while controlMode is "sim", drives steering from the policy trained by `npm run
+  // train` (src/trainRun.js) against this exact course — see trainedPolicyFn above. observe() is fed
+  // a minimal state — it only ever reads .pose/.appliedSteerDeg (see env.js), which is all the live
+  // component has an equivalent of outside a real stepSim state.
+  //
+  // This effect applies the steering rate limit itself (same steerRampRate() formula as the
+  // "steering rate limiting" effect above) and writes appliedSteerRef/setAppliedSteerInput directly,
+  // rather than going through setSteerInput and letting that effect do the ramping — deliberately.
+  // That effect restarts its own rAF chase from scratch every time `steerInput` changes, which is
+  // fine for human input (a key nudge or slider drag settles on a value and stays there) but not for
+  // a policy recomputing a slightly different continuous output every single frame: two independent
+  // rAF loops racing to restart each other meant the *other* effect's chase kept getting cancelled
+  // before a single tick of it ever ran, and appliedSteerInput simply never moved no matter what the
+  // policy asked for. Owning the ramp here sidesteps the race entirely. steerInput itself is left
+  // untouched while in sim mode (see exitSimMode, which syncs it back to the real angle on handoff).
   useEffect(() => {
     if (controlMode !== "sim") return;
-    driveToTargetRef.current = AUTOPILOT_TARGET_KMH;
+    driveToTargetRef.current = CRUISE_SPEED_KMH; // the fixed speed the policy was trained at
     let raf;
-    function tick() {
-      const proj = projectToCourse(course, poseRef.current);
-      const steerTargetDeg = Math.max(-MAX_LOCK_DEG, Math.min(MAX_LOCK_DEG, AUTOPILOT_STEER_KP * proj.lateral));
-      setSteerInput(steerTargetDeg);
+    let lastT = null;
+    function tick(t) {
+      if (lastT == null) lastT = t;
+      const dt = Math.min((t - lastT) / 1000, 0.05);
+      lastT = t;
+      const obs = observe(policyEnv, { pose: poseRef.current, appliedSteerDeg: appliedSteerRef.current });
+      const target = Math.max(-MAX_LOCK_DEG, Math.min(MAX_LOCK_DEG, trainedPolicyFn(obs)));
+      const current = appliedSteerRef.current;
+      const diff = target - current;
+      const maxStep = steerRampRate(Math.abs(current)) * dt;
+      const next = Math.abs(diff) <= maxStep ? target : current + Math.sign(diff) * maxStep;
+      appliedSteerRef.current = next;
+      setAppliedSteerInput(next);
       raf = requestAnimationFrame(tick);
     }
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [controlMode, course]);
+  }, [controlMode, policyEnv, trainedPolicyFn]);
 
   // Dead-reckoning integration: reads the current geometry/speed from refs each frame, so changing
   // the steering lock mid-drive just changes the curvature the bus is following from where it is,
@@ -2491,7 +2524,7 @@ export default function BusSteeringSimulator() {
           <button
             className={"btn" + (controlMode === "sim" ? " btnOn" : "")}
             onClick={() => setControlMode((m) => (m === "sim" ? "manual" : "sim"))}
-            title="Autopilot steers the single test corner (see the Course toggle) using a simple lateral-offset controller — any manual steering/throttle/brake input hands control straight back"
+            title="Autopilot steers the single test corner (see the Course toggle) using the policy trained by `npm run train` — any manual steering/throttle/brake input hands control straight back"
             style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
           >
             {controlMode === "sim" ? "Autopilot: ON" : "Autopilot"}
