@@ -19,9 +19,13 @@ The repo holds two independent sub-projects, not a shared build/workspace:
   it documents the coordinate pipeline, wheel-numbering convention, steering
   input resolution, and several deliberate design decisions (and their
   previously-tried-and-reverted alternatives) in detail.
-- **`TagSim3D/`** — currently an empty placeholder directory (no files yet,
-  not tracked by git). Presumably a future 3D counterpart to the steering
-  simulator; there is nothing to read here until work starts.
+- **`TagSim3D/`** — not a scaffolded project yet, but no longer empty: it
+  holds a pure C# port of TagSimSteer's kinematic geometry engine
+  (`Geometry/TagBusGeometry.cs`), extracted ahead of picking a 3D engine
+  since that math is stable and has no rendering dependency. See
+  [TagSim3D/README.md](TagSim3D/README.md) for what's there and why, and
+  [TagSimSteer/CLAUDE.md](TagSimSteer/CLAUDE.md)'s "Porting to 3D / C#"
+  section for how the two projects' geometry stays in sync.
 
 There is no root-level package.json, build config, linter, or test suite —
 neither sub-project is a scaffolded app. `TagSimSteer/tag-steering-simulator.jsx`
