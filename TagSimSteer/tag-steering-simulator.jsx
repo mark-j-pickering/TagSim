@@ -874,8 +874,8 @@ const STEER_HAND_SPEED = (STEERING_WHEEL_RATIO * MAX_LOCK_DEG * 2) / LOCK_TO_LOC
 // closestSteerIndex() tie to break.
 const QUARTER_TURN_STEER_DEG = 5;
 
-// Keys that count as "manual driving input" for exiting autopilot (see exitSimMode) — steering,
-// throttle, and brake, but not view-mode keys or the horn.
+// Keys that count as "manual driving input" for exiting ML Autopilot (see exitMlAutopilot) —
+// steering, throttle, and brake, but not view-mode keys or the horn.
 const DRIVING_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "End"]);
 
 // Closed-form time to sweep the road-wheel angle from 0 to |roadAngleDeg| under the linear
@@ -1005,7 +1005,7 @@ export default function BusSteeringSimulator() {
   // the origin, matching the bus's own reset/mount pose (see poseRef's initial value below).
   const policyEnv = useMemo(() => createEnv(DEFAULT_COURSE_OPTIONS), []);
   const course = policyEnv.course;
-  const [showCourse, setShowCourse] = useState(true);
+  const [showCourse, setShowCourse] = useState(false);
 
   // The policy trained by `npm run train` (src/trainRun.js), loaded as a static JSON blob rather
   // than re-training in the browser — trainedPolicyData.sizes must match createPolicy's default
@@ -1017,22 +1017,24 @@ export default function BusSteeringSimulator() {
     [trainedPolicy]
   );
 
-  // "manual" (keyboard/slider, as always) vs "sim" (autopilot drives steering — see the effect
-  // below). controlModeRef mirrors controlMode for the imperative keyboard-handler effect, which
-  // only runs once on mount and so can't read the state value directly.
+  // "manual" (keyboard/slider, as always) vs "ml" (ML Autopilot drives steering — see the effect
+  // below). Mutually exclusive with the boundary "Fence Autopilot" further down (see its own
+  // engage-gate comment) — only one thing gets to hold the wheel at a time. controlModeRef mirrors
+  // controlMode for the imperative keyboard-handler/drive-loop effects, which either only run once
+  // on mount or run continuously from mount, and so can't read the state value directly.
   const [controlMode, setControlMode] = useState("manual");
   const controlModeRef = useRef("manual");
   controlModeRef.current = controlMode;
   // Any manual driving input (steering, throttle/brake) drops straight back to manual control — an
   // autopilot that had to be explicitly switched off before you could touch the wheel would be a
   // worse interface than one that just gets out of the way the instant you do. Syncing steerInput to
-  // the bus's actual current angle here (rather than leaving it at whatever it was before autopilot
-  // engaged) matters because the autopilot drives appliedSteerInput directly, never touching
-  // steerInput itself (see the autopilot effect's own comment) — without this, a relative nudge
+  // the bus's actual current angle here (rather than leaving it at whatever it was before ML
+  // Autopilot engaged) matters because it drives appliedSteerInput directly, never touching
+  // steerInput itself (see the ML Autopilot effect's own comment) — without this, a relative nudge
   // (arrow keys) right after disengaging would jump from a stale pre-autopilot value instead of
   // continuing smoothly from wherever the bus actually is.
-  function exitSimMode() {
-    if (controlModeRef.current === "sim") {
+  function exitMlAutopilot() {
+    if (controlModeRef.current === "ml") {
       setSteerInput(appliedSteerRef.current);
       setControlMode("manual");
     }
@@ -1346,7 +1348,7 @@ export default function BusSteeringSimulator() {
       if (isFormFocused(e)) return;
       // Steering/throttle/brake keys are "manual input" — anything else (view-mode keys, horn)
       // isn't actually driving the bus, so it doesn't kick the autopilot off.
-      if (DRIVING_KEYS.has(e.key)) exitSimMode();
+      if (DRIVING_KEYS.has(e.key)) exitMlAutopilot();
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         if (e.shiftKey) setSteerInput((v) => nudgeByRoadDeg(v, -QUARTER_TURN_STEER_DEG));
@@ -1457,7 +1459,7 @@ export default function BusSteeringSimulator() {
     return () => cancelAnimationFrame(raf);
   }, [steerInput]);
 
-  // Autopilot: while controlMode is "sim", drives steering from the policy trained by `npm run
+  // ML Autopilot: while controlMode is "ml", drives steering from the policy trained by `npm run
   // train` (src/trainRun.js) against this exact course — see trainedPolicyFn above. observe() is fed
   // a minimal state — it only ever reads .pose/.appliedSteerDeg (see env.js), which is all the live
   // component has an equivalent of outside a real stepSim state.
@@ -1471,9 +1473,10 @@ export default function BusSteeringSimulator() {
   // rAF loops racing to restart each other meant the *other* effect's chase kept getting cancelled
   // before a single tick of it ever ran, and appliedSteerInput simply never moved no matter what the
   // policy asked for. Owning the ramp here sidesteps the race entirely. steerInput itself is left
-  // untouched while in sim mode (see exitSimMode, which syncs it back to the real angle on handoff).
+  // untouched while ML Autopilot is on (see exitMlAutopilot, which syncs it back to the real angle on
+  // handoff). Mutually exclusive with Fence Autopilot — see that engage-gate's own comment below.
   useEffect(() => {
-    if (controlMode !== "sim") return;
+    if (controlMode !== "ml") return;
     driveToTargetRef.current = CRUISE_SPEED_KMH; // the fixed speed the policy was trained at
     let raf;
     let lastT = null;
@@ -1575,16 +1578,23 @@ export default function BusSteeringSimulator() {
         }
       }
 
-      // Boundary auto-steer (trail mode only, see the "boundary auto-steer" comment above): while not
+      // "Fence Autopilot" (trail mode only, see the "boundary auto-steer" comment above): while not
       // already engaged and past both post-disengage cooldowns (AUTO_STEER_COOLDOWN_MS, and the
       // distance floor for slow corners — see AUTO_STEER_COOLDOWN_MIN_DISTANCE_M), watch for a wall
       // closing in on the bus's current heading; once engaged, run the bang -> release -> trim phases
       // described above until the actual heading has converged on the frozen reflected target, then
       // hand a centred wheel back to the driver and start the cooldown before it's allowed to re-arm.
-      if (!trailModeRef.current) {
-        // Trail mode turned off mid-turn — the boundary stops existing as a concept, so just drop
-        // out (leave the wheel wherever it was; unlike a normal disengage below this isn't "the
-        // turn finished," it's the feature being switched off, so it shouldn't yank the wheel too).
+      //
+      // Mutually exclusive with ML Autopilot: both would otherwise fight over setSteerInput the
+      // instant a trail-mode drive also happened to approach the recording boundary while ML
+      // Autopilot was engaged. Treated the same as "trail mode switched off" below — drop out
+      // cleanly, leave the wheel where it is, and don't re-arm — since ML Autopilot owning the wheel
+      // isn't "the turn finished," it's a different controller being in charge entirely.
+      if (!trailModeRef.current || controlModeRef.current === "ml") {
+        // Trail mode turned off (or ML Autopilot took over) mid-turn — the boundary stops existing as
+        // a concept, so just drop out (leave the wheel wherever it was; unlike a normal disengage
+        // below this isn't "the turn finished," it's the feature being switched off, so it shouldn't
+        // yank the wheel too).
         if (autoSteerActiveRef.current) {
           autoSteerActiveRef.current = false;
           setAutoSteerActive(false);
@@ -2522,12 +2532,12 @@ export default function BusSteeringSimulator() {
         <div style={{ position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)", display: "flex", gap: 4, whiteSpace: "nowrap" }}>
           <button className={"btn" + (showCourse ? " btnOn" : "")} onClick={() => setShowCourse((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Course</button>
           <button
-            className={"btn" + (controlMode === "sim" ? " btnOn" : "")}
-            onClick={() => setControlMode((m) => (m === "sim" ? "manual" : "sim"))}
-            title="Autopilot steers the single test corner (see the Course toggle) using the policy trained by `npm run train` — any manual steering/throttle/brake input hands control straight back"
+            className={"btn" + (controlMode === "ml" ? " btnOn" : "")}
+            onClick={() => setControlMode((m) => (m === "ml" ? "manual" : "ml"))}
+            title="ML Autopilot steers the single test corner (see the Course toggle) using the policy trained by `npm run train` — mutually exclusive with Fence Autopilot, and any manual steering/throttle/brake input hands control straight back"
             style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
           >
-            {controlMode === "sim" ? "Autopilot: ON" : "Autopilot"}
+            {controlMode === "ml" ? "ML Autopilot: ON" : "ML Autopilot"}
           </button>
           <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Off-track</button>
           <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
@@ -2563,11 +2573,12 @@ export default function BusSteeringSimulator() {
             Approaching mapped area limit — slowing
           </div>
         )}
-        {/* Shown whenever the boundary auto-steer (see "boundary auto-steer" above) is actively turning
-            the bus away from the mapped-area wall it was closing in on. */}
+        {/* Shown whenever "Fence Autopilot" — the user-facing name for the boundary auto-steer (see
+            "boundary auto-steer" above) — is actively turning the bus away from the mapped-area wall
+            it was closing in on. */}
         {trailMode && autoSteerActive && !trailPaused && (
           <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.trail, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
-            Approaching mapped area limit — auto-steering away
+            Fence Autopilot — steering away from mapped area limit
           </div>
         )}
         {/* Day-to-day driving is the up/down arrow keys (see the drive-loop physics above); this
@@ -2576,7 +2587,7 @@ export default function BusSteeringSimulator() {
         <button
           className={"btn" + (animating ? " btnOn" : "")}
           onClick={() => {
-            exitSimMode();
+            exitMlAutopilot();
             if (animating) {
               // Also cancels a still-in-progress "Drive the turn"/Page Up accelerate ramp and a
               // still-running Page Down auto-brake — without clearing driveToTargetRef, clicking
@@ -2633,10 +2644,10 @@ export default function BusSteeringSimulator() {
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <SteeringWheel angleDeg={appliedSteerInput} />
-              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { exitSimMode(); setSteerInput(v); }} accent={COL.front} large />
+              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { exitMlAutopilot(); setSteerInput(v); }} accent={COL.front} large />
               <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
                 {[["Full lock left", -50], ["Straight", 0], ["Full lock right", 50]].map(([lbl, v]) => (
-                  <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => { exitSimMode(); setSteerInput(v); }}>{lbl}</button>
+                  <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => { exitMlAutopilot(); setSteerInput(v); }}>{lbl}</button>
                 ))}
               </div>
             </div>
