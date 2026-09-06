@@ -14,6 +14,16 @@ picking/setting up a 3D engine so it isn't blocked on that decision.
   see the file header for the exact conventions preserved from the JS
   source (chassis-local frame, wheel numbering, the `deltaFDeg == 0` exact
   straight-ahead rule, sign convention).
+- `Geometry/PoseIntegrator.cs` — a plain C# port of the dead-reckoning
+  position/heading integration from TagSimSteer's "Drive the turn" effect:
+  `Pose` (x, y, theta in world space) plus `PoseIntegrator.Step`, which
+  Euler-integrates a pose forward by one time step given the current
+  `GeometryResult` and a speed in km/h. Also carries `Pose.Transform`, the
+  port of `poseTransform` (chassis-local → world), since placing any
+  geometry point in the world needs both the geometry and the live pose
+  together. Same "no engine dependency" rule as `TagBusGeometry.cs` — dt
+  clamping/sourcing (e.g. from Unity's `Time.deltaTime`) is left to the
+  caller, not baked into the integrator.
 
 That's it — no `.csproj`, no Unity project structure (`Assets/`,
 `ProjectSettings/`, etc.) yet. Unity projects are normally created via the
@@ -76,13 +86,14 @@ from here. When ready:
    regenerated locally by the Editor on first open and should never be
    committed.
 
-## Pose integration is not ported (yet)
+## Pose integration is ported; wiring it to a per-frame loop is not
 
-`TagBusGeometry.Compute` is a single-instant evaluation — it does not
-integrate the bus's position/heading over time. In TagSimSteer that
-dead-reckoning loop (Euler-integrating `pose = {x, y, theta}` each frame from
-`R` and speed) lives in the React component's "Drive the turn" effect, not in
-`computeGeometry` itself (see `TagSimSteer/CLAUDE.md`, "Coordinate pipeline").
-Porting that loop is a reasonable next step once there's an actual per-frame
-update context (a MonoBehaviour `Update`/`FixedUpdate` or equivalent) to hang
-it on — deferred until then rather than guessed at now.
+`TagBusGeometry.Compute` is still a single-instant evaluation — it does not
+integrate the bus's position/heading over time. That's now `PoseIntegrator.Step`
+(see above), a direct port of the Euler-integration loop in TagSimSteer's
+"Drive the turn" effect. What's still missing is the actual per-frame call
+site: a MonoBehaviour `Update`/`FixedUpdate` (or equivalent) that holds a
+`Pose` field, calls `PoseIntegrator.Step` each tick with the current speed and
+a freshly-computed `GeometryResult`, and feeds the result to whatever renders
+the bus. Deferred until the Unity project exists and there's a real place to
+put that component.

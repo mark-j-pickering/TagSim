@@ -368,11 +368,15 @@ port silently stays in sync; nothing currently automates that.
 
 - *(none logged yet)*
 
+The dead-reckoning pose-integration loop (lives in the "Drive the turn"
+effect, not in `computeGeometry` itself — see "Coordinate pipeline" above)
+has also been ported, to `TagSim3D/Geometry/PoseIntegrator.cs`
+(`Pose`/`PoseIntegrator.Step`, plus `Pose.Transform` for `poseTransform`).
+Same rule applies: this JS effect stays the source of truth for the
+integration math.
+
 Not ported: `innerDriveRadius` (already dead/unused here — see "Known rough
-edges" below) and the dead-reckoning pose-integration loop (lives in the
-"Drive the turn" effect, not in `computeGeometry` itself — see "Coordinate
-pipeline" above). See `TagSim3D/README.md` for why and what porting that
-loop would need.
+edges" below).
 
 ## Known rough edges / things not yet done
 
