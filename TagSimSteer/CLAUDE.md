@@ -378,6 +378,19 @@ integration math.
 Not ported: `innerDriveRadius` (already dead/unused here — see "Known rough
 edges" below).
 
+**Explicitly not intended for porting: `src/course.js`, `src/env.js`,
+`src/train.js`, `src/policy.js`** (the corridor/course model, RL
+observation/reward layer, and CEM training loop built on top of the geometry
+engine above). These stay scoped to this sub-project as a self-contained 2D
+training sandbox. TagSim3D's road/corridor geometry (centerline, width,
+curbs, no-mow zones) will be authored freehand in the Unity editor (Splines/
+ProBuilder/Path Creator), not generated from or synced with this JS course
+model — so unlike `computeGeometry`/`PoseIntegrator`, there is no port to
+keep in sync here, and no expectation that a future ML addon for TagSim3D
+reuses this course/env/training code directly. If TagSim3D eventually gets
+an ML addon, it will most likely be built against the Unity scene itself
+(e.g. via Unity ML-Agents) rather than by porting this pipeline.
+
 ## Known rough edges / things not yet done
 
 - `DUAL_HALF_LEN`/`DUAL_HALF_W` are now dead code (see wheel numbering
