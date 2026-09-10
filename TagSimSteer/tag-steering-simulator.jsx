@@ -742,9 +742,17 @@ function boundaryGovernorCapKmh(pathDistance) {
 // tightened into a bus stuck spinning at full lock. (Caught from a real saved trail, not the original
 // unit tests, which only ever exercised a single engage→disengage cycle in isolation.)
 const AUTO_STEER_LEAD_SECONDS = LOCK_TO_LOCK_SECONDS;
-function autoSteerLeadDistance(speedKmh, frontOverhang) {
+// No separate frontOverhang term any more — see BOUNDARY_GOVERNOR_EXTRA_MARGIN's comment and
+// cornersPathDistance. This is compared against a corner-aware distance now (see the engage-gate
+// below), not boundaryWallAhead's reference-point-only one, so it needs to stay in the same units:
+// an earlier version mixed the two (corner-aware governor, reference-point-only trigger) and the
+// two could disagree by a few metres right at the margin boundary — small enough to usually not
+// matter, but exactly wide enough that a bus governor-pinned to 0 at a wall could sit just outside
+// the trigger's own idea of "close enough," re-engaging never, permanently stuck with the wheel
+// centred and nothing left driving it. Keeping both off the same metric closes that gap.
+function autoSteerLeadDistance(speedKmh) {
   const v = speedKmh / 3.6;
-  return v * AUTO_STEER_LEAD_SECONDS + frontOverhang + BOUNDARY_GOVERNOR_EXTRA_MARGIN;
+  return v * AUTO_STEER_LEAD_SECONDS + BOUNDARY_GOVERNOR_EXTRA_MARGIN;
 }
 
 // Even with a tighter trigger distance, disengaging right next to a wall (a corner, where a second
@@ -828,10 +836,17 @@ function reflectedHeading(theta, axis) {
 // sets `steerInput` targets (full lock or 0), exactly as a manual slider drag or "Full lock" button
 // click would; the existing rate-limited chase from steerInput to appliedSteerInput (see the
 // steering-rate-limiting effect in the component below) is what carries the wheel there.
-const AUTO_STEER_RELEASE_TOLERANCE_DEG = 1; // treat a predicted final error under this as "close enough" to release
+const AUTO_STEER_RELEASE_TOLERANCE_DEG = 0.3; // treat a predicted final error under this as "close enough" to release
 const AUTO_STEER_SETTLED_DEG = 0.3; // |appliedSteerInput| below this counts as "wheel back at centre" (coast finished)
-const AUTO_STEER_FINAL_TOLERANCE_DEG = 1.5; // settled error under this is accepted; otherwise retry
-const AUTO_STEER_MAX_RETRIES = 4; // safety cap on bang-coast retries for one engagement
+// Verified (standalone drive-loop simulation, not just this scenario) that a normal single-wall
+// reflection converges to within 0.1° in exactly one retry at this tolerance — tightened down from
+// 1.5°/1° at the driver's request. A genuine tight double-wall corner jam converges far more slowly
+// (each retry recovers only a degree or two, not a fixed fraction of what's left), so it won't
+// generally reach this within AUTO_STEER_MAX_RETRIES — see that constant and the stall-retry cap in
+// the "boundary auto-steer" bang phase for how that case gives up gracefully instead of grinding
+// forever for accuracy the room available doesn't support.
+const AUTO_STEER_FINAL_TOLERANCE_DEG = 0.5; // settled error under this is accepted; otherwise retry
+const AUTO_STEER_MAX_RETRIES = 4; // safety cap on bang-coast retries for one engagement (shared with stall-retries — see AUTO_STEER_STALL_RETRY_MS)
 
 // Bang can stall completely near a corner: chooseBangLockDeg picks its angle from the straight-line
 // room along the heading at engage time, but a corner has a *second* wall close by too, off to the
@@ -1285,7 +1300,7 @@ export default function BusSteeringSimulator() {
   const [autoSteerEverEngaged, setAutoSteerEverEngaged] = useState(false);
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
   const trailModeRef = useRef(trailMode);
-  const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason frontOverhangRef exists
+  const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason LfdRef exists
   const trailPausedRef = useRef(false);
   const boundaryLimitingRef = useRef(false);
   const autoSteerActiveRef = useRef(false);
@@ -1316,12 +1331,11 @@ export default function BusSteeringSimulator() {
   // driveToTargetRef below) once the bus has cleared the wall and the cap releases — otherwise a bus
   // that isn't actively holding the throttle through the corner would just stay at the reduced speed.
   const preSlowdownSpeedRef = useRef(null);
-  // Lfd+Fo (reference point to front bumper), mirrored for the drive loop below — that loop is an
-  // imperative useEffect with an empty dependency array (see its own comment), so it can't read
-  // Lfd/Fo as live component state; it reads this ref instead, kept in sync every render alongside
+  // Live Lfd, for autoSteerCoastSweepDeg — that's called from the drive loop below, an imperative
+  // useEffect with an empty dependency array (see its own comment), so it can't read Lfd as live
+  // component state; it reads this ref instead, kept in sync every render alongside
   // geomRef/speedRef/trailModeRef just below.
-  const frontOverhangRef = useRef(0);
-  const LfdRef = useRef(7); // live Lfd, for autoSteerCoastSweepDeg — same reason frontOverhangRef exists
+  const LfdRef = useRef(7);
   const poseRef = useRef({ x: 0, y: 0, theta: 0 }); // live pose during the drive loop, source of truth for trail sampling
 
   const [pose, setPose] = useState({ x: 0, y: 0, theta: 0 });
@@ -1361,7 +1375,6 @@ export default function BusSteeringSimulator() {
   speedRef.current = speed;
   trailModeRef.current = trailMode;
   trailBoundHalfRef.current = trailBoundHalf;
-  frontOverhangRef.current = Lfd + Fo;
   LfdRef.current = Lfd;
 
   function clearTrail() {
@@ -1804,9 +1817,14 @@ export default function BusSteeringSimulator() {
           pinnedByGovernor ||
           Math.hypot(poseRef.current.x - autoSteerCooldownPoseRef.current.x, poseRef.current.y - autoSteerCooldownPoseRef.current.y) >= AUTO_STEER_COOLDOWN_MIN_DISTANCE_M;
         if (!autoSteerActiveRef.current && t >= autoSteerCooldownUntilRef.current && t >= manualSteerUntilRef.current && clearedCooldownPose) {
+          // wall.axis (which side is closing in) still comes from the reference-point heading —
+          // that part doesn't need corner precision, it's just "which of x/y" — but the actual
+          // trigger distance is cornersPathDistance, the same metric the governor uses, so the two
+          // can't disagree about how close is "close enough" — see autoSteerLeadDistance's comment.
           const wall = boundaryWallAhead(poseRef.current, trailBoundHalfRef.current);
-          const leadDistance = autoSteerLeadDistance(nextSpeed, frontOverhangRef.current);
-          if (wall.distance < leadDistance) {
+          const cornerDistance = cornersPathDistance(poseRef.current, geomRef.current, trailBoundHalfRef.current);
+          const leadDistance = autoSteerLeadDistance(nextSpeed);
+          if (cornerDistance < leadDistance) {
             autoSteerActiveRef.current = true;
             autoSteerPhaseRef.current = "bang";
             autoSteerStallSinceRef.current = null;
@@ -1856,12 +1874,25 @@ export default function BusSteeringSimulator() {
               if (nextSpeed < AUTO_STEER_STALL_SPEED_KMH && limiting) {
                 if (autoSteerStallSinceRef.current == null) autoSteerStallSinceRef.current = t;
                 else if (t - autoSteerStallSinceRef.current >= AUTO_STEER_STALL_RETRY_MS) {
-                  // Escalate straight to MAX_LOCK_DEG rather than re-running chooseBangLockDeg: a
-                  // stall means the room that estimate assumed doesn't actually support even a
-                  // moderate turn (see the comment above) — exactly the "no room left" case
-                  // chooseBangLockDeg's own availableDistanceM<=0 branch already falls back to
-                  // MAX_LOCK_DEG for, just reached from a stall instead of an invalid distance.
-                  autoSteerBangLockDegRef.current = MAX_LOCK_DEG;
+                  // Shares its budget with the coast-settled retries below (AUTO_STEER_MAX_RETRIES)
+                  // rather than looping unbounded: a true corner jam can grind out only a degree or
+                  // two of real progress per stall-retry (see the "boundary auto-steer" comment's
+                  // corner-jam paragraph), so with AUTO_STEER_FINAL_TOLERANCE_DEG tightened to a
+                  // fraction of a degree this path could otherwise retry forever without ever
+                  // reaching it. Give up gracefully at the same cap a normal retry would, accepting
+                  // whatever heading's been achieved — same trade a driver boxed into a tight corner
+                  // makes: stop fighting for the last degree once the room to do so isn't there.
+                  if (autoSteerRetryCountRef.current >= AUTO_STEER_MAX_RETRIES) {
+                    finishEngagement();
+                  } else {
+                    autoSteerRetryCountRef.current += 1;
+                    // Escalate straight to MAX_LOCK_DEG rather than re-running chooseBangLockDeg: a
+                    // stall means the room that estimate assumed doesn't actually support even a
+                    // moderate turn (see the comment above) — exactly the "no room left" case
+                    // chooseBangLockDeg's own availableDistanceM<=0 branch already falls back to
+                    // MAX_LOCK_DEG for, just reached from a stall instead of an invalid distance.
+                    autoSteerBangLockDegRef.current = MAX_LOCK_DEG;
+                  }
                   autoSteerStallSinceRef.current = null;
                 }
               } else {
