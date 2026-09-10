@@ -1013,7 +1013,7 @@ export default function BusSteeringSimulator() {
   // fits within a single laptop screen height without scrolling — the keyboard shortcut list isn't
   // needed at a glance on a touchscreen, so it's tucked behind a tap like Advanced settings.
   const [driverControlsOpen, setDriverControlsOpen] = useState(false);
-  const [viewMode, setViewMode] = useState("circle");
+  const [viewMode, setViewMode] = useState("bus");
 
   // A single fixed test corner (see src/env.js/course.js) for the autopilot below and its "Course"
   // overlay — the exact same course + vehicle the headless ML env trains/scores against (DEFAULT_COURSE_OPTIONS),
