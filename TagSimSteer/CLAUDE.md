@@ -343,6 +343,16 @@ branches (circular vs straight-line versions).
   always-visible "Steering & throttle" and the bus reference photo. Below
   the map+panel row: a collapsible "Advanced settings" (tag ratio, lockout,
   vehicle geometry sliders, display toggles), closed by default.
+- The header + map/side-panel row is deliberately sized to fit inside a
+  touchscreen laptop's *browser viewport*, not its screen resolution —
+  those aren't the same thing. A 2736×1824 Surface-class panel at Windows'
+  default 200% scaling only gives the browser a ~1368×912 logical viewport,
+  and the tab strip/address bar/taskbar eat a further ~150-180px of that
+  before any page content is visible. Budget against the post-chrome
+  number, not the raw viewport height, or a "fits on screen" layout will
+  still scroll in practice. (Verified: current build measures ~730px for
+  header+row, leaving headroom under a ~912px logical viewport even with
+  chrome subtracted.)
 - The whole map wrapper has `overflow: hidden` + CSS `contain: layout paint`,
   and the SVG content is wrapped in an actual `clipPath` (not just CSS
   `overflow: hidden` on the `<svg>`) — this was needed because the
