@@ -146,7 +146,12 @@ function computeView(geom, pose, viewMode, vb) {
     // world space, regardless of steering — camera just follows the bus.
     const vehicleLength = geom.Lfd + geom.Fo + geom.Ldt + geom.Ro;
     const scale = vb.min / (BUS_VIEW_LENGTHS * vehicleLength);
-    return { scale, originX: vb.w / 2 + pose.y * scale, originY: vb.h / 2 + pose.x * scale };
+    // Track the body's geometric midpoint, not the drive-axle pose origin: front/rear overhang
+    // are rarely equal (default spec is +9.75m front, -4.75m rear off the drive axle), so
+    // centring on the pose itself leaves the bus visibly off-centre in the viewport.
+    const bodyMidX = (geom.Lfd + geom.Fo - geom.Ldt - geom.Ro) / 2;
+    const center = poseTransform({ x: bodyMidX, y: 0 }, pose);
+    return { scale, originX: vb.w / 2 + center.y * scale, originY: vb.h / 2 + center.x * scale };
   }
   if (viewMode === "close") {
     // 'B' key: a tight, continuously-tracking close-up — CLOSE_RADIUS_M around a reference point
@@ -541,15 +546,28 @@ function brakeDecel(heldSeconds) {
 // they're equal, so a bus held at the cap traces exactly the same speed-vs-distance curve a real
 // constant-deceleration stop would.
 //
-// The margin isn't a flat constant: boundaryPathDistance/boundaryGovernorCapKmh work off `pose`,
-// which tracks the drive axle (see main CLAUDE.md's coordinate-pipeline notes), not the physical
-// front of the bus — the nose sits Lfd+Fo further forward again. An early version used a flat 3m
-// pad here, sized only for integration slop, and the front overhang could still visibly poke past
-// the drawn boundary line (observed when testing the governor in a real browser). The margin is now
-// Lfd+Fo (the live vehicle geometry, not a hand-tuned number) plus a small fixed pad, so it's the
-// bumper — not just the reference point — that stops short of the line, leaving the bus's own
-// length as manoeuvring room to turn around rather than sitting nose-to-the-wall.
-const BOUNDARY_GOVERNOR_EXTRA_MARGIN = 12; // metres of pad beyond the bumper, for integration slop
+// The margin isn't a flat constant, and isn't sized off `pose` (the drive axle — see main
+// CLAUDE.md's coordinate-pipeline notes) either. An early version used a flat 3m pad measured from
+// `pose` itself, and the front overhang visibly poked past the drawn boundary line (observed when
+// testing the governor in a real browser) — `pose` isn't the bumper, it sits Lfd+Fo behind it. The
+// next version fixed that by adding Lfd+Fo as a second, separate term, but that only corrects for
+// the straight-ahead case: while turning, a body corner sweeps a *larger* radius than `pose`'s own
+// path (see computeGeometry's mow1/mow2/tailSwing — the same "corners swing wider than the pivot"
+// effect), so a margin that assumes the bumper simply trails `pose` by a constant forward offset
+// still understates how soon the front of the bus actually reaches a wall mid-turn — exactly what
+// let a 12m pad turn out to be load-bearing rather than pure slack (see below).
+//
+// `cornersPathDistance` (below) fixes this properly instead of papering over it with more pad: it
+// runs the same curved-path projection boundaryPathDistance already does for `pose`, but for each
+// of the four body corners (FL/FR/RL/RR — see computeGeometry) in turn, taking whichever reports
+// the soonest exit. That's the vehicle's actual physical extent, not a straight-line guess at it, so
+// BOUNDARY_GOVERNOR_EXTRA_MARGIN only has to cover genuine integration slop again — verified by
+// sweeping it down against the harshest cases this file's auto-steer tuning already cares about
+// (dead-on and corner approaches, at both crawl and full speed): margins as low as 8 still never let
+// a corner touch a wall, so 8 is what's set below (down from 12) rather than guessing further —
+// anything under that starts reproducing the auto-steer stalls the corner-approach fix above exists
+// to prevent, so don't drop it further without re-running that same sweep.
+const BOUNDARY_GOVERNOR_EXTRA_MARGIN = 8; // metres of pad for integration slop only — corner geometry is now exact, not padded for
 
 // Path-distance remaining, along the bus's actual driven path — straight if steering is centred,
 // else the arc of radius `geom.R` about the live turn centre — before world position {x,y} first
@@ -628,11 +646,79 @@ function boundaryPathDistance(pose, geom, trailBoundHalf) {
   return valid.length ? Math.min(...valid) : Infinity;
 }
 
+// Generalizes boundaryPathDistance from the drive-axle reference point to any chassis-fixed point:
+// path-distance remaining, along the curved arc that point actually sweeps (concentric with the
+// same turn centre as `pose`, just at that point's own radius/phase — a rigid attachment rotates
+// together, so every point on the chassis shares the reference point's angular rate), before its
+// world position first leaves the boundary square. boundaryPathDistance is this with chassisPoint
+// = {x:0,y:0}. Used by cornersPathDistance below to track the actual body corners, not just the
+// pivot — see the "boundary speed governor" comment above for why that distinction matters.
+// Verified against brute-force forward simulation to sub-3cm error across thousands of random
+// pose/radius/point/boundary combinations.
+function sweptPointPathDistance(pose, R, chassisPoint, trailBoundHalf) {
+  if (R == null) {
+    const world = poseTransform(chassisPoint, pose);
+    const cosT = Math.cos(pose.theta), sinT = Math.sin(pose.theta);
+    const axisDistance = (coord, dirComp) => {
+      if (Math.abs(dirComp) < 1e-9) return Infinity;
+      const rem = dirComp > 0 ? trailBoundHalf - coord : coord + trailBoundHalf;
+      return Math.max(0, rem) / Math.abs(dirComp);
+    };
+    return Math.min(axisDistance(world.x, cosT), axisDistance(world.y, sinT));
+  }
+
+  const theta0 = pose.theta;
+  const Cx = pose.x - R * Math.sin(theta0);
+  const Cy = pose.y + R * Math.cos(theta0);
+  const world0 = poseTransform(chassisPoint, pose);
+  const radiusP = Math.hypot(world0.x - Cx, world0.y - Cy);
+  const psi0 = Math.atan2(world0.y - Cy, world0.x - Cx);
+  const period = 2 * Math.PI * Math.abs(R);
+  const sFor = (psi) => {
+    const s = (psi - psi0) * R;
+    return ((s % period) + period) % period;
+  };
+
+  const candidates = [];
+  // x(s) = Cx + radiusP·cos(psi(s)) = V  =>  cos(psi) = (V-Cx)/radiusP  (two branches: ±acos)
+  for (const V of [trailBoundHalf, -trailBoundHalf]) {
+    const k = (V - Cx) / radiusP;
+    if (Math.abs(k) <= 1) {
+      const base = Math.acos(k);
+      candidates.push(sFor(base), sFor(-base));
+    }
+  }
+  // y(s) = Cy + radiusP·sin(psi(s)) = V  =>  sin(psi) = (V-Cy)/radiusP  (two branches: asin, π-asin)
+  for (const V of [trailBoundHalf, -trailBoundHalf]) {
+    const k = (V - Cy) / radiusP;
+    if (Math.abs(k) <= 1) {
+      const base = Math.asin(k);
+      candidates.push(sFor(base), sFor(Math.PI - base));
+    }
+  }
+
+  const valid = candidates.filter(Number.isFinite);
+  return valid.length ? Math.min(...valid) : Infinity;
+}
+
+// The governor's actual safety metric: the soonest any of the four body corners (FL/FR/RL/RR)
+// leaves the boundary square along the bus's current curved path — see the "boundary speed
+// governor" comment above for why the reference point alone understates this mid-turn.
+function cornersPathDistance(pose, geom, trailBoundHalf) {
+  let min = Infinity;
+  for (const key of ["FL", "FR", "RL", "RR"]) {
+    const d = sweptPointPathDistance(pose, geom.R, geom.bodyCorners[key], trailBoundHalf);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
 // Maximum speed (km/h) the governor allows at the given remaining path-distance to the boundary.
-// `frontOverhang` is Lfd+Fo (reference point to bumper) — see the comment above.
-function boundaryGovernorCapKmh(pathDistance, frontOverhang) {
+// `pathDistance` should already be the physical extremity's own distance (see cornersPathDistance)
+// — no separate frontOverhang term here any more, the corner points already are the bumper/tail.
+function boundaryGovernorCapKmh(pathDistance) {
   if (!Number.isFinite(pathDistance)) return Infinity;
-  const d = Math.max(0, pathDistance - frontOverhang - BOUNDARY_GOVERNOR_EXTRA_MARGIN);
+  const d = Math.max(0, pathDistance - BOUNDARY_GOVERNOR_EXTRA_MARGIN);
   return Math.sqrt(2 * BRAKE_DECEL_INITIAL * d) * 3.6; // m/s -> km/h
 }
 
@@ -656,9 +742,17 @@ function boundaryGovernorCapKmh(pathDistance, frontOverhang) {
 // tightened into a bus stuck spinning at full lock. (Caught from a real saved trail, not the original
 // unit tests, which only ever exercised a single engage→disengage cycle in isolation.)
 const AUTO_STEER_LEAD_SECONDS = LOCK_TO_LOCK_SECONDS;
-function autoSteerLeadDistance(speedKmh, frontOverhang) {
+// No separate frontOverhang term any more — see BOUNDARY_GOVERNOR_EXTRA_MARGIN's comment and
+// cornersPathDistance. This is compared against a corner-aware distance now (see the engage-gate
+// below), not boundaryWallAhead's reference-point-only one, so it needs to stay in the same units:
+// an earlier version mixed the two (corner-aware governor, reference-point-only trigger) and the
+// two could disagree by a few metres right at the margin boundary — small enough to usually not
+// matter, but exactly wide enough that a bus governor-pinned to 0 at a wall could sit just outside
+// the trigger's own idea of "close enough," re-engaging never, permanently stuck with the wheel
+// centred and nothing left driving it. Keeping both off the same metric closes that gap.
+function autoSteerLeadDistance(speedKmh) {
   const v = speedKmh / 3.6;
-  return v * AUTO_STEER_LEAD_SECONDS + frontOverhang + BOUNDARY_GOVERNOR_EXTRA_MARGIN;
+  return v * AUTO_STEER_LEAD_SECONDS + BOUNDARY_GOVERNOR_EXTRA_MARGIN;
 }
 
 // Even with a tighter trigger distance, disengaging right next to a wall (a corner, where a second
@@ -676,8 +770,27 @@ function autoSteerLeadDistance(speedKmh, frontOverhang) {
 // bounces. AUTO_STEER_COOLDOWN_MIN_DISTANCE_M adds a floor on actual distance travelled since the
 // last disengage, on top of the time floor — roughly a vehicle-length of breathing room regardless of
 // how slowly the corner is being taken.
+//
+// That distance floor assumes the bus is free to go put it behind — at a genuine corner it can
+// disengage right next to the *second* wall, still governor-capped to ~0 (see the stall-escape
+// paragraph below AUTO_STEER_STALL_SPEED_KMH/MS), and would then wait forever on 15m it physically
+// cannot travel. The engage-gate bypasses the distance floor whenever the bus is pinned like that;
+// the time floor still applies regardless.
 const AUTO_STEER_COOLDOWN_MS = 3000;
 const AUTO_STEER_COOLDOWN_MIN_DISTANCE_M = 15;
+
+// A driver who grabs the wheel mid-correction (steering key, slider drag, Lock/Straight button)
+// should get it, not fight the bang-coast loop for it — before this, a manual nudge only changed
+// `steerInput` for one frame before the very next drive-loop tick overwrote it right back to
+// whatever the auto-steer pass wanted, so the wheel visibly refused to respond. Any genuine manual
+// steering input now cancels the current engagement outright (its frozen target is discarded, not
+// resumed) and hands the wheel back. MANUAL_STEER_QUIET_MS is how long afterwards auto-steer stays
+// off before it's allowed to re-arm — long enough to cover a natural burst of key taps or a slider
+// drag as "still driving," short enough that letting go for a moment hands it straight back if a
+// wall is still closing in. Deliberately its own short window, not AUTO_STEER_COOLDOWN_MS — that
+// one is about giving the *bus* room after a bounce it already completed; this one is about not
+// re-arming out from under a driver who's still actively steering.
+const MANUAL_STEER_QUIET_MS = 800;
 
 // The target heading, frozen the instant auto-steer engages, is a mirror reflection of the current
 // heading about the wall's normal — the same "angle of incidence equals angle of reflection" a ball
@@ -723,10 +836,57 @@ function reflectedHeading(theta, axis) {
 // sets `steerInput` targets (full lock or 0), exactly as a manual slider drag or "Full lock" button
 // click would; the existing rate-limited chase from steerInput to appliedSteerInput (see the
 // steering-rate-limiting effect in the component below) is what carries the wheel there.
-const AUTO_STEER_RELEASE_TOLERANCE_DEG = 1; // treat a predicted final error under this as "close enough" to release
+const AUTO_STEER_RELEASE_TOLERANCE_DEG = 0.025; // treat a predicted final error under this as "close enough" to release
 const AUTO_STEER_SETTLED_DEG = 0.3; // |appliedSteerInput| below this counts as "wheel back at centre" (coast finished)
-const AUTO_STEER_FINAL_TOLERANCE_DEG = 1.5; // settled error under this is accepted; otherwise retry
-const AUTO_STEER_MAX_RETRIES = 4; // safety cap on bang-coast retries for one engagement
+// Verified (standalone drive-loop simulation, across the full scenario battery and 60 randomized
+// single-wall entry angles/speeds) that a normal single-wall reflection converges to within this —
+// tightened from 0.5°/0.3°, then 0.1°/0.05°, at the driver's explicit request for higher precision
+// each time. AUTO_STEER_MAX_RETRIES had to come up from 4 to 6 alongside this last tightening: at
+// 4 retries some engagements were only landing this close because the cap happened to cut in at a
+// good moment, not because the tolerance check itself had been satisfied — thin enough that one
+// scenario in the battery hit a genuine ~150° stall-then-giveup outlier. 6 retries gave the same
+// scenario room to converge cleanly instead. A genuine tight double-wall corner jam converges far
+// more slowly (each retry recovers only a degree or two, not a fixed fraction of what's left), so it
+// won't generally reach this within AUTO_STEER_MAX_RETRIES — see that constant and
+// AUTO_STEER_STALL_MAX_RETRIES in the "boundary auto-steer" bang phase for how that case gives up
+// gracefully instead of grinding forever for accuracy the room available doesn't support (its own
+// re-engage afterward, using the corner-aware trigger, often tightens the residual further anyway).
+const AUTO_STEER_FINAL_TOLERANCE_DEG = 0.05; // settled error under this is accepted; otherwise retry
+const AUTO_STEER_MAX_RETRIES = 6; // safety cap on bang-coast (coast-settled) retries for one engagement
+// A deliberately *separate* budget from AUTO_STEER_MAX_RETRIES above, not shared with it — stalling
+// (governor pinning speed near 0, see the stall-escape paragraph below) isn't unique to a genuine
+// two-wall corner jam; a single-wall reflection can trigger a stall too, transiently, purely from
+// engaging at close range or a shallow entry angle. An earlier version spent AUTO_STEER_MAX_RETRIES
+// on stall-retries and coast-settled retries out of the same pool — a real driven session showed a
+// plain single-wall bounce burning through most of that shared budget on one transient stall before
+// it ever got to coast, then giving up early (settling ~5°) on what should have been an easy 0.1°
+// convergence. Its own pool means a transient stall no longer costs the fine-convergence retries a
+// clean reflection needs; a real corner jam (which stalls repeatedly) still hits its own cap and
+// gives up gracefully, same as before.
+const AUTO_STEER_STALL_MAX_RETRIES = 4;
+
+// Bang can stall completely near a corner: chooseBangLockDeg picks its angle from the straight-line
+// room along the heading at engage time, but a corner has a *second* wall close by too, off to the
+// side — a gentle, wide-radius bang arc curves toward that other wall long before it's swept enough
+// heading to matter, so the boundary governor (working off the real curved path, not the straight
+// line chooseBangLockDeg assumed) clamps speed to 0 before the turn gets anywhere. With speed pinned
+// at 0, omega is 0 too, so pose stops changing entirely — and since autoSteerCoastSweepDeg's release
+// check projects speed ramping back up *as if released*, not the real still-governed speed, it never
+// predicts enough sweep to actually release either. Bang phase then just sits there commanding the
+// same too-gentle angle forever: the wheel never moves, the bus never moves, engaged but frozen. This
+// is the same "deadlocked, no way to leave" failure boundaryPathDistance's own curved-path fix (see
+// the "boundary speed governor" comment above) was written to rule out — just from a cause that fix
+// doesn't reach, since here the turn radius itself is the wrong (too gentle) one, not merely untried.
+//
+// AUTO_STEER_STALL_SPEED_KMH/MS detect this directly — real speed pinned near 0 by the governor
+// (not just slow) for a sustained stretch while still in bang phase — and respond by re-running
+// chooseBangLockDeg against the *current* (now much closer, since the bus did creep in before
+// stalling) wall distance, exactly what a normal coast-release retry would do. That naturally comes
+// back tighter, same "naturally escalates toward MAX_LOCK_DEG" behaviour chooseBangLockDeg's own
+// comment already documents for retries — this just gives a stalled bang pass a way to reach that
+// path instead of waiting forever on a coast prediction that can't happen at 0 speed.
+const AUTO_STEER_STALL_SPEED_KMH = 0.5; // effectively stopped, not just slow
+const AUTO_STEER_STALL_RETRY_MS = 400; // must persist this long — ignores a single-frame governor blip
 
 // Bang no longer always commands full lock — that reacted the same way (yanking the wheel hard)
 // whether the turn genuinely needed it or there was plenty of room to come round gently, which read
@@ -783,7 +943,7 @@ function autoSteerCoastSweepDeg(appliedSteerDeg, speedKmh, Lfd) {
 
 // How long the bus must sit at 0 speed before the handbrake sound fires (see the handbrake effect
 // in the component body).
-const HANDBRAKE_ENGAGE_DELAY_MS = 2000;
+const HANDBRAKE_ENGAGE_DELAY_MS = 1000;
 // The speed the "Drive the turn" button ramps up to (via the same throttle physics as holding ↑,
 // see driveToTargetRef) — a quick, one-click way to get the bus rolling at a sensible pace to see
 // the current turn, without having to hold the throttle key down yourself.
@@ -996,7 +1156,6 @@ export default function BusSteeringSimulator() {
   const [lockoutOn, setLockoutOn] = useState(true);
   const [lockoutSpeed, setLockoutSpeed] = useState(25);
   const [speed, setSpeed] = useState(0);
-  const [showBand, setShowBand] = useState(true);
   // "Driving" is just speed > 0 — not independent state. Speed itself is simulated by the drive
   // loop from the up/down arrow key state (see below); this is purely a derived display/UI flag,
   // e.g. for showing the floating Stop button.
@@ -1008,7 +1167,7 @@ export default function BusSteeringSimulator() {
   // fits within a single laptop screen height without scrolling — the keyboard shortcut list isn't
   // needed at a glance on a touchscreen, so it's tucked behind a tap like Advanced settings.
   const [driverControlsOpen, setDriverControlsOpen] = useState(false);
-  const [viewMode, setViewMode] = useState("circle");
+  const [viewMode, setViewMode] = useState("bus");
 
   // A single fixed test corner (see src/env.js/course.js) for the autopilot below and its "Course"
   // overlay — the exact same course + vehicle the headless ML env trains/scores against (DEFAULT_COURSE_OPTIONS),
@@ -1051,18 +1210,41 @@ export default function BusSteeringSimulator() {
     }
   }
 
-  // Map sizing: the map wrapper's height is pinned to the side panel's own rendered height (so the
-  // two columns line up exactly), and its width just follows normal flex layout (100% of whatever
-  // space is left beside the side panel). Both are measured via ResizeObserver rather than computed
-  // from window size directly, since the side panel's height depends on its own content (the bus
-  // photo's aspect ratio, wrapped text, etc.), not just viewport size.
+  // Map sizing: the map wrapper's height is at least the side panel's own rendered height (so on a
+  // small/short window the two columns still line up exactly, same as before), but grows past that
+  // to use whatever extra vertical room the window actually has — the side panel's compact content
+  // (added for small touchscreen laptops) is a floor, not a ceiling, on how tall the map itself gets
+  // to be. mapWrapperWidth and sidePanelHeight are measured via ResizeObserver since the side panel's
+  // height depends on its own content (the bus photo's aspect ratio, wrapped text, etc.), not just
+  // viewport size; trailingHeight (the Advanced settings section + the wheel-numbering caption,
+  // both full-width and *below* the map/side-panel row — see trailingRef below) is measured the same
+  // way, since it can change size too (Advanced settings expanding). Available space for the row
+  // itself is then whatever's left of the window after the header above and this trailing content
+  // below — window resize (not ResizeObserver) covers the header, since nothing observed here
+  // changes size for a reason we'd want to react to other than the window itself resizing.
   const sidePanelRef = useRef(null);
   const mapWrapperRef = useRef(null);
+  const trailingRef = useRef(null); // wraps Advanced settings + the wheel-numbering caption below the row
   const [sidePanelHeight, setSidePanelHeight] = useState(0);
   const [mapWrapperWidth, setMapWrapperWidth] = useState(0);
+  const [viewportAvailableHeight, setViewportAvailableHeight] = useState(0);
   useEffect(() => {
-    const sideEl = sidePanelRef.current, mapEl = mapWrapperRef.current;
-    if (!sideEl || !mapEl) return;
+    const sideEl = sidePanelRef.current, mapEl = mapWrapperRef.current, trailingEl = trailingRef.current;
+    if (!sideEl || !mapEl || !trailingEl) return;
+    // getBoundingClientRect().top isn't affected by the map wrapper's own height (only by what's
+    // above/beside it — the header and the row's own top padding), so reading it before applying a
+    // height to the wrapper is safe, not circular. 24px of breathing room at the bottom of the
+    // window, matching the page wrapper's own paddingBottom. Reads trailingEl.offsetHeight directly
+    // from the DOM rather than through a piece of React state kept in sync by its own ResizeObserver
+    // entry — state set in the same callback batch this reads from would still be one render behind
+    // here, which was enough to let a stale (too-small) trailing height slip through once: that let
+    // the map briefly overshoot, which pulled in a scrollbar, which squeezed the side panel narrower
+    // (and so taller) before the correct trailing height ever got applied, permanently inflating the
+    // "floor" below. Reading live off the DOM avoids the staleness outright rather than chasing every
+    // way it could occur.
+    function updateAvailableHeight() {
+      setViewportAvailableHeight(Math.max(0, window.innerHeight - mapEl.getBoundingClientRect().top - trailingEl.offsetHeight - 32));
+    }
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         // offsetHeight/offsetWidth (border-box) rather than entry.contentRect (content-box) — the
@@ -1071,24 +1253,36 @@ export default function BusSteeringSimulator() {
         if (entry.target === sideEl) setSidePanelHeight(sideEl.offsetHeight);
         else if (entry.target === mapEl) setMapWrapperWidth(mapEl.offsetWidth);
       }
+      updateAvailableHeight(); // any of the three (side panel, map, trailing) changing can move this
     });
     ro.observe(sideEl);
     ro.observe(mapEl);
-    return () => ro.disconnect();
+    ro.observe(trailingEl);
+    updateAvailableHeight();
+    window.addEventListener("resize", updateAvailableHeight);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", updateAvailableHeight);
+    };
   }, []);
+  // The height actually applied to the map wrapper — see the comment above.
+  const mapHeight = sidePanelHeight > 0 ? Math.max(sidePanelHeight, viewportAvailableHeight) : 0;
   // Abstract viewBox size: height fixed at VB (every tuned scale constant assumes it), width scaled
   // to match the wrapper's actual on-screen aspect ratio so the square coordinate space always fills
-  // its rectangle exactly, however wide or narrow that rectangle ends up being.
+  // its rectangle exactly, however wide or narrow (or tall) that rectangle ends up being — must use
+  // the same height that's actually applied to the wrapper (mapHeight), not sidePanelHeight alone,
+  // or the viewBox's aspect ratio stops matching the rendered box's and the map letterboxes instead
+  // of filling the grown space.
   const vbSize = useMemo(() => {
-    const w = sidePanelHeight > 0 && mapWrapperWidth > 0 ? Math.round((VB * mapWrapperWidth) / sidePanelHeight) : VB;
+    const w = mapHeight > 0 && mapWrapperWidth > 0 ? Math.round((VB * mapWrapperWidth) / mapHeight) : VB;
     return { w, h: VB, min: Math.min(w, VB) };
-  }, [sidePanelHeight, mapWrapperWidth]);
+  }, [mapHeight, mapWrapperWidth]);
 
   // Mouse-wheel zoom on the map. Registered as a native listener (not React's onWheel) because
   // React attaches wheel handlers passively — calling preventDefault() from a JSX onWheel prop is a
   // no-op (and logs a warning) in modern React, and without it the page itself scrolls while the
   // user is trying to zoom the map.
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(2); // ~200% on load; scroll-wheel/Recenter/reset-click still target 1 (100%)
   useEffect(() => {
     const el = mapWrapperRef.current;
     if (!el) return;
@@ -1123,26 +1317,43 @@ export default function BusSteeringSimulator() {
   const [autoSteerEverEngaged, setAutoSteerEverEngaged] = useState(false);
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
   const trailModeRef = useRef(trailMode);
-  const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason frontOverhangRef exists
+  const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason LfdRef exists
   const trailPausedRef = useRef(false);
   const boundaryLimitingRef = useRef(false);
   const autoSteerActiveRef = useRef(false);
   const autoSteerPhaseRef = useRef("bang"); // "bang" | "releasing" — see the "boundary auto-steer" comment above
-  const autoSteerRetryCountRef = useRef(0); // bang-coast retries used so far this engagement — see AUTO_STEER_MAX_RETRIES
+  const autoSteerStallSinceRef = useRef(null); // rAF timestamp (ms) the current bang-phase stall started, or null — see AUTO_STEER_STALL_SPEED_KMH/MS
+  const autoSteerRetryCountRef = useRef(0); // coast-settled retries used so far this engagement — see AUTO_STEER_MAX_RETRIES
+  const autoSteerStallRetryCountRef = useRef(0); // stall-retries used so far this engagement — its own budget, see AUTO_STEER_STALL_MAX_RETRIES
   const autoSteerBangLockDegRef = useRef(MAX_LOCK_DEG); // this pass's chosen lock magnitude — see chooseBangLockDeg
   const autoSteerTargetThetaRef = useRef(0); // world heading auto-steer is chasing, frozen at engage — see reflectedHeading
   const autoSteerCooldownUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't re-engage — see AUTO_STEER_COOLDOWN_MS
   const autoSteerCooldownPoseRef = useRef(null); // world {x,y} at the moment of the last disengage — see AUTO_STEER_COOLDOWN_MIN_DISTANCE_M
+  const manualSteerUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't (re-)engage — see MANUAL_STEER_QUIET_MS
+
+  // Called from every genuine user-facing steering control (arrow keys, the slider, the Lock/
+  // Straight buttons) — see MANUAL_STEER_QUIET_MS. Mirrors exitMlAutopilot's role for the other
+  // autopilot: get out of the driver's way the instant they touch the wheel themselves, rather than
+  // making them switch this off first. Deliberately does *not* touch `steerInput` itself — the
+  // caller is about to set that to whatever the driver actually asked for, right after this call.
+  function cancelFenceAutopilot() {
+    manualSteerUntilRef.current = performance.now() + MANUAL_STEER_QUIET_MS;
+    if (autoSteerActiveRef.current) {
+      autoSteerActiveRef.current = false;
+      autoSteerStallSinceRef.current = null;
+      setAutoSteerActive(false);
+    }
+  }
+
   // Speed at the instant the boundary governor first starts capping it, so it can be restored (see
   // driveToTargetRef below) once the bus has cleared the wall and the cap releases — otherwise a bus
   // that isn't actively holding the throttle through the corner would just stay at the reduced speed.
   const preSlowdownSpeedRef = useRef(null);
-  // Lfd+Fo (reference point to front bumper), mirrored for the drive loop below — that loop is an
-  // imperative useEffect with an empty dependency array (see its own comment), so it can't read
-  // Lfd/Fo as live component state; it reads this ref instead, kept in sync every render alongside
+  // Live Lfd, for autoSteerCoastSweepDeg — that's called from the drive loop below, an imperative
+  // useEffect with an empty dependency array (see its own comment), so it can't read Lfd as live
+  // component state; it reads this ref instead, kept in sync every render alongside
   // geomRef/speedRef/trailModeRef just below.
-  const frontOverhangRef = useRef(0);
-  const LfdRef = useRef(7); // live Lfd, for autoSteerCoastSweepDeg — same reason frontOverhangRef exists
+  const LfdRef = useRef(7);
   const poseRef = useRef({ x: 0, y: 0, theta: 0 }); // live pose during the drive loop, source of truth for trail sampling
 
   const [pose, setPose] = useState({ x: 0, y: 0, theta: 0 });
@@ -1182,7 +1393,6 @@ export default function BusSteeringSimulator() {
   speedRef.current = speed;
   trailModeRef.current = trailMode;
   trailBoundHalfRef.current = trailBoundHalf;
-  frontOverhangRef.current = Lfd + Fo;
   LfdRef.current = Lfd;
 
   function clearTrail() {
@@ -1248,7 +1458,7 @@ export default function BusSteeringSimulator() {
       savedAt: new Date().toISOString(),
       vehicle: { Lfd, Ldt, Fo, Ro, Wb, Tw },
       controls: { steerInput, tagRatio, lockoutOn, lockoutSpeed },
-      display: { showBand, showGeom, showDims, advancedOpen, viewMode, trailMode },
+      display: { showGeom, showDims, advancedOpen, viewMode, trailMode },
       pose,
       trail: trailRef.current,
     };
@@ -1290,7 +1500,6 @@ export default function BusSteeringSimulator() {
     setLockoutSpeed(num(c.lockoutSpeed, 25));
     setSpeed(0); // never resume driving straight out of a load
 
-    setShowBand(typeof d.showBand === "boolean" ? d.showBand : true);
     setShowGeom(!!d.showGeom);
     setShowDims(!!d.showDims);
     setAdvancedOpen(!!d.advancedOpen);
@@ -1360,6 +1569,9 @@ export default function BusSteeringSimulator() {
       // Steering/throttle/brake keys are "manual input" — anything else (view-mode keys, horn)
       // isn't actually driving the bus, so it doesn't kick the autopilot off.
       if (DRIVING_KEYS.has(e.key)) exitMlAutopilot();
+      // Of those, only the steering keys should also cancel Fence Autopilot — see
+      // cancelFenceAutopilot's own comment; throttle/brake input doesn't touch the wheel.
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "End") cancelFenceAutopilot();
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         if (e.shiftKey) setSteerInput((v) => nudgeByRoadDeg(v, -QUARTER_TURN_STEER_DEG));
@@ -1560,7 +1772,7 @@ export default function BusSteeringSimulator() {
       // that's simply parked facing the boundary from a safe distance.
       let limiting = false;
       if (trailModeRef.current) {
-        const capKmh = boundaryGovernorCapKmh(boundaryPathDistance(poseRef.current, geomRef.current, trailBoundHalfRef.current), frontOverhangRef.current);
+        const capKmh = boundaryGovernorCapKmh(cornersPathDistance(poseRef.current, geomRef.current, trailBoundHalfRef.current));
         if (nextSpeed > capKmh) {
           // Remember the speed to restore to once this cap releases — see preSlowdownSpeedRef's
           // declaration and the restore below. Normally that's just the current (pre-clamp) speed,
@@ -1611,16 +1823,31 @@ export default function BusSteeringSimulator() {
           setAutoSteerActive(false);
         }
       } else {
+        // AUTO_STEER_COOLDOWN_MIN_DISTANCE_M assumes the bus is free to put distance behind it
+        // before re-arming; at a corner it can disengage right next to the *second* wall, still
+        // governor-capped to ~0 (see the "boundary auto-steer" comment's stall-escape section) —
+        // waiting on 15m of travel it physically cannot make yet would deadlock it right back.
+        // Bypass the distance floor whenever that's the situation; the time floor (AUTO_STEER_COOLDOWN_MS)
+        // still applies either way.
+        const pinnedByGovernor = limiting && nextSpeed < AUTO_STEER_STALL_SPEED_KMH;
         const clearedCooldownPose =
           autoSteerCooldownPoseRef.current == null ||
+          pinnedByGovernor ||
           Math.hypot(poseRef.current.x - autoSteerCooldownPoseRef.current.x, poseRef.current.y - autoSteerCooldownPoseRef.current.y) >= AUTO_STEER_COOLDOWN_MIN_DISTANCE_M;
-        if (!autoSteerActiveRef.current && t >= autoSteerCooldownUntilRef.current && clearedCooldownPose) {
+        if (!autoSteerActiveRef.current && t >= autoSteerCooldownUntilRef.current && t >= manualSteerUntilRef.current && clearedCooldownPose) {
+          // wall.axis (which side is closing in) still comes from the reference-point heading —
+          // that part doesn't need corner precision, it's just "which of x/y" — but the actual
+          // trigger distance is cornersPathDistance, the same metric the governor uses, so the two
+          // can't disagree about how close is "close enough" — see autoSteerLeadDistance's comment.
           const wall = boundaryWallAhead(poseRef.current, trailBoundHalfRef.current);
-          const leadDistance = autoSteerLeadDistance(nextSpeed, frontOverhangRef.current);
-          if (wall.distance < leadDistance) {
+          const cornerDistance = cornersPathDistance(poseRef.current, geomRef.current, trailBoundHalfRef.current);
+          const leadDistance = autoSteerLeadDistance(nextSpeed);
+          if (cornerDistance < leadDistance) {
             autoSteerActiveRef.current = true;
             autoSteerPhaseRef.current = "bang";
+            autoSteerStallSinceRef.current = null;
             autoSteerRetryCountRef.current = 0;
+            autoSteerStallRetryCountRef.current = 0;
             autoSteerTargetThetaRef.current = reflectedHeading(poseRef.current.theta, wall.axis);
             const initialErrorDeg = toDeg(wrapAngle(autoSteerTargetThetaRef.current - poseRef.current.theta));
             autoSteerBangLockDegRef.current = chooseBangLockDeg(initialErrorDeg, wall.distance, LfdRef.current);
@@ -1644,6 +1871,7 @@ export default function BusSteeringSimulator() {
             const wouldReachOrPassTarget =
               Math.sign(predictedFinalErrorDeg) !== Math.sign(errorDeg) || Math.abs(predictedFinalErrorDeg) < AUTO_STEER_RELEASE_TOLERANCE_DEG;
             if (wouldReachOrPassTarget) {
+              autoSteerStallSinceRef.current = null;
               autoSteerPhaseRef.current = "releasing";
               setSteerInput(0); // release now — coasting the rest of the way is exactly what got us here
             } else {
@@ -1657,6 +1885,37 @@ export default function BusSteeringSimulator() {
               // steering-rate-limiting effect's own rAF chase.
               const desired = -(Math.sign(errorDeg) || 1) * autoSteerBangLockDegRef.current;
               if (desired !== steerTargetRef.current) setSteerInput(desired);
+
+              // Stall escape — see AUTO_STEER_STALL_SPEED_KMH/MS above. `limiting` means the
+              // boundary governor is actually the thing holding speed down this frame, not just a
+              // slow approach; require that plus a sustained near-0 speed before treating it as a
+              // real stall, not a single-frame blip.
+              if (nextSpeed < AUTO_STEER_STALL_SPEED_KMH && limiting) {
+                if (autoSteerStallSinceRef.current == null) autoSteerStallSinceRef.current = t;
+                else if (t - autoSteerStallSinceRef.current >= AUTO_STEER_STALL_RETRY_MS) {
+                  // Own budget (AUTO_STEER_STALL_MAX_RETRIES), not shared with the coast-settled
+                  // retries below — see that constant's comment for why: stalling isn't unique to a
+                  // genuine corner jam, and burning the coast-retry budget on it starved otherwise-
+                  // easy single-wall reflections of the retries their own fine convergence needed.
+                  // A true corner jam still gives up gracefully here once its own cap is hit,
+                  // accepting whatever heading's been achieved — same trade a driver boxed into a
+                  // tight corner makes: stop fighting for the last degree once the room isn't there.
+                  if (autoSteerStallRetryCountRef.current >= AUTO_STEER_STALL_MAX_RETRIES) {
+                    finishEngagement();
+                  } else {
+                    autoSteerStallRetryCountRef.current += 1;
+                    // Escalate straight to MAX_LOCK_DEG rather than re-running chooseBangLockDeg: a
+                    // stall means the room that estimate assumed doesn't actually support even a
+                    // moderate turn (see the comment above) — exactly the "no room left" case
+                    // chooseBangLockDeg's own availableDistanceM<=0 branch already falls back to
+                    // MAX_LOCK_DEG for, just reached from a stall instead of an invalid distance.
+                    autoSteerBangLockDegRef.current = MAX_LOCK_DEG;
+                  }
+                  autoSteerStallSinceRef.current = null;
+                }
+              } else {
+                autoSteerStallSinceRef.current = null;
+              }
             }
           } else {
             // releasing: wait for the coast to actually finish (wheel back near centre) before
@@ -2183,7 +2442,7 @@ export default function BusSteeringSimulator() {
           ref={mapWrapperRef}
           style={{
             position: "relative", overflow: "hidden", contain: "layout paint",
-            width: "100%", height: sidePanelHeight > 0 ? sidePanelHeight : undefined, aspectRatio: sidePanelHeight > 0 ? undefined : "1/1",
+            width: "100%", height: mapHeight > 0 ? mapHeight : undefined, aspectRatio: mapHeight > 0 ? undefined : "1/1",
           }}
         >
         <svg
@@ -2246,8 +2505,12 @@ export default function BusSteeringSimulator() {
           })()}
 
 
-          {/* off-tracking band: annulus while turning, a straight parallel strip when driving straight */}
-          {showBand && (geom.isStraight ? (
+          {/* off-tracking band: annulus while turning, a straight parallel strip when driving
+              straight. On by default, off while trail mode is active (trail mode has its own,
+              more detailed swept-corridor visualisation — see trailMode below) — no separate
+              manual toggle any more, the "Off-track" button that used to control this didn't add
+              anything beyond what trail mode's own state already implies. */}
+          {!trailMode && (geom.isStraight ? (
             <polygon points={longBandPoints(-bandHalfY, bandHalfY, pose, displayedView)} fill="rgba(255,122,86,0.14)" />
           ) : (
             <path
@@ -2541,33 +2804,23 @@ export default function BusSteeringSimulator() {
           </button>
         )}
         <div style={{ position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)", display: "flex", gap: 4, whiteSpace: "nowrap" }}>
-          <button className={"btn" + (showCourse ? " btnOn" : "")} onClick={() => setShowCourse((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Course</button>
-          <button
-            className={"btn" + (controlMode === "ml" ? " btnOn" : "")}
-            onClick={() => setControlMode((m) => (m === "ml" ? "manual" : "ml"))}
-            title="ML Autopilot steers the single test corner (see the Course toggle) using the policy trained by `npm run train` — mutually exclusive with Fence Autopilot, and any manual steering/throttle/brake input hands control straight back"
-            style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
-          >
-            {controlMode === "ml" ? "ML Autopilot: ON" : "ML Autopilot"}
-          </button>
-          <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Off-track</button>
-          <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
-          <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
+          {/* Course / ML Autopilot buttons removed for now — see main CLAUDE.md / TagSimSteer
+              CLAUDE.md for the ML training pipeline this drives; showCourse/controlMode state and
+              the underlying effects are untouched, just not reachable from the UI at the moment. */}
+          <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
+          <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
           <button
             className={"btn" + (trailMode ? " btnOn" : "")}
             onClick={() => {
               setTrailMode((v) => !v);
-              if (!trailMode) {
-                selectViewMode("bus");
-                setShowBand(false);
-              }
+              if (!trailMode) selectViewMode("bus");
             }}
-            style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
+            style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
           >
             Trail
           </button>
           {trailMode && (
-            <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
+            <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
           )}
         </div>
         {trailMode && trailPaused && (
@@ -2656,10 +2909,10 @@ export default function BusSteeringSimulator() {
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <SteeringWheel angleDeg={appliedSteerInput} />
-              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { exitMlAutopilot(); setSteerInput(v); }} accent={COL.front} large />
+              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }} accent={COL.front} large />
               <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 4 }}>
                 {[["Lock ←", -50, "Full lock left"], ["Straight", 0, "Straight"], ["Lock →", 50, "Full lock right"]].map(([lbl, v, title]) => (
-                  <button key={lbl} title={title} className="btn" style={{ flex: "1 1 0", fontSize: 12, padding: "4px 4px", whiteSpace: "nowrap" }} onClick={() => { exitMlAutopilot(); setSteerInput(v); }}>{lbl}</button>
+                  <button key={lbl} title={title} className="btn" style={{ flex: "1 1 0", fontSize: 12, padding: "4px 4px", whiteSpace: "nowrap" }} onClick={() => { exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }}>{lbl}</button>
                 ))}
               </div>
             </div>
@@ -2692,7 +2945,10 @@ export default function BusSteeringSimulator() {
         </div>
       </div>
 
-      {/* advanced settings: full window width, below both the map and side panel, collapsed by default */}
+      {/* advanced settings + the caption below it: full window width, below both the map and side
+          panel, collapsed by default. Wrapped in trailingRef (see its declaration above) purely so
+          the map-height calc can measure and reserve space for it — no layout effect of its own. */}
+      <div ref={trailingRef}>
       <div style={{ padding: "10px 10px 0" }}>
         <Collapsible title="Advanced settings" open={advancedOpen} onToggle={() => setAdvancedOpen((v) => !v)}>
           <SectionLabel>Trail mode</SectionLabel>
@@ -2754,6 +3010,7 @@ export default function BusSteeringSimulator() {
 
       <div style={{ padding: "10px 12px 0", fontSize: 15, color: COL.textDim, lineHeight: 1.5 }}>
         Wheels numbered 1–8: 1–2 front (nearside/offside), 3–4 drive-axle nearside pair (3 leftmost/outer, 4 inner), 5–6 drive-axle offside pair (5 inner, 6 rightmost/outer), 7–8 tag axle. Model: steady-state circular turn, no tyre slip. Tag axle angle set for zero-scrub rolling at the current ratio; when locked straight (ratio 0, or above the speed lockout), the dashed ghost outline shows the ideal angle it's deviating from — the "tag scrub angle" readout is that gap. The shaded band spans from the drive axle's inner wheel (3 or 6, whichever is tighter) out to the front axle's outer wheel (2 or 1) — the corridor the vehicle actually occupies through the turn. The outer tail-swing circle (rear corner) is shown as a plain dashed reference only.
+      </div>
       </div>
     </div>
   );
