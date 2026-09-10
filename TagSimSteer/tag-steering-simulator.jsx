@@ -1124,7 +1124,6 @@ export default function BusSteeringSimulator() {
   const [lockoutOn, setLockoutOn] = useState(true);
   const [lockoutSpeed, setLockoutSpeed] = useState(25);
   const [speed, setSpeed] = useState(0);
-  const [showBand, setShowBand] = useState(true);
   // "Driving" is just speed > 0 — not independent state. Speed itself is simulated by the drive
   // loop from the up/down arrow key state (see below); this is purely a derived display/UI flag,
   // e.g. for showing the floating Stop button.
@@ -1428,7 +1427,7 @@ export default function BusSteeringSimulator() {
       savedAt: new Date().toISOString(),
       vehicle: { Lfd, Ldt, Fo, Ro, Wb, Tw },
       controls: { steerInput, tagRatio, lockoutOn, lockoutSpeed },
-      display: { showBand, showGeom, showDims, advancedOpen, viewMode, trailMode },
+      display: { showGeom, showDims, advancedOpen, viewMode, trailMode },
       pose,
       trail: trailRef.current,
     };
@@ -1470,7 +1469,6 @@ export default function BusSteeringSimulator() {
     setLockoutSpeed(num(c.lockoutSpeed, 25));
     setSpeed(0); // never resume driving straight out of a load
 
-    setShowBand(typeof d.showBand === "boolean" ? d.showBand : true);
     setShowGeom(!!d.showGeom);
     setShowDims(!!d.showDims);
     setAdvancedOpen(!!d.advancedOpen);
@@ -2458,8 +2456,12 @@ export default function BusSteeringSimulator() {
           })()}
 
 
-          {/* off-tracking band: annulus while turning, a straight parallel strip when driving straight */}
-          {showBand && (geom.isStraight ? (
+          {/* off-tracking band: annulus while turning, a straight parallel strip when driving
+              straight. On by default, off while trail mode is active (trail mode has its own,
+              more detailed swept-corridor visualisation — see trailMode below) — no separate
+              manual toggle any more, the "Off-track" button that used to control this didn't add
+              anything beyond what trail mode's own state already implies. */}
+          {!trailMode && (geom.isStraight ? (
             <polygon points={longBandPoints(-bandHalfY, bandHalfY, pose, displayedView)} fill="rgba(255,122,86,0.14)" />
           ) : (
             <path
@@ -2753,33 +2755,23 @@ export default function BusSteeringSimulator() {
           </button>
         )}
         <div style={{ position: "absolute", left: "50%", bottom: 10, transform: "translateX(-50%)", display: "flex", gap: 4, whiteSpace: "nowrap" }}>
-          <button className={"btn" + (showCourse ? " btnOn" : "")} onClick={() => setShowCourse((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Course</button>
-          <button
-            className={"btn" + (controlMode === "ml" ? " btnOn" : "")}
-            onClick={() => setControlMode((m) => (m === "ml" ? "manual" : "ml"))}
-            title="ML Autopilot steers the single test corner (see the Course toggle) using the policy trained by `npm run train` — mutually exclusive with Fence Autopilot, and any manual steering/throttle/brake input hands control straight back"
-            style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
-          >
-            {controlMode === "ml" ? "ML Autopilot: ON" : "ML Autopilot"}
-          </button>
-          <button className={"btn" + (showBand ? " btnOn" : "")} onClick={() => setShowBand((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Off-track</button>
-          <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
-          <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
+          {/* Course / ML Autopilot buttons removed for now — see main CLAUDE.md / TagSimSteer
+              CLAUDE.md for the ML training pipeline this drives; showCourse/controlMode state and
+              the underlying effects are untouched, just not reachable from the UI at the moment. */}
+          <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
+          <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
           <button
             className={"btn" + (trailMode ? " btnOn" : "")}
             onClick={() => {
               setTrailMode((v) => !v);
-              if (!trailMode) {
-                selectViewMode("bus");
-                setShowBand(false);
-              }
+              if (!trailMode) selectViewMode("bus");
             }}
-            style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
+            style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
           >
             Trail
           </button>
           {trailMode && (
-            <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 12, padding: "5px 7px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
+            <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
           )}
         </div>
         {trailMode && trailPaused && (
