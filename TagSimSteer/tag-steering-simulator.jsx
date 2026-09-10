@@ -984,8 +984,8 @@ const COL = {
 
 function Slider({ label, unit, value, min, max, step, onChange, accent = COL.amber }) {
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
         <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", flex: "1 1 auto", minWidth: 0 }}>{label}</span>
         {/* Fixed-width, flex-shrink:0 so a wider/narrower formatted number (more digits, a minus
             sign) never reflows how the label above wraps — see the matching note on SteppedSlider. */}
@@ -1003,8 +1003,8 @@ function Slider({ label, unit, value, min, max, step, onChange, accent = COL.amb
 function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber, large = false }) {
   const index = closestSteerIndex(value);
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 2 }}>
         <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", flex: "1 1 auto", minWidth: 0 }}>{label}</span>
         {/* Always 1 decimal (every STEER_STEPS value is a multiple of 0.5, so 1 decimal is exact,
             never a rounding artefact) — fixed decimal count plus a fixed-width, flex-shrink:0 box
@@ -1054,9 +1054,9 @@ function wheelRotationDeg(roadAngleDeg) {
   return sign * STEER_HAND_SPEED * timeToA;
 }
 
-function SteeringWheel({ angleDeg, size = 160 }) {
+function SteeringWheel({ angleDeg, size = 132 }) {
   return (
-    <div style={{ display: "flex", justifyContent: "center", marginBottom: 6 }}>
+    <div style={{ display: "flex", justifyContent: "center", marginBottom: 4 }}>
       <img
         src={STEERING_WHEEL_IMG} alt=""
         width={size} height={size * (STEERING_WHEEL_VB_H / STEERING_WHEEL_VB_W)}
@@ -1116,9 +1116,9 @@ function SpeedGauge({ label, unit, value, max, step = 10, accent = COL.amber }) 
 
 function ReadCell({ label, value, accent }) {
   return (
-    <div style={{ padding: "3px 7px", borderRight: `1px solid rgba(200,225,245,0.10)`, borderBottom: `1px solid rgba(200,225,245,0.10)` }}>
-      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</div>
-      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: accent || COL.text, marginTop: 1 }}>{value}</div>
+    <div style={{ padding: "2px 6px", borderRight: `1px solid rgba(200,225,245,0.10)`, borderBottom: `1px solid rgba(200,225,245,0.10)` }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 10, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 14, color: accent || COL.text }}>{value}</div>
     </div>
   );
 }
@@ -2415,11 +2415,11 @@ export default function BusSteeringSimulator() {
       `}</style>
 
       {/* header */}
-      <div style={{ padding: "6px 12px 5px", borderBottom: "1px solid rgba(200,225,245,0.12)", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ padding: "4px 12px 3px", borderBottom: "1px solid rgba(200,225,245,0.12)", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontSize: 12, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
-          <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
-          <div style={{ fontSize: 13, color: COL.textDim, marginTop: 1, lineHeight: 1.3 }}>
+          <div style={{ fontSize: 11, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
+          <div style={{ fontSize: 19, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
+          <div style={{ fontSize: 12, color: COL.textDim, marginTop: 1, lineHeight: 1.25 }}>
             Front axle steers, drive axle fixed (pivot reference), tag axle counter-steers. Default dimensions match a 14.5 m tag-axle bus (2.48 m wide, excl. mirrors) — adjust the geometry sliders for a different spec.
           </div>
         </div>
@@ -2873,9 +2873,9 @@ export default function BusSteeringSimulator() {
         </div>
 
         {/* side panel: grid readouts on top, primary controls below — no collapse here, always visible */}
-        <div ref={sidePanelRef} style={{ flex: "1 1 340px", minWidth: 290, maxWidth: 415, background: COL.panel, border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, padding: 10 }}>
+        <div ref={sidePanelRef} style={{ flex: "1 1 340px", minWidth: 290, maxWidth: 415, background: COL.panel, border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, padding: 8 }}>
           <SectionLabel>Radius grid</SectionLabel>
-          <div style={{ border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", background: COL.panelAlt, marginBottom: 10 }}>
+          <div style={{ border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", background: COL.panelAlt, marginBottom: 8 }}>
             <ReadCell label="Wheel 3 path radius (nearside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w3) + " m"} accent={COL.w3} />
             <ReadCell label="Wheel 6 path radius (offside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w6) + " m"} accent={COL.w6} />
             <ReadCell label="Front steer δf" value={geom.isStraight ? "0.0° straight" : fmt(Math.abs(geom.deltaFdeg)) + "° " + (geom.deltaFdeg > 0 ? "→ nearside" : "→ offside")} accent={COL.front} />
@@ -2910,9 +2910,9 @@ export default function BusSteeringSimulator() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <SteeringWheel angleDeg={appliedSteerInput} />
               <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }} accent={COL.front} large />
-              <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 6 }}>
+              <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 4 }}>
                 {[["Lock ←", -50, "Full lock left"], ["Straight", 0, "Straight"], ["Lock →", 50, "Full lock right"]].map(([lbl, v, title]) => (
-                  <button key={lbl} title={title} className="btn" style={{ flex: "1 1 0", fontSize: 12, padding: "6px 4px", whiteSpace: "nowrap" }} onClick={() => { exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }}>{lbl}</button>
+                  <button key={lbl} title={title} className="btn" style={{ flex: "1 1 0", fontSize: 12, padding: "4px 4px", whiteSpace: "nowrap" }} onClick={() => { exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }}>{lbl}</button>
                 ))}
               </div>
             </div>
@@ -3018,7 +3018,7 @@ export default function BusSteeringSimulator() {
 
 function SectionLabel({ children }) {
   return (
-    <div style={{ fontSize: 13, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase", margin: "3px 0 6px", borderBottom: "1px solid rgba(200,225,245,0.14)", paddingBottom: 3 }}>
+    <div style={{ fontSize: 12, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase", margin: "2px 0 5px", borderBottom: "1px solid rgba(200,225,245,0.14)", paddingBottom: 2 }}>
       {children}
     </div>
   );
@@ -3026,17 +3026,17 @@ function SectionLabel({ children }) {
 
 function Collapsible({ title, open, onToggle, children }) {
   return (
-    <div style={{ marginBottom: 10 }}>
+    <div style={{ marginBottom: 8 }}>
       <button
         onClick={onToggle}
         style={{
           display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%",
           background: "transparent", border: "none", borderBottom: "1px solid rgba(200,225,245,0.14)",
-          padding: "8px 0", cursor: "pointer", fontFamily: "'Barlow Condensed',sans-serif",
+          padding: "6px 0", cursor: "pointer", fontFamily: "'Barlow Condensed',sans-serif",
         }}
       >
-        <span style={{ fontSize: 15, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase" }}>{title}</span>
-        <span style={{ color: COL.textDim, fontFamily: "'Space Mono',monospace", fontSize: 17 }}>{open ? "▾ collapse" : "▸ expand"}</span>
+        <span style={{ fontSize: 13, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase" }}>{title}</span>
+        <span style={{ color: COL.textDim, fontFamily: "'Space Mono',monospace", fontSize: 14 }}>{open ? "▾ collapse" : "▸ expand"}</span>
       </button>
       {open && <div style={{ marginTop: 10 }}>{children}</div>}
     </div>
