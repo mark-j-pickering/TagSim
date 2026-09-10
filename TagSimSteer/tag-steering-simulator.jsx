@@ -1179,18 +1179,41 @@ export default function BusSteeringSimulator() {
     }
   }
 
-  // Map sizing: the map wrapper's height is pinned to the side panel's own rendered height (so the
-  // two columns line up exactly), and its width just follows normal flex layout (100% of whatever
-  // space is left beside the side panel). Both are measured via ResizeObserver rather than computed
-  // from window size directly, since the side panel's height depends on its own content (the bus
-  // photo's aspect ratio, wrapped text, etc.), not just viewport size.
+  // Map sizing: the map wrapper's height is at least the side panel's own rendered height (so on a
+  // small/short window the two columns still line up exactly, same as before), but grows past that
+  // to use whatever extra vertical room the window actually has — the side panel's compact content
+  // (added for small touchscreen laptops) is a floor, not a ceiling, on how tall the map itself gets
+  // to be. mapWrapperWidth and sidePanelHeight are measured via ResizeObserver since the side panel's
+  // height depends on its own content (the bus photo's aspect ratio, wrapped text, etc.), not just
+  // viewport size; trailingHeight (the Advanced settings section + the wheel-numbering caption,
+  // both full-width and *below* the map/side-panel row — see trailingRef below) is measured the same
+  // way, since it can change size too (Advanced settings expanding). Available space for the row
+  // itself is then whatever's left of the window after the header above and this trailing content
+  // below — window resize (not ResizeObserver) covers the header, since nothing observed here
+  // changes size for a reason we'd want to react to other than the window itself resizing.
   const sidePanelRef = useRef(null);
   const mapWrapperRef = useRef(null);
+  const trailingRef = useRef(null); // wraps Advanced settings + the wheel-numbering caption below the row
   const [sidePanelHeight, setSidePanelHeight] = useState(0);
   const [mapWrapperWidth, setMapWrapperWidth] = useState(0);
+  const [viewportAvailableHeight, setViewportAvailableHeight] = useState(0);
   useEffect(() => {
-    const sideEl = sidePanelRef.current, mapEl = mapWrapperRef.current;
-    if (!sideEl || !mapEl) return;
+    const sideEl = sidePanelRef.current, mapEl = mapWrapperRef.current, trailingEl = trailingRef.current;
+    if (!sideEl || !mapEl || !trailingEl) return;
+    // getBoundingClientRect().top isn't affected by the map wrapper's own height (only by what's
+    // above/beside it — the header and the row's own top padding), so reading it before applying a
+    // height to the wrapper is safe, not circular. 24px of breathing room at the bottom of the
+    // window, matching the page wrapper's own paddingBottom. Reads trailingEl.offsetHeight directly
+    // from the DOM rather than through a piece of React state kept in sync by its own ResizeObserver
+    // entry — state set in the same callback batch this reads from would still be one render behind
+    // here, which was enough to let a stale (too-small) trailing height slip through once: that let
+    // the map briefly overshoot, which pulled in a scrollbar, which squeezed the side panel narrower
+    // (and so taller) before the correct trailing height ever got applied, permanently inflating the
+    // "floor" below. Reading live off the DOM avoids the staleness outright rather than chasing every
+    // way it could occur.
+    function updateAvailableHeight() {
+      setViewportAvailableHeight(Math.max(0, window.innerHeight - mapEl.getBoundingClientRect().top - trailingEl.offsetHeight - 32));
+    }
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         // offsetHeight/offsetWidth (border-box) rather than entry.contentRect (content-box) — the
@@ -1199,18 +1222,30 @@ export default function BusSteeringSimulator() {
         if (entry.target === sideEl) setSidePanelHeight(sideEl.offsetHeight);
         else if (entry.target === mapEl) setMapWrapperWidth(mapEl.offsetWidth);
       }
+      updateAvailableHeight(); // any of the three (side panel, map, trailing) changing can move this
     });
     ro.observe(sideEl);
     ro.observe(mapEl);
-    return () => ro.disconnect();
+    ro.observe(trailingEl);
+    updateAvailableHeight();
+    window.addEventListener("resize", updateAvailableHeight);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", updateAvailableHeight);
+    };
   }, []);
+  // The height actually applied to the map wrapper — see the comment above.
+  const mapHeight = sidePanelHeight > 0 ? Math.max(sidePanelHeight, viewportAvailableHeight) : 0;
   // Abstract viewBox size: height fixed at VB (every tuned scale constant assumes it), width scaled
   // to match the wrapper's actual on-screen aspect ratio so the square coordinate space always fills
-  // its rectangle exactly, however wide or narrow that rectangle ends up being.
+  // its rectangle exactly, however wide or narrow (or tall) that rectangle ends up being — must use
+  // the same height that's actually applied to the wrapper (mapHeight), not sidePanelHeight alone,
+  // or the viewBox's aspect ratio stops matching the rendered box's and the map letterboxes instead
+  // of filling the grown space.
   const vbSize = useMemo(() => {
-    const w = sidePanelHeight > 0 && mapWrapperWidth > 0 ? Math.round((VB * mapWrapperWidth) / sidePanelHeight) : VB;
+    const w = mapHeight > 0 && mapWrapperWidth > 0 ? Math.round((VB * mapWrapperWidth) / mapHeight) : VB;
     return { w, h: VB, min: Math.min(w, VB) };
-  }, [sidePanelHeight, mapWrapperWidth]);
+  }, [mapHeight, mapWrapperWidth]);
 
   // Mouse-wheel zoom on the map. Registered as a native listener (not React's onWheel) because
   // React attaches wheel handlers passively — calling preventDefault() from a JSX onWheel prop is a
@@ -2360,7 +2395,7 @@ export default function BusSteeringSimulator() {
           ref={mapWrapperRef}
           style={{
             position: "relative", overflow: "hidden", contain: "layout paint",
-            width: "100%", height: sidePanelHeight > 0 ? sidePanelHeight : undefined, aspectRatio: sidePanelHeight > 0 ? undefined : "1/1",
+            width: "100%", height: mapHeight > 0 ? mapHeight : undefined, aspectRatio: mapHeight > 0 ? undefined : "1/1",
           }}
         >
         <svg
@@ -2869,7 +2904,10 @@ export default function BusSteeringSimulator() {
         </div>
       </div>
 
-      {/* advanced settings: full window width, below both the map and side panel, collapsed by default */}
+      {/* advanced settings + the caption below it: full window width, below both the map and side
+          panel, collapsed by default. Wrapped in trailingRef (see its declaration above) purely so
+          the map-height calc can measure and reserve space for it — no layout effect of its own. */}
+      <div ref={trailingRef}>
       <div style={{ padding: "10px 10px 0" }}>
         <Collapsible title="Advanced settings" open={advancedOpen} onToggle={() => setAdvancedOpen((v) => !v)}>
           <SectionLabel>Trail mode</SectionLabel>
@@ -2931,6 +2969,7 @@ export default function BusSteeringSimulator() {
 
       <div style={{ padding: "10px 12px 0", fontSize: 15, color: COL.textDim, lineHeight: 1.5 }}>
         Wheels numbered 1–8: 1–2 front (nearside/offside), 3–4 drive-axle nearside pair (3 leftmost/outer, 4 inner), 5–6 drive-axle offside pair (5 inner, 6 rightmost/outer), 7–8 tag axle. Model: steady-state circular turn, no tyre slip. Tag axle angle set for zero-scrub rolling at the current ratio; when locked straight (ratio 0, or above the speed lockout), the dashed ghost outline shows the ideal angle it's deviating from — the "tag scrub angle" readout is that gap. The shaded band spans from the drive axle's inner wheel (3 or 6, whichever is tighter) out to the front axle's outer wheel (2 or 1) — the corridor the vehicle actually occupies through the turn. The outer tail-swing circle (rear corner) is shown as a plain dashed reference only.
+      </div>
       </div>
     </div>
   );
