@@ -911,7 +911,7 @@ function autoSteerCoastSweepDeg(appliedSteerDeg, speedKmh, Lfd) {
 
 // How long the bus must sit at 0 speed before the handbrake sound fires (see the handbrake effect
 // in the component body).
-const HANDBRAKE_ENGAGE_DELAY_MS = 2000;
+const HANDBRAKE_ENGAGE_DELAY_MS = 1000;
 // The speed the "Drive the turn" button ramps up to (via the same throttle physics as holding ↑,
 // see driveToTargetRef) — a quick, one-click way to get the bus rolling at a sensible pace to see
 // the current turn, without having to hold the throttle key down yourself.
