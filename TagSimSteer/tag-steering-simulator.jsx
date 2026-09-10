@@ -842,11 +842,22 @@ const AUTO_STEER_SETTLED_DEG = 0.3; // |appliedSteerInput| below this counts as 
 // reflection converges to within 0.1° in exactly one retry at this tolerance — tightened down from
 // 1.5°/1° at the driver's request. A genuine tight double-wall corner jam converges far more slowly
 // (each retry recovers only a degree or two, not a fixed fraction of what's left), so it won't
-// generally reach this within AUTO_STEER_MAX_RETRIES — see that constant and the stall-retry cap in
-// the "boundary auto-steer" bang phase for how that case gives up gracefully instead of grinding
+// generally reach this within AUTO_STEER_MAX_RETRIES — see that constant and AUTO_STEER_STALL_MAX_RETRIES
+// in the "boundary auto-steer" bang phase for how that case gives up gracefully instead of grinding
 // forever for accuracy the room available doesn't support.
 const AUTO_STEER_FINAL_TOLERANCE_DEG = 0.5; // settled error under this is accepted; otherwise retry
-const AUTO_STEER_MAX_RETRIES = 4; // safety cap on bang-coast retries for one engagement (shared with stall-retries — see AUTO_STEER_STALL_RETRY_MS)
+const AUTO_STEER_MAX_RETRIES = 4; // safety cap on bang-coast (coast-settled) retries for one engagement
+// A deliberately *separate* budget from AUTO_STEER_MAX_RETRIES above, not shared with it — stalling
+// (governor pinning speed near 0, see the stall-escape paragraph below) isn't unique to a genuine
+// two-wall corner jam; a single-wall reflection can trigger a stall too, transiently, purely from
+// engaging at close range or a shallow entry angle. An earlier version spent AUTO_STEER_MAX_RETRIES
+// on stall-retries and coast-settled retries out of the same pool — a real driven session showed a
+// plain single-wall bounce burning through most of that shared budget on one transient stall before
+// it ever got to coast, then giving up early (settling ~5°) on what should have been an easy 0.1°
+// convergence. Its own pool means a transient stall no longer costs the fine-convergence retries a
+// clean reflection needs; a real corner jam (which stalls repeatedly) still hits its own cap and
+// gives up gracefully, same as before.
+const AUTO_STEER_STALL_MAX_RETRIES = 4;
 
 // Bang can stall completely near a corner: chooseBangLockDeg picks its angle from the straight-line
 // room along the heading at engage time, but a corner has a *second* wall close by too, off to the
@@ -1306,7 +1317,8 @@ export default function BusSteeringSimulator() {
   const autoSteerActiveRef = useRef(false);
   const autoSteerPhaseRef = useRef("bang"); // "bang" | "releasing" — see the "boundary auto-steer" comment above
   const autoSteerStallSinceRef = useRef(null); // rAF timestamp (ms) the current bang-phase stall started, or null — see AUTO_STEER_STALL_SPEED_KMH/MS
-  const autoSteerRetryCountRef = useRef(0); // bang-coast retries used so far this engagement — see AUTO_STEER_MAX_RETRIES
+  const autoSteerRetryCountRef = useRef(0); // coast-settled retries used so far this engagement — see AUTO_STEER_MAX_RETRIES
+  const autoSteerStallRetryCountRef = useRef(0); // stall-retries used so far this engagement — its own budget, see AUTO_STEER_STALL_MAX_RETRIES
   const autoSteerBangLockDegRef = useRef(MAX_LOCK_DEG); // this pass's chosen lock magnitude — see chooseBangLockDeg
   const autoSteerTargetThetaRef = useRef(0); // world heading auto-steer is chasing, frozen at engage — see reflectedHeading
   const autoSteerCooldownUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't re-engage — see AUTO_STEER_COOLDOWN_MS
@@ -1829,6 +1841,7 @@ export default function BusSteeringSimulator() {
             autoSteerPhaseRef.current = "bang";
             autoSteerStallSinceRef.current = null;
             autoSteerRetryCountRef.current = 0;
+            autoSteerStallRetryCountRef.current = 0;
             autoSteerTargetThetaRef.current = reflectedHeading(poseRef.current.theta, wall.axis);
             const initialErrorDeg = toDeg(wrapAngle(autoSteerTargetThetaRef.current - poseRef.current.theta));
             autoSteerBangLockDegRef.current = chooseBangLockDeg(initialErrorDeg, wall.distance, LfdRef.current);
@@ -1874,18 +1887,17 @@ export default function BusSteeringSimulator() {
               if (nextSpeed < AUTO_STEER_STALL_SPEED_KMH && limiting) {
                 if (autoSteerStallSinceRef.current == null) autoSteerStallSinceRef.current = t;
                 else if (t - autoSteerStallSinceRef.current >= AUTO_STEER_STALL_RETRY_MS) {
-                  // Shares its budget with the coast-settled retries below (AUTO_STEER_MAX_RETRIES)
-                  // rather than looping unbounded: a true corner jam can grind out only a degree or
-                  // two of real progress per stall-retry (see the "boundary auto-steer" comment's
-                  // corner-jam paragraph), so with AUTO_STEER_FINAL_TOLERANCE_DEG tightened to a
-                  // fraction of a degree this path could otherwise retry forever without ever
-                  // reaching it. Give up gracefully at the same cap a normal retry would, accepting
-                  // whatever heading's been achieved — same trade a driver boxed into a tight corner
-                  // makes: stop fighting for the last degree once the room to do so isn't there.
-                  if (autoSteerRetryCountRef.current >= AUTO_STEER_MAX_RETRIES) {
+                  // Own budget (AUTO_STEER_STALL_MAX_RETRIES), not shared with the coast-settled
+                  // retries below — see that constant's comment for why: stalling isn't unique to a
+                  // genuine corner jam, and burning the coast-retry budget on it starved otherwise-
+                  // easy single-wall reflections of the retries their own fine convergence needed.
+                  // A true corner jam still gives up gracefully here once its own cap is hit,
+                  // accepting whatever heading's been achieved — same trade a driver boxed into a
+                  // tight corner makes: stop fighting for the last degree once the room isn't there.
+                  if (autoSteerStallRetryCountRef.current >= AUTO_STEER_STALL_MAX_RETRIES) {
                     finishEngagement();
                   } else {
-                    autoSteerRetryCountRef.current += 1;
+                    autoSteerStallRetryCountRef.current += 1;
                     // Escalate straight to MAX_LOCK_DEG rather than re-running chooseBangLockDeg: a
                     // stall means the room that estimate assumed doesn't actually support even a
                     // moderate turn (see the comment above) — exactly the "no room left" case
