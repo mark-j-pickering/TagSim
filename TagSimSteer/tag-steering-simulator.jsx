@@ -146,7 +146,12 @@ function computeView(geom, pose, viewMode, vb) {
     // world space, regardless of steering — camera just follows the bus.
     const vehicleLength = geom.Lfd + geom.Fo + geom.Ldt + geom.Ro;
     const scale = vb.min / (BUS_VIEW_LENGTHS * vehicleLength);
-    return { scale, originX: vb.w / 2 + pose.y * scale, originY: vb.h / 2 + pose.x * scale };
+    // Track the body's geometric midpoint, not the drive-axle pose origin: front/rear overhang
+    // are rarely equal (default spec is +9.75m front, -4.75m rear off the drive axle), so
+    // centring on the pose itself leaves the bus visibly off-centre in the viewport.
+    const bodyMidX = (geom.Lfd + geom.Fo - geom.Ldt - geom.Ro) / 2;
+    const center = poseTransform({ x: bodyMidX, y: 0 }, pose);
+    return { scale, originX: vb.w / 2 + center.y * scale, originY: vb.h / 2 + center.x * scale };
   }
   if (viewMode === "close") {
     // 'B' key: a tight, continuously-tracking close-up — CLOSE_RADIUS_M around a reference point
@@ -1088,7 +1093,7 @@ export default function BusSteeringSimulator() {
   // React attaches wheel handlers passively — calling preventDefault() from a JSX onWheel prop is a
   // no-op (and logs a warning) in modern React, and without it the page itself scrolls while the
   // user is trying to zoom the map.
-  const [zoom, setZoom] = useState(1);
+  const [zoom, setZoom] = useState(2); // ~200% on load; scroll-wheel/Recenter/reset-click still target 1 (100%)
   useEffect(() => {
     const el = mapWrapperRef.current;
     if (!el) return;
