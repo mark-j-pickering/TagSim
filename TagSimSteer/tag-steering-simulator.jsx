@@ -826,8 +826,10 @@ function Slider({ label, unit, value, min, max, step, onChange, accent = COL.amb
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</span>
-        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text }}>{value.toFixed(step < 1 ? 2 : 0)}{unit}</span>
+        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", flex: "1 1 auto", minWidth: 0 }}>{label}</span>
+        {/* Fixed-width, flex-shrink:0 so a wider/narrower formatted number (more digits, a minus
+            sign) never reflows how the label above wraps — see the matching note on SteppedSlider. */}
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text, flexShrink: 0, minWidth: "5ch", textAlign: "right" }}>{value.toFixed(step < 1 ? 2 : 0)}{unit}</span>
       </div>
       <input
         type="range" min={min} max={max} step={step} value={value}
@@ -843,8 +845,13 @@ function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</span>
-        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text }}>{value % 1 === 0 ? value.toFixed(0) : value.toFixed(2)}{unit}</span>
+        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", flex: "1 1 auto", minWidth: 0 }}>{label}</span>
+        {/* Always 1 decimal (every STEER_STEPS value is a multiple of 0.5, so 1 decimal is exact,
+            never a rounding artefact) — fixed decimal count plus a fixed-width, flex-shrink:0 box
+            keeps this number's width stable as it changes, so it never reflows how the label above
+            wraps (was visibly jittering the panel height while steering, since "11.50°" vs "0°" used
+            to wrap the long label text differently). */}
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text, flexShrink: 0, minWidth: "5.5ch", textAlign: "right" }}>{value.toFixed(1)}{unit}</span>
       </div>
       <input
         type="range" min={0} max={steps.length - 1} step={1} value={index}
