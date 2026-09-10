@@ -836,17 +836,23 @@ function reflectedHeading(theta, axis) {
 // sets `steerInput` targets (full lock or 0), exactly as a manual slider drag or "Full lock" button
 // click would; the existing rate-limited chase from steerInput to appliedSteerInput (see the
 // steering-rate-limiting effect in the component below) is what carries the wheel there.
-const AUTO_STEER_RELEASE_TOLERANCE_DEG = 0.3; // treat a predicted final error under this as "close enough" to release
+const AUTO_STEER_RELEASE_TOLERANCE_DEG = 0.025; // treat a predicted final error under this as "close enough" to release
 const AUTO_STEER_SETTLED_DEG = 0.3; // |appliedSteerInput| below this counts as "wheel back at centre" (coast finished)
-// Verified (standalone drive-loop simulation, not just this scenario) that a normal single-wall
-// reflection converges to within 0.1° in exactly one retry at this tolerance — tightened down from
-// 1.5°/1° at the driver's request. A genuine tight double-wall corner jam converges far more slowly
-// (each retry recovers only a degree or two, not a fixed fraction of what's left), so it won't
-// generally reach this within AUTO_STEER_MAX_RETRIES — see that constant and AUTO_STEER_STALL_MAX_RETRIES
-// in the "boundary auto-steer" bang phase for how that case gives up gracefully instead of grinding
-// forever for accuracy the room available doesn't support.
-const AUTO_STEER_FINAL_TOLERANCE_DEG = 0.5; // settled error under this is accepted; otherwise retry
-const AUTO_STEER_MAX_RETRIES = 4; // safety cap on bang-coast (coast-settled) retries for one engagement
+// Verified (standalone drive-loop simulation, across the full scenario battery and 60 randomized
+// single-wall entry angles/speeds) that a normal single-wall reflection converges to within this —
+// tightened from 0.5°/0.3°, then 0.1°/0.05°, at the driver's explicit request for higher precision
+// each time. AUTO_STEER_MAX_RETRIES had to come up from 4 to 6 alongside this last tightening: at
+// 4 retries some engagements were only landing this close because the cap happened to cut in at a
+// good moment, not because the tolerance check itself had been satisfied — thin enough that one
+// scenario in the battery hit a genuine ~150° stall-then-giveup outlier. 6 retries gave the same
+// scenario room to converge cleanly instead. A genuine tight double-wall corner jam converges far
+// more slowly (each retry recovers only a degree or two, not a fixed fraction of what's left), so it
+// won't generally reach this within AUTO_STEER_MAX_RETRIES — see that constant and
+// AUTO_STEER_STALL_MAX_RETRIES in the "boundary auto-steer" bang phase for how that case gives up
+// gracefully instead of grinding forever for accuracy the room available doesn't support (its own
+// re-engage afterward, using the corner-aware trigger, often tightens the residual further anyway).
+const AUTO_STEER_FINAL_TOLERANCE_DEG = 0.05; // settled error under this is accepted; otherwise retry
+const AUTO_STEER_MAX_RETRIES = 6; // safety cap on bang-coast (coast-settled) retries for one engagement
 // A deliberately *separate* budget from AUTO_STEER_MAX_RETRIES above, not shared with it — stalling
 // (governor pinning speed near 0, see the stall-escape paragraph below) isn't unique to a genuine
 // two-wall corner jam; a single-wall reflection can trigger a stall too, transiently, purely from
