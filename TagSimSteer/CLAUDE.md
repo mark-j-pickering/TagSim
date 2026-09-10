@@ -335,9 +335,14 @@ branches (circular vs straight-line versions).
   top-right (offside-associated), directly on the map canvas.
 - Floating "Drive the turn" / Stop button, bottom-right of the map.
 - Bus/Circle toggle, bottom-left of the map.
-- Below the map: always-visible "Steering & throttle" section, then a
-  collapsible "Radius grid" (readouts), then a collapsible "Advanced
-  settings" (tag ratio, lockout, vehicle geometry sliders, display toggles).
+- Side panel (beside the map, its rendered height also drives the map's
+  height — see "Map sizing" in the component): always-visible "Radius grid"
+  readouts, then a collapsible "Driver controls" (keyboard shortcut list,
+  closed by default — collapsed on load so the panel fits a laptop screen
+  without scrolling, and not needed at a glance on a touchscreen), then
+  always-visible "Steering & throttle" and the bus reference photo. Below
+  the map+panel row: a collapsible "Advanced settings" (tag ratio, lockout,
+  vehicle geometry sliders, display toggles), closed by default.
 - The whole map wrapper has `overflow: hidden` + CSS `contain: layout paint`,
   and the SVG content is wrapped in an actual `clipPath` (not just CSS
   `overflow: hidden` on the `<svg>`) — this was needed because the

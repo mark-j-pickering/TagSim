@@ -826,8 +826,10 @@ function Slider({ label, unit, value, min, max, step, onChange, accent = COL.amb
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</span>
-        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text }}>{value.toFixed(step < 1 ? 2 : 0)}{unit}</span>
+        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", flex: "1 1 auto", minWidth: 0 }}>{label}</span>
+        {/* Fixed-width, flex-shrink:0 so a wider/narrower formatted number (more digits, a minus
+            sign) never reflows how the label above wraps — see the matching note on SteppedSlider. */}
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text, flexShrink: 0, minWidth: "5ch", textAlign: "right" }}>{value.toFixed(step < 1 ? 2 : 0)}{unit}</span>
       </div>
       <input
         type="range" min={min} max={max} step={step} value={value}
@@ -843,8 +845,13 @@ function SteppedSlider({ label, unit, value, steps, onChange, accent = COL.amber
   return (
     <div style={{ marginBottom: 8 }}>
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</span>
-        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text }}>{value % 1 === 0 ? value.toFixed(0) : value.toFixed(2)}{unit}</span>
+        <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", flex: "1 1 auto", minWidth: 0 }}>{label}</span>
+        {/* Always 1 decimal (every STEER_STEPS value is a multiple of 0.5, so 1 decimal is exact,
+            never a rounding artefact) — fixed decimal count plus a fixed-width, flex-shrink:0 box
+            keeps this number's width stable as it changes, so it never reflows how the label above
+            wraps (was visibly jittering the panel height while steering, since "11.50°" vs "0°" used
+            to wrap the long label text differently). */}
+        <span style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: COL.text, flexShrink: 0, minWidth: "5.5ch", textAlign: "right" }}>{value.toFixed(1)}{unit}</span>
       </div>
       <input
         type="range" min={0} max={steps.length - 1} step={1} value={index}
@@ -887,9 +894,9 @@ function wheelRotationDeg(roadAngleDeg) {
   return sign * STEER_HAND_SPEED * timeToA;
 }
 
-function SteeringWheel({ angleDeg, size = 216 }) {
+function SteeringWheel({ angleDeg, size = 160 }) {
   return (
-    <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+    <div style={{ display: "flex", justifyContent: "center", marginBottom: 6 }}>
       <img
         src={STEERING_WHEEL_IMG} alt=""
         width={size} height={size * (STEERING_WHEEL_VB_H / STEERING_WHEEL_VB_W)}
@@ -923,9 +930,9 @@ function SpeedGauge({ label, unit, value, max, step = 10, accent = COL.amber }) 
   const needleTail = polar(14, needleAngle + 180);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 150 }}>
-      <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 15, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", textAlign: "center" }}>{label}</span>
-      <svg viewBox="0 0 200 200" width={150} height={150}>
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 130 }}>
+      <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 14, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase", textAlign: "center" }}>{label}</span>
+      <svg viewBox="0 0 200 200" width={130} height={130}>
         <path d={arcPath(82, START_ANGLE, START_ANGLE + SWEEP)} fill="none" stroke="rgba(200,225,245,0.14)" strokeWidth="6" strokeLinecap="round" />
         <path d={arcPath(82, START_ANGLE, needleAngle)} fill="none" stroke={accent} strokeWidth="6" strokeLinecap="round" opacity="0.85" />
         {ticks.map((v) => {
@@ -949,9 +956,9 @@ function SpeedGauge({ label, unit, value, max, step = 10, accent = COL.amber }) 
 
 function ReadCell({ label, value, accent }) {
   return (
-    <div style={{ padding: "6px 10px", borderRight: `1px solid rgba(200,225,245,0.10)`, borderBottom: `1px solid rgba(200,225,245,0.10)` }}>
-      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 14, letterSpacing: 0.6, color: COL.textDim, textTransform: "uppercase" }}>{label}</div>
-      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 18, color: accent || COL.text, marginTop: 2 }}>{value}</div>
+    <div style={{ padding: "3px 7px", borderRight: `1px solid rgba(200,225,245,0.10)`, borderBottom: `1px solid rgba(200,225,245,0.10)` }}>
+      <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 11, letterSpacing: 0.5, color: COL.textDim, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontFamily: "'Space Mono', monospace", fontSize: 15, color: accent || COL.text, marginTop: 1 }}>{value}</div>
     </div>
   );
 }
@@ -997,6 +1004,10 @@ export default function BusSteeringSimulator() {
   const [showGeom, setShowGeom] = useState(false);
   const [showDims, setShowDims] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Collapsed by default so the always-visible column (radius grid, steering/throttle, bus photo)
+  // fits within a single laptop screen height without scrolling — the keyboard shortcut list isn't
+  // needed at a glance on a touchscreen, so it's tucked behind a tap like Advanced settings.
+  const [driverControlsOpen, setDriverControlsOpen] = useState(false);
   const [viewMode, setViewMode] = useState("circle");
 
   // A single fixed test corner (see src/env.js/course.js) for the autopilot below and its "Course"
@@ -2145,11 +2156,11 @@ export default function BusSteeringSimulator() {
       `}</style>
 
       {/* header */}
-      <div style={{ padding: "10px 12px 8px", borderBottom: "1px solid rgba(200,225,245,0.12)", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ padding: "6px 12px 5px", borderBottom: "1px solid rgba(200,225,245,0.12)", display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontSize: 14, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
-          <div style={{ fontSize: 29, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
-          <div style={{ fontSize: 16, color: COL.textDim, marginTop: 2, lineHeight: 1.4 }}>
+          <div style={{ fontSize: 12, letterSpacing: 1.5, color: COL.tag, textTransform: "uppercase" }}>Plan View Study · Rev A</div>
+          <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: 0.3 }}>3-Axle Steer / Tag Articulation</div>
+          <div style={{ fontSize: 13, color: COL.textDim, marginTop: 1, lineHeight: 1.3 }}>
             Front axle steers, drive axle fixed (pivot reference), tag axle counter-steers. Default dimensions match a 14.5 m tag-axle bus (2.48 m wide, excl. mirrors) — adjust the geometry sliders for a different spec.
           </div>
         </div>
@@ -2165,7 +2176,7 @@ export default function BusSteeringSimulator() {
       </div>
 
       {/* main layout: map + side panel — wraps to a stacked layout if the host container is narrow */}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, padding: "8px 10px 0", alignItems: "flex-start" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, padding: "6px 8px 0", alignItems: "flex-start" }}>
         {/* map column */}
         <div style={{ flex: "3 1 420px", minWidth: 640, maxWidth: "100%", overflow: "hidden" }}>
         <div
@@ -2609,7 +2620,7 @@ export default function BusSteeringSimulator() {
         </div>
 
         {/* side panel: grid readouts on top, primary controls below — no collapse here, always visible */}
-        <div ref={sidePanelRef} style={{ flex: "1 1 340px", minWidth: 290, maxWidth: 415, background: COL.panel, border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, padding: 12 }}>
+        <div ref={sidePanelRef} style={{ flex: "1 1 340px", minWidth: 290, maxWidth: 415, background: COL.panel, border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, padding: 10 }}>
           <SectionLabel>Radius grid</SectionLabel>
           <div style={{ border: "1px solid rgba(200,225,245,0.16)", borderRadius: 4, overflow: "hidden", display: "grid", gridTemplateColumns: "1fr 1fr", background: COL.panelAlt, marginBottom: 10 }}>
             <ReadCell label="Wheel 3 path radius (nearside)" value={geom.isStraight ? "∞" : fmt(geom.radii.w3) + " m"} accent={COL.w3} />
@@ -2626,32 +2637,33 @@ export default function BusSteeringSimulator() {
             <ReadCell label="Tail swing vs #8" value={geom.isStraight ? "0.0 m" : fmt(geom.tailSwing8) + " m"} accent={COL.tailSwing} />
           </div>
 
-          <SectionLabel>Driver controls</SectionLabel>
-          <div style={{ fontSize: 14, color: COL.textDim, lineHeight: 1.7, marginBottom: 10 }}>
-            <div>↑ / ↓ — Accelerate / brake. Braking starts gentle and firms up the longer it's held.</div>
-            <div>Page Up / Page Down — Accelerate to top speed / brake to a stop, hands-free — keeps going after release until it gets there or the other one is pressed</div>
-            <div>← / → — Nudge the steering lock 0.5° at a time (up to {LOCK_TO_LOCK_SECONDS}s lock-to-lock)</div>
-            <div>Shift + ← / → — Quarter-turn of the wheel at a time ({QUARTER_TURN_STEER_DEG}°)</div>
-            <div>End — Straight (centre the steering)</div>
-            <div>Space — Horn</div>
-            <div>A — Smoothly zoom to fit the recorded trail</div>
-            <div>M — Smoothly zoom to fit the mapped-area boundary (trail mode only)</div>
-            <div>B — Close-up {CLOSE_RADIUS_M}m view, tracking the bus (biased toward what's ahead)</div>
-            <div>Automatic — handbrake sets {HANDBRAKE_ENGAGE_DELAY_MS / 1000}s after coming to rest, releases on pulling away</div>
-          </div>
+          <Collapsible title="Driver controls" open={driverControlsOpen} onToggle={() => setDriverControlsOpen((v) => !v)}>
+            <div style={{ fontSize: 14, color: COL.textDim, lineHeight: 1.7, marginBottom: 10 }}>
+              <div>↑ / ↓ — Accelerate / brake. Braking starts gentle and firms up the longer it's held.</div>
+              <div>Page Up / Page Down — Accelerate to top speed / brake to a stop, hands-free — keeps going after release until it gets there or the other one is pressed</div>
+              <div>← / → — Nudge the steering lock 0.5° at a time (up to {LOCK_TO_LOCK_SECONDS}s lock-to-lock)</div>
+              <div>Shift + ← / → — Quarter-turn of the wheel at a time ({QUARTER_TURN_STEER_DEG}°)</div>
+              <div>End — Straight (centre the steering)</div>
+              <div>Space — Horn</div>
+              <div>A — Smoothly zoom to fit the recorded trail</div>
+              <div>M — Smoothly zoom to fit the mapped-area boundary (trail mode only)</div>
+              <div>B — Close-up {CLOSE_RADIUS_M}m view, tracking the bus (biased toward what's ahead)</div>
+              <div>Automatic — handbrake sets {HANDBRAKE_ENGAGE_DELAY_MS / 1000}s after coming to rest, releases on pulling away</div>
+            </div>
+          </Collapsible>
 
           <SectionLabel>Steering &amp; throttle</SectionLabel>
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <SteeringWheel angleDeg={appliedSteerInput} />
               <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { exitMlAutopilot(); setSteerInput(v); }} accent={COL.front} large />
-              <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 8 }}>
-                {[["Full lock left", -50], ["Straight", 0], ["Full lock right", 50]].map(([lbl, v]) => (
-                  <button key={lbl} className="btn" style={{ flex: "1 1 0" }} onClick={() => { exitMlAutopilot(); setSteerInput(v); }}>{lbl}</button>
+              <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 6 }}>
+                {[["Lock ←", -50, "Full lock left"], ["Straight", 0, "Straight"], ["Lock →", 50, "Full lock right"]].map(([lbl, v, title]) => (
+                  <button key={lbl} title={title} className="btn" style={{ flex: "1 1 0", fontSize: 12, padding: "6px 4px", whiteSpace: "nowrap" }} onClick={() => { exitMlAutopilot(); setSteerInput(v); }}>{lbl}</button>
                 ))}
               </div>
             </div>
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 150 }}>
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 130 }}>
               <SpeedGauge label="Speed" unit="km/h" value={speed} max={MAX_SPEED_KMH} step={10} accent={COL.amber} />
               {/* Desired heading is the boundary auto-steer's frozen reflection target (see the
                   "boundary auto-steer" comment above) — each new engagement's target is itself the
@@ -2749,7 +2761,7 @@ export default function BusSteeringSimulator() {
 
 function SectionLabel({ children }) {
   return (
-    <div style={{ fontSize: 15, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase", margin: "4px 0 8px", borderBottom: "1px solid rgba(200,225,245,0.14)", paddingBottom: 4 }}>
+    <div style={{ fontSize: 13, letterSpacing: 1.2, color: COL.tag, textTransform: "uppercase", margin: "3px 0 6px", borderBottom: "1px solid rgba(200,225,245,0.14)", paddingBottom: 3 }}>
       {children}
     </div>
   );
