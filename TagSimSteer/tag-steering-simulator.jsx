@@ -474,6 +474,16 @@ function steerRampRate(absAngleDeg) {
   return STEER_MIN_RATE + STEER_RATE_K * a;
 }
 
+// Closed-form time to sweep the road-wheel angle from 0 to |absAngleDeg| under the linear
+// rate(angle) profile above: time(0→x) = (1/STEER_RATE_K)·ln(rate(x)/STEER_MIN_RATE). Used by
+// wheelRotationDeg (the decorative steering-wheel graphic) and by Fence Autopilot's engage timing
+// (see AUTO_STEER_OVERHANG_CLEARANCE_M below) — both need "how long does winding the wheel to some
+// angle actually take," just for different reasons.
+function steerTimeToAngle(absAngleDeg) {
+  const a = Math.min(MAX_LOCK_DEG, Math.abs(absAngleDeg));
+  return Math.log(steerRampRate(a) / STEER_MIN_RATE) / STEER_RATE_K;
+}
+
 // ---------- driving controls: throttle / brake ----------
 // Speed is no longer a directly-set value — the up/down arrow keys drive it through this physics
 // each frame (see the drive loop in the component body); the side-panel "Speed" gauge is now a
@@ -713,6 +723,45 @@ function cornersPathDistance(pose, geom, trailBoundHalf) {
   return min;
 }
 
+// True if every body corner at `pose` is within the trailBoundHalf square — the actual "did we
+// breach" test used by clampStepToBoundary below.
+function allBodyCornersWithin(pose, bodyCorners, trailBoundHalf) {
+  for (const key of ["FL", "FR", "RL", "RR"]) {
+    const p = poseTransform(bodyCorners[key], pose);
+    if (Math.abs(p.x) > trailBoundHalf || Math.abs(p.y) > trailBoundHalf) return false;
+  }
+  return true;
+}
+
+// Last-resort backstop for the one physics step the drive loop is about to take: the speed governor
+// above is a set of closed-form *predictions* (brake-to-a-distance formulas, a bounded-arc sample at
+// engage time, a straight-line projection during "track") about how close a corner will come to the
+// boundary — good enough to keep ordinary driving smooth, but, as their own comments note, each is an
+// approximation with its own blind spot (discrete-timestep braking overshoot, a shallow reflection
+// nibbling its own graze margin down over repeated hand-offs, and so on). Rather than chase every such
+// blind spot one at a time, this makes the actual boundary an invariant the integration step itself
+// can't violate: if the plain step (`next`) would still land a corner outside, shrink it — bisecting
+// the fraction of *this one step* actually taken, since `next` is already this integrator's own
+// straight-chord approximation of the frame's motion (see the call site), not a true arc — until every
+// corner is back within bounds, or until even a fraction of a step doesn't move it (already breached
+// coming in, e.g. from a save file or a future governor bug; don't compound it further). This is a
+// backstop, not the primary defence — it should bite rarely, and only ever by a hair.
+function clampStepToBoundary(prev, next, bodyCorners, trailBoundHalf) {
+  if (allBodyCornersWithin(next, bodyCorners, trailBoundHalf)) return next;
+  if (!allBodyCornersWithin(prev, bodyCorners, trailBoundHalf)) return prev;
+  const at = (f) => ({
+    x: prev.x + (next.x - prev.x) * f,
+    y: prev.y + (next.y - prev.y) * f,
+    theta: prev.theta + wrapAngle(next.theta - prev.theta) * f,
+  });
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 20; i++) {
+    const mid = (lo + hi) / 2;
+    if (allBodyCornersWithin(at(mid), bodyCorners, trailBoundHalf)) lo = mid; else hi = mid;
+  }
+  return at(lo);
+}
+
 // Maximum speed (km/h) the governor allows at the given remaining path-distance to the boundary.
 // `pathDistance` should already be the physical extremity's own distance (see cornersPathDistance)
 // — no separate frontOverhang term here any more, the corner points already are the bumper/tail.
@@ -722,198 +771,267 @@ function boundaryGovernorCapKmh(pathDistance) {
   return Math.sqrt(2 * BRAKE_DECEL_INITIAL * d) * 3.6; // m/s -> km/h
 }
 
-// ---------- boundary auto-steer ----------
-// Complements the speed governor above: rather than only slowing to a stop at the wall, nudge the
-// steering itself to curve the bus away as it closes in, so a driver who doesn't react gets an
-// assisted turn instead of riding the governor all the way down to a dead stop. Trail-mode only,
-// same as the governor — the boundary is a trail-mode-only concept.
-//
-// Engages once the wall ahead (boundaryWallAhead — the bus's actual heading, not its current curved
-// path; see that function's comment for why) is closer than the distance the bus covers in
-// AUTO_STEER_LEAD_SECONDS at its current speed — enough time to wind the wheel most of the way to
-// full lock (see LOCK_TO_LOCK_SECONDS) and drive the resulting arc, plus the same bumper/pad margin
-// the speed governor uses.
-//
-// Deliberately tied to the steering actuator's own time constant rather than the governor's braking
-// distance — an earlier version reused boundaryGovernorCapKmh's stopping-distance formula here, which
-// at highway speed is 400m+; on a 1000m-wide square that's most of the map, so auto-steer was
-// engaging almost everywhere, and the instant it reflected off one wall it would find a *different*
-// wall "ahead" of the new heading and immediately re-engage — a runaway chain of corrections that
-// tightened into a bus stuck spinning at full lock. (Caught from a real saved trail, not the original
-// unit tests, which only ever exercised a single engage→disengage cycle in isolation.)
-const AUTO_STEER_LEAD_SECONDS = LOCK_TO_LOCK_SECONDS;
-// No separate frontOverhang term any more — see BOUNDARY_GOVERNOR_EXTRA_MARGIN's comment and
-// cornersPathDistance. This is compared against a corner-aware distance now (see the engage-gate
-// below), not boundaryWallAhead's reference-point-only one, so it needs to stay in the same units:
-// an earlier version mixed the two (corner-aware governor, reference-point-only trigger) and the
-// two could disagree by a few metres right at the margin boundary — small enough to usually not
-// matter, but exactly wide enough that a bus governor-pinned to 0 at a wall could sit just outside
-// the trigger's own idea of "close enough," re-engaging never, permanently stuck with the wheel
-// centred and nothing left driving it. Keeping both off the same metric closes that gap.
-function autoSteerLeadDistance(speedKmh) {
-  const v = speedKmh / 3.6;
-  return v * AUTO_STEER_LEAD_SECONDS + BOUNDARY_GOVERNOR_EXTRA_MARGIN;
+// Maximum speed (km/h) a turn of radius R can be taken at without exceeding MAX_LATERAL_ACCEL. This
+// governor only cares about the boundary, so it never otherwise limits how fast the bus corners —
+// fine for the wide, gentle radii a driver picks by hand, but Fence Autopilot's "turn" phase (below)
+// deliberately commands MAX_LOCK_DEG, a radius tight enough (a few metres) that nothing else would
+// stop the bus taking it at highway speed, which a real bus pulling well over 1g simply can't do.
+// Used as the "turn" phase's own speed cap in the drive loop, in place of the wall-distance governor
+// (which the approach phase already brought speed down for, via approachSpeedCapKmh, before the turn
+// ever engaged).
+const MAX_LATERAL_ACCEL = 2.0; // m/s^2 — firm but plausible for a city bus taking its tightest lock
+function corneringSpeedCapKmh(R) {
+  if (R == null || !Number.isFinite(R)) return Infinity;
+  return Math.sqrt(MAX_LATERAL_ACCEL * Math.abs(R)) * 3.6;
 }
 
-// Even with a tighter trigger distance, disengaging right next to a wall (a corner, where a second
-// wall sits close along the *new* heading too) could re-arm and chain into another correction before
-// the bus has actually put any distance behind it — the same runaway pattern above, just from a
-// different cause. AUTO_STEER_COOLDOWN_MS blocks re-engagement for a few seconds after any disengage,
-// giving the bus time to actually clear the area under its own new heading first.
+// ---------- boundary auto-steer ("Fence Autopilot") ----------
+// Models how a real driver — or an ag-guidance auto-steer system reacquiring its line after a
+// headland turn — actually handles running up on a boundary, in three phases (tracked in the
+// component body by fenceAutopilotPhaseRef, one of null / "turn" / "track"):
 //
-// Time alone isn't enough right in a corner, though: the speed governor caps speed hard there too
-// (both walls are close), so the bus can be crawling — a few *seconds* of cooldown covers almost no
-// *distance*, and a second, genuinely independent reflection off the adjacent wall can end up
-// engaging only a few metres from where the first one released. Each bounce is still individually
-// correct (angle of incidence = angle of reflection is a deterministic function of entry angle and
-// wall), but two of them stacked that close together reads as one broken loop rather than two clean
-// bounces. AUTO_STEER_COOLDOWN_MIN_DISTANCE_M adds a floor on actual distance travelled since the
-// last disengage, on top of the time floor — roughly a vehicle-length of breathing room regardless of
-// how slowly the corner is being taken.
+//   1. Approach (phase null): the speed governor below decelerates the bus at BRAKE_DECEL_INITIAL,
+//      timed to arrive at TURN_CRAWL_SPEED_KMH exactly at the point a full-lock turn still clears the
+//      wall by AUTO_STEER_OVERHANG_CLEARANCE_M (see approachSpeedCapKmh/reflectionClearanceM) — a
+//      controlled crawl, not a scramble, by the time the turn actually starts.
+//   2. Turn (phase "turn"): the wheel winds to MAX_LOCK_DEG at its normal rate (see
+//      steerRampRate/LOCK_TO_LOCK_SECONDS — no special faster "quick hands" rate; the realism is in
+//      *committing early enough*, at a *controlled speed*, for the normal rate to be plenty) and
+//      holds it there — but only for up to AUTO_STEER_MAX_TURN_SWEEP_DEG of the full mirror-reflected
+//      turn (reflectedHeading), handing off within AUTO_STEER_ROLLOUT_MARGIN_DEG of *that* rather than
+//      the full angle. Holding the tightest available radius is already the shortest path for whatever
+//      angle it covers, so a full 180°-capable reflection held at full lock the *entire* way there is a
+//      needlessly long, looping manoeuvre — capping how much of it "turn" itself is responsible for,
+//      and letting phase 3 ease smoothly through the rest at whatever gentler curvature it needs, is
+//      what actually shortens it: turn hard for as little of the angle as safely possible, then roll
+//      out tangential to the line the same way a driver would — undershooting their intended line and
+//      easing onto it, not crossing it and correcting back — rather than holding the wheel over for
+//      the whole arc.
+//   3. Track (phase "track"): pure-pursuit tracking of the reflected centreline (fenceLineRef) —
+//      anchored where the pre-turn heading would have crossed the wall, running in the post-turn
+//      direction, the same way an AB-line guidance system's line survives a headland turn. This runs
+//      indefinitely: the same approach governor keeps watching from here too, so when the line in
+//      turn approaches another wall, phase 1 fires again off *that* heading — bounce, line, bounce,
+//      line, chained for as long as trail mode stays on and nobody takes the wheel back.
 //
-// That distance floor assumes the bus is free to go put it behind — at a genuine corner it can
-// disengage right next to the *second* wall, still governor-capped to ~0 (see the stall give-up
-// paragraph below AUTO_STEER_STALL_SPEED_KMH/AUTO_STEER_STALL_GIVEUP_MS), and would then wait forever
-// on 15m it physically cannot travel. The engage-gate bypasses the distance floor whenever the bus is
-// pinned like that; the time floor still applies regardless.
-const AUTO_STEER_COOLDOWN_MS = 3000;
-const AUTO_STEER_COOLDOWN_MIN_DISTANCE_M = 15;
+// Corners (two walls close together) don't need special-casing: the engage check reuses
+// reflectionClearanceM, which checks the swept corners against *all four* walls, not just the one
+// being turned away from, so it won't trigger a turn early if the *far* wall of a corner would be
+// clipped mid-turn — and whatever wall is left once that turn completes and the line picks up gets
+// its own, independently-verified cycle when its own turn comes.
+//
+// Trail-mode only, same as the governor — the boundary is a trail-mode-only concept.
+const TURN_CRAWL_SPEED_KMH = 10;
 
-// A driver who grabs the wheel mid-correction (steering key, slider drag, Lock/Straight button)
-// should get it, not fight the continuous steering law for it — before this, a manual nudge only changed
-// `steerInput` for one frame before the very next drive-loop tick overwrote it right back to
-// whatever the auto-steer pass wanted, so the wheel visibly refused to respond. Any genuine manual
-// steering input now cancels the current engagement outright (its frozen target is discarded, not
-// resumed) and hands the wheel back. MANUAL_STEER_QUIET_MS is how long afterwards auto-steer stays
-// off before it's allowed to re-arm — long enough to cover a natural burst of key taps or a slider
-// drag as "still driving," short enough that letting go for a moment hands it straight back if a
-// wall is still closing in. Deliberately its own short window, not AUTO_STEER_COOLDOWN_MS — that
-// one is about giving the *bus* room after a bounce it already completed; this one is about not
-// re-arming out from under a driver who's still actively steering.
+// Maximum speed (km/h) allowed `distance` metres out from a point the bus needs to be doing
+// `targetKmh` at, decelerating at BRAKE_DECEL_INITIAL — gliding to exactly `targetKmh` right at that
+// point rather than braking to a dead stop. boundaryGovernorCapKmh above is this same formula's
+// targetKmh=0 case, kept separate since it's still used on its own as a hard backstop (see the
+// governor's own comment in the drive loop).
+function approachSpeedCapKmh(distance, targetKmh) {
+  if (!Number.isFinite(distance)) return Infinity;
+  const vf = targetKmh / 3.6;
+  const d = Math.max(0, distance);
+  return Math.sqrt(vf * vf + 2 * BRAKE_DECEL_INITIAL * d) * 3.6;
+}
+
+// A driver (or this system) grabbing the wheel mid-manoeuvre should get it, not fight whatever's
+// currently commanding the wheel — see cancelFenceAutopilot's own comment. MANUAL_STEER_QUIET_MS is
+// how long afterwards Fence Autopilot stays off before it's allowed to re-arm — long enough to cover
+// a natural burst of key taps or a slider drag as "still driving," short enough that letting go for a
+// moment hands it straight back if a wall is still closing in.
 const MANUAL_STEER_QUIET_MS = 800;
 
-// The target heading, frozen the instant auto-steer engages, is a mirror reflection of the current
+// The target heading, frozen the instant a turn engages, is a mirror reflection of the current
 // heading about the wall's normal — the same "angle of incidence equals angle of reflection" a ball
 // takes off a cushion: hitting a wall square-on turns the bus around to head straight back out;
-// clipping it at a shallow angle only nudges the heading enough to run parallel and clear it. Frozen
-// rather than recomputed every frame so the target doesn't drift as the turn itself changes which
-// wall would technically be reached first.
+// clipping it at a shallow angle only nudges the heading enough to run parallel and clear it.
 function reflectedHeading(theta, axis) {
   return axis === "x" ? Math.PI - theta : -theta; // vertical wall flips the x-component of heading, horizontal flips y
 }
 
-// Steering is a continuous closed-form law, recomputed every animation frame rather than committed
-// to in discrete passes:
-//
-//   1. Aim (autoSteerAimLockDeg): the same steady-state turn geometry computeGeometry itself uses
-//      (R = Lfd/tan(deltaF)) run backwards — "what lock angle sweeps the remaining heading error over
-//      the straight-line room actually available" — evaluated fresh against the *current* heading
-//      error and *current* wall distance every frame, never a plan made once and trusted.
-//   2. Overhang-clearance floor (minClearanceLockDeg, below): a lower bound on how gentle that angle
-//      is allowed to be, so the front/rear overhang never sweeps within AUTO_STEER_OVERHANG_CLEARANCE_M
-//      of the boundary — see that function's own comment.
-//   3. The wheel is commanded whichever of the two is tighter, clamped to MAX_LOCK_DEG.
-//
-// This replaces an earlier bang-coast-retry design: full lock toward a frozen target, release,
-// forward-simulate the coast to predict the result, check the actual outcome, loop back to full lock
-// on whatever residual was left. That worked, but every retry was a full swing of the wheel to lock
-// and back — visible as a distinct wobble on anything needing more than one pass, which anything
-// chasing a tight final tolerance routinely did (see AUTO_STEER_FINAL_TOLERANCE_DEG's history below).
-//
-// Two even simpler designs were tried before that bang-coast-retry one and were explicitly reverted;
-// the continuous law here has to not reintroduce either failure:
-//   - A single upfront prediction, trusted once, never re-checked: correct against constant-speed
-//     test cases, but landed up to ~25° off on a real saved trail, because the boundary speed
-//     governor's own cap changes *during* the turn (recomputed every frame off the bus's evolving
-//     curved path) — a plan made once at engage time goes stale the moment that governor state moves.
-//     Re-deriving aimLockDeg from the live heading error and live wall distance every single frame
-//     means a governor-speed change shows up in the very next frame's command, not several seconds
-//     later when some earlier prediction finally gets checked.
-//   - A small proportional trim, `clamp(-GAIN*error, ±MAX_DEG)`: closer, but a *tuned linear gain*
-//     saturates at MAX_DEG/GAIN of error, and past that it's really a fixed-amplitude bang-bang
-//     command — which, combined with the steering actuator's own lag, produced a sustained undamped
-//     oscillation on a real trail (heading swinging back and forth for 1000+ samples, never
-//     settling). autoSteerAimLockDeg isn't a tuned gain on the error — it's the same closed-form
-//     turn-geometry relation, so there's no linear term to saturate and no new gain to mistune; it
-//     already eases toward 0 as the error shrinks instead of plateauing at a fixed command.
-//
-// Commanding a continuously-varying target has to avoid a race the ML Autopilot effect further up
-// already solved for the same reason: the steering-rate-limiting effect (further down) restarts its
-// own rAF chase every time `steerInput` state changes — fine for a human input that settles once and
-// stays there, but two independent rAF loops racing to restart each other on a target that changes
-// every frame means neither ever advances. So this owns the rate-limited ramp directly (writing
-// appliedSteerRef/setAppliedSteerInput itself, in the drive loop below) exactly the way the ML
-// Autopilot effect does, and never calls setSteerInput while engaged — see cancelFenceAutopilot's own
-// comment for the follow-on fix that requires (syncing `steerInput` on hand-back, same as
-// exitMlAutopilot).
-const AUTO_STEER_SETTLED_DEG = 0.3; // |appliedSteerInput| below this counts as "wheel back at centre"
-// How close the actual heading has to land to the frozen target before disengaging. Under the old
-// bang-coast-retry design this was tightened repeatedly (0.5° -> 0.1° -> 0.05°) at the driver's
-// explicit request for higher precision each time — but each tightening bought that precision with
-// more full-lock retries, which is exactly the wobble this file is now trying to remove. Relaxed back
-// to 0.3° here: the continuous law above doesn't need several retries to close a residual, so this is
-// no longer trading retries for precision, and there's still no reason to chase precision finer than
-// the manual steering slider itself offers — STEER_STEPS is a 0.5° grid, so a driver could never dial
-// in a result tighter than this by hand anyway.
-const AUTO_STEER_FINAL_TOLERANCE_DEG = 0.3;
-const AUTO_STEER_STALL_SPEED_KMH = 0.5; // effectively stopped, not just slow — also used by the cooldown gate above
-// How long a genuine stall (governor pinning speed near AUTO_STEER_STALL_SPEED_KMH, not just a slow
-// approach) is tolerated before giving up on this engagement rather than continuing to hold the wheel
-// over. A true two-wall corner jam pins speed — and therefore omega, and therefore pose — at 0 no
-// matter how tight the overhang-clearance floor below escalates the commanded angle in response, so
-// past this point waiting longer can't help. Roughly the same total budget an earlier retry-counted
-// version of this stall check gave itself, rounded up for margin now that it's one continuous wait
-// rather than several checked passes.
-const AUTO_STEER_STALL_GIVEUP_MS = 2000;
-
-// Same steady-state turn geometry computeGeometry itself uses (R = Lfd/tan(deltaF)), run backwards:
-// impliedR is how wide a turn radius would sweep the required heading change over the distance
-// actually available, and the lock angle producing that radius is atan(Lfd/impliedR). Not a tuned
-// gain on the error — see the "boundary auto-steer" comment above for why that distinction matters.
-// No floor at the gentle end: called fresh every frame now, so letting it shrink all the way to 0 as
-// the error closes out is exactly what makes the final approach smooth instead of snapping from some
-// minimum angle straight to dead centre.
-function autoSteerAimLockDeg(requiredSweepDeg, availableDistanceM, Lfd) {
-  if (!Number.isFinite(availableDistanceM) || availableDistanceM <= 0) return MAX_LOCK_DEG;
-  const requiredSweepRad = Math.max(toRad(1), Math.abs(toRad(requiredSweepDeg)));
-  const impliedR = availableDistanceM / requiredSweepRad;
-  const impliedLockDeg = toDeg(Math.atan(Lfd / impliedR));
-  return Math.min(MAX_LOCK_DEG, impliedLockDeg);
+// World position of a chassis-fixed point after sweeping arc-length `s` (signed; its sign, together
+// with R's, sets the turn direction) around the turn centre implied by `pose`/`R` — the same
+// centre/radius-of-that-point/phase construction sweptPointPathDistance uses to *solve for* a
+// crossing distance, reused here to instead *evaluate* position at a chosen distance. Rigid
+// attachment means every chassis point shares the reference point's angular rate, just at its own
+// radius and starting phase about that shared centre.
+function chassisPointWorldAtArc(pose, R, chassisPoint, s) {
+  const theta0 = pose.theta;
+  const Cx = pose.x - R * Math.sin(theta0), Cy = pose.y + R * Math.cos(theta0);
+  const world0 = poseTransform(chassisPoint, pose);
+  const radiusP = Math.hypot(world0.x - Cx, world0.y - Cy);
+  const psi0 = Math.atan2(world0.y - Cy, world0.x - Cx);
+  const psi = psi0 + s / R;
+  return { x: Cx + radiusP * Math.cos(psi), y: Cy + radiusP * Math.sin(psi) };
 }
 
-// Minimum gap any body corner's actual swept path is allowed to leave against the boundary while
-// auto-steer is turning away from it. The front/rear overhang corners sweep a *wider* radius than the
-// reference point while turning (see computeGeometry's mow1/mow2), and a too-gentle arc drifts
-// laterally toward a close side wall for longer before it's swept enough heading away from it — the
-// corner-stall failure mode a discrete bang phase could only detect after the bus had already ground
-// to a halt. Putting a floor directly on how gentle autoSteerAimLockDeg above is allowed to pick means
-// the corner-aware clearance is respected from the very first frame of an engagement, not only after a
-// stall's already happened.
-const AUTO_STEER_OVERHANG_CLEARANCE_M = 1.0;
-// Bisects on lock angle rather than radius directly, to stay in this file's usual finite, bounded
-// units and sidestep the R -> Infinity singularity at zero lock. Reuses cornersPathDistance exactly
-// as the speed governor calls it — the same verified metric, just with a 1.0m steering margin in
-// place of the governor's own 8m braking-distance pad, since the two protect against different things
-// (one is stopping distance, this is how close the turn itself is allowed to bring a corner to the
-// wall) — not a new approximation. Assumes clearance only improves as lock angle tightens over this
-// range, which holds for the corner-approach case auto-steer engages for (curving away faster beats
-// drifting toward a close side wall) but isn't proven for every conceivable wall geometry — this is a
-// plan-view training sim, not a certified safety system, so a merely-reasonable bisection result on an
-// edge case it doesn't hold for is an acceptable outcome.
-function minClearanceLockDeg(pose, bodyCorners, Lfd, dirSign, trailBoundHalf) {
-  const clearanceAtLock = (lockDeg) => {
-    const R = lockDeg <= 0 ? null : Lfd / Math.tan(toRad(-dirSign * lockDeg));
-    return cornersPathDistance(pose, { R, bodyCorners }, trailBoundHalf);
-  };
-  if (clearanceAtLock(MAX_LOCK_DEG) < AUTO_STEER_OVERHANG_CLEARANCE_M) return MAX_LOCK_DEG; // no angle keeps clear; turn as tight as the wheel goes
-  if (clearanceAtLock(0) >= AUTO_STEER_OVERHANG_CLEARANCE_M) return 0; // even dead straight already clears
-  let lo = 0, hi = MAX_LOCK_DEG;
-  for (let i = 0; i < 16; i++) {
-    const mid = (lo + hi) / 2;
-    if (clearanceAtLock(mid) >= AUTO_STEER_OVERHANG_CLEARANCE_M) hi = mid; else lo = mid;
+// The closest any body corner comes to *any* wall over the course of a full-lock (constant-radius)
+// reflection from `pose`'s current heading to `targetTheta` — not cornersPathDistance's "how far
+// until a corner leaves the square, circling indefinitely if it has to," which at MAX_LOCK_DEG's
+// few-metre radius against a boundary hundreds of metres across only ever reports a lap-counting
+// answer, not a useful one, for anything not already on top of the wall. What the engage check (in
+// the drive loop below) actually needs is "if this turn happened right now, how close does it cut
+// it" — a property of the *bounded* arc from here to the target heading, not of the full circle.
+// Sampling `samples` points along it (a plan-view demonstration sim's standard of "reasonable," not a
+// certified one — see AUTO_STEER_OVERHANG_CLEARANCE_M's own comment) and taking the closest any
+// corner gets to any of the four walls at each is far simpler than solving the bounded-arc extremum
+// in closed form, and accurate enough that raising `samples` past the low dozens doesn't move it.
+// Turn radius for a full-lock steer command in the given direction — shared by reflectionClearanceM's
+// full-lock arc sampling and the "turn" phase's own speed governor (below), which needs the same
+// eventual radius rather than the live one while the wheel is still winding up to it — see that call
+// site's own comment for why.
+function fullLockTurnRadiusM(dirSign, Lfd) {
+  return Lfd / Math.tan(toRad(-dirSign * MAX_LOCK_DEG));
+}
+
+function reflectionClearanceM(pose, targetTheta, bodyCorners, Lfd, dirSign, trailBoundHalf, samples = 24) {
+  const R = fullLockTurnRadiusM(dirSign, Lfd);
+  const sEnd = R * wrapAngle(targetTheta - pose.theta);
+  let minClearance = Infinity;
+  for (let i = 0; i <= samples; i++) {
+    const s = (sEnd * i) / samples;
+    for (const key of ["FL", "FR", "RL", "RR"]) {
+      const p = chassisPointWorldAtArc(pose, R, bodyCorners[key], s);
+      const clearance = Math.min(trailBoundHalf - p.x, trailBoundHalf + p.x, trailBoundHalf - p.y, trailBoundHalf + p.y);
+      if (clearance < minClearance) minClearance = clearance;
+    }
   }
-  return hi;
+  return minClearance;
 }
+
+// The target clearance the engage check (below) times a full-lock turn to leave — see the "boundary
+// auto-steer" comment above for why this is a target, not merely a floor: the point is to graze this
+// close, not to stay comfortably clear of it. This is a plan-view training sim, not a certified
+// safety system — a demonstration margin close to what a real driver would actually cut a tag-axle
+// bus's overhang to, not a guaranteed real-world clearance.
+const AUTO_STEER_OVERHANG_CLEARANCE_M = 0.5;
+
+// Extra path-length the bus covers while the steering actuator winds up from its current applied
+// angle to MAX_LOCK_DEG, at the given speed. The engage check evaluates reflectionClearanceM as
+// though the bus were *already* at full lock this instant, which isn't true the moment it engages —
+// the wheel still has to physically wind there (see steerRampRate/steerTimeToAngle). Called with
+// TURN_CRAWL_SPEED_KMH, not the bus's actual current speed: by the time the engage check's own
+// clearance test can pass, the approach governor has already brought real speed down to that crawl
+// (that's the entire point of aiming the deceleration at the turn point rather than the wall — see
+// approachSpeedCapKmh), so the wind-up pad should reflect the speed the turn will actually happen at.
+// Padding the target clearance by this distance means the engage-now decision accounts for that lag
+// instead of assuming an instantaneous actuator, so the *actual* achieved clearance lands near
+// AUTO_STEER_OVERHANG_CLEARANCE_M rather than something tighter.
+function steerWindUpDistanceM(speedKmh, currentAbsAppliedDeg) {
+  const v = speedKmh / 3.6;
+  const windUpS = Math.max(0, steerTimeToAngle(MAX_LOCK_DEG) - steerTimeToAngle(currentAbsAppliedDeg));
+  return v * windUpS;
+}
+
+// Which way a reflection turn needs the wheel to go to close the given heading error: errorDeg>0
+// means theta needs to increase to reach the target; steerInput>0 -> deltaFdeg<0 -> theta decreases
+// (see deltaFdeg's declaration above), so closing a positive error needs a negative steerInput —
+// hence the sign flip. Used once, at engage, to freeze the turn direction for the phase's own
+// duration (see autoSteerDirSignRef) rather than re-derived from the live error every frame — right
+// at the moment the turn overshoots its target, the live error's sign flips, and a direction derived
+// from it that same frame would be the wrong one for the turn that's already in progress.
+function reflectionDirSign(errorDeg) {
+  return -(Math.sign(errorDeg) || 1);
+}
+
+// How much of the full reflection "turn" phase commits to sweeping itself, at MAX_LOCK_DEG, before
+// handing the remainder to "track" — capped well short of the full angle (which can be up to 180°,
+// for a near-square-on hit) rather than holding full lock the entire way there. Holding the tightest
+// available radius for a *given* sweep is already the shortest possible path for that sweep — there's
+// no tighter radius to fall back on — so the only way to actually shorten "turn" itself is to shorten
+// how much angle it's responsible for in the first place, and let "track" ease smoothly (and at
+// whatever gentler curvature it needs, unhurried) through the rest — the same way a driver takes a
+// wall at full lock only as long as they have to, then straightens out to meet their intended line
+// tangentially rather than holding the wheel hard over the whole way.
+//
+// 90° isn't an arbitrary half-measure: for the reference point, forward progress along the original
+// heading during a constant-radius turn is R·sin(φ) at sweep angle φ — which peaks (the closest that
+// point ever gets to the wall being turned away from) at exactly φ=90° and *recedes* for any φ beyond
+// it. So a full-lock sweep of at least 90° has already passed the reference point's own worst moment
+// by the time "turn" hands off; the body corners' own peak (mow1/mow2's wider swing — see
+// computeGeometry) sits close to the same angle, just not provably exact, hence the extra 10° here
+// as a buffer rather than cutting off at exactly 90°. Reflections needing less than this sweep in the
+// first place are unaffected — "turn" already finishes before ever reaching the cap.
+const AUTO_STEER_MAX_TURN_SWEEP_DEG = 100;
+
+// How close (degrees of remaining heading error to "turn"'s own target) is close enough to hand off
+// to "track" — see the handoff's own comment in the drive loop for why this is an undershoot
+// (stop short and let pursuit ease the rest in) rather than a crossing. Small relative to
+// AUTO_STEER_MAX_TURN_SWEEP_DEG's own 10° buffer isn't required — this is a separate judgement call
+// about how much "last bit of the angle" is comfortably pure pursuit's job rather than the held-lock
+// commitment's — but is deliberately in the same ballpark.
+const AUTO_STEER_ROLLOUT_MARGIN_DEG = 15;
+
+// The world point where the bus's heading, extended straight ahead, first crosses the boundary — the
+// anchor for the reflected centreline (fenceLineRef, in the component body). A mirror reflection is
+// anchored at the point of reflection itself, not wherever the bus happened to be crawling when the
+// turn actually started (which lags behind the wall by the crawl-speed wind-up pad above).
+function boundaryCrossingPoint(pose, wall) {
+  return { x: pose.x + wall.distance * Math.cos(pose.theta), y: pose.y + wall.distance * Math.sin(pose.theta) };
+}
+
+// How far ahead along the line to aim, for pursuitDeltaFDeg below — longer at speed (a short
+// lookahead at speed chases the line too aggressively, the classic pure-pursuit "porpoising"
+// oscillation) but never shorter than PURSUIT_MIN_LOOKAHEAD_M, since the turn hands off to tracking
+// at a dead crawl (TURN_CRAWL_SPEED_KMH) where a purely speed-scaled distance would collapse to
+// almost nothing right when the cross-track offset (the turn's own overshoot) is at its largest.
+const PURSUIT_MIN_LOOKAHEAD_M = 10;
+const PURSUIT_LOOKAHEAD_TIME_S = 1.5;
+
+// Pure-pursuit steering angle (bicycle-model geometry-angle convention — deltaFdeg, not steerInput;
+// see deltaFdeg's own declaration for the sign flip callers need) toward a point `lookaheadDist`
+// ahead of the bus's own position along `line`, rather than the more textbook framing of a point
+// `lookaheadDist` ahead of the closest point *on* the line — which, right after a hard turn hands off
+// with a large lateral offset, has the bus aiming from off to the side of where it actually is, and
+// the lookahead point can swing sharply as that closest-point projection moves. Projecting forward
+// from the bus's own along-line coordinate instead is simpler than the textbook circle-intersection
+// solve (which also needs special-casing whenever the bus is already more than lookaheadDist off the
+// line) and just as accurate once within a wheelbase or two of the line — true almost immediately
+// after a reflection, whose overshoot is bounded by the turn radius.
+function pursuitDeltaFDeg(pose, line, Lfd, lookaheadDist) {
+  const alongPose = (pose.x - line.anchor.x) * Math.cos(line.theta) + (pose.y - line.anchor.y) * Math.sin(line.theta);
+  const targetAlong = alongPose + lookaheadDist;
+  const target = { x: line.anchor.x + targetAlong * Math.cos(line.theta), y: line.anchor.y + targetAlong * Math.sin(line.theta) };
+  const dx = target.x - pose.x, dy = target.y - pose.y;
+  const localX = dx * Math.cos(pose.theta) + dy * Math.sin(pose.theta);
+  const localY = -dx * Math.sin(pose.theta) + dy * Math.cos(pose.theta);
+  const alpha = Math.atan2(localY, localX);
+  const curvature = (2 * Math.sin(alpha)) / lookaheadDist;
+  return toDeg(Math.atan(Lfd * curvature));
+}
+
+// Perpendicular distance from `pose` to `line` — how far off the reflected centreline the bus
+// currently is, independent of how far *along* it or which way it's currently facing. Used both to
+// decide when "track" has actually converged (see FENCE_CONVERGED_CROSS_TRACK_M) and, in the map
+// render, to know how long the frozen target marker and grey construction lines stay on screen.
+function crossTrackDistanceM(pose, line) {
+  const dx = pose.x - line.anchor.x, dy = pose.y - line.anchor.y;
+  return Math.abs(-dx * Math.sin(line.theta) + dy * Math.cos(line.theta));
+}
+
+// How close (metres, perpendicular) the bus has to sit to the reflected centreline before "track" is
+// considered converged — see crossTrackDistanceM's own comment for what this gates. A plan-view
+// demonstration margin, the same standard of "reasonable" as AUTO_STEER_OVERHANG_CLEARANCE_M, not a
+// certified tolerance.
+const FENCE_CONVERGED_CROSS_TRACK_M = 1.0;
+
+// The two endpoints of `line` extended `halfLen` either side of its anchor — for drawing an anchored
+// line/direction as a full construction line on the map (see the "turn"-phase render below), not just
+// a ray from the anchor forward.
+function extendedLineEndpoints(line, halfLen) {
+  const dx = Math.cos(line.theta) * halfLen, dy = Math.sin(line.theta) * halfLen;
+  return [{ x: line.anchor.x - dx, y: line.anchor.y - dy }, { x: line.anchor.x + dx, y: line.anchor.y + dy }];
+}
+
+const AUTO_STEER_STALL_SPEED_KMH = 0.5; // effectively stopped, not just slow
+// How long a genuine stall (governor pinning speed near AUTO_STEER_STALL_SPEED_KMH, not just a slow
+// approach) is tolerated before giving up rather than continuing to hold the wheel over — checked in
+// both "turn" (a true two-wall corner jam pins speed, and therefore omega, and therefore pose, at 0
+// no matter how hard the wheel is turned) and "track" (pure pursuit has no idea the boundary exists,
+// so nothing stops the reflected line itself running back toward a wall and pinning speed there
+// instead). Past this point waiting longer can't help either way.
+const AUTO_STEER_STALL_GIVEUP_MS = 2000;
 
 // How long the bus must sit at 0 speed before the handbrake sound fires (see the handbrake effect
 // in the component body).
@@ -954,6 +1072,8 @@ const COL = {
   trail: "#4fd1c5",
   bodyTrail: "#8ef2b0",
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
+  alert: "#ff4d4d",
+  constructionGrey: "#8fa0ae",
 };
 
 function Slider({ label, unit, value, min, max, step, onChange, accent = COL.amber }) {
@@ -1019,13 +1139,9 @@ const QUARTER_TURN_STEER_DEG = 5;
 // steering, throttle, and brake, but not view-mode keys or the horn.
 const DRIVING_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "PageUp", "PageDown", "End"]);
 
-// Closed-form time to sweep the road-wheel angle from 0 to |roadAngleDeg| under the linear
-// rate(angle) profile above: time(0→x) = (1/STEER_RATE_K)·ln(rate(x)/STEER_MIN_RATE).
 function wheelRotationDeg(roadAngleDeg) {
   const sign = roadAngleDeg < 0 ? -1 : 1;
-  const a = Math.min(MAX_LOCK_DEG, Math.abs(roadAngleDeg));
-  const timeToA = Math.log(steerRampRate(a) / STEER_MIN_RATE) / STEER_RATE_K;
-  return sign * STEER_HAND_SPEED * timeToA;
+  return sign * STEER_HAND_SPEED * steerTimeToAngle(roadAngleDeg);
 }
 
 function SteeringWheel({ angleDeg, size = 132 }) {
@@ -1281,43 +1397,50 @@ export default function BusSteeringSimulator() {
   // Mirrors boundaryLimitingRef, only for display — true whenever the boundary speed governor (see
   // boundaryGovernorCapKmh) is actively reducing speed this frame.
   const [boundaryLimiting, setBoundaryLimiting] = useState(false);
-  // Mirrors autoSteerActiveRef, only for display — true while the boundary auto-steer (see
-  // "boundary auto-steer" above) is actively steering the bus away from a wall.
-  const [autoSteerActive, setAutoSteerActive] = useState(false);
+  // Mirrors fenceAutopilotPhaseRef, only for display — null, "turn", or "track"; see the "boundary
+  // auto-steer" comment above for what each phase does.
+  const [fenceAutopilotPhase, setFenceAutopilotPhase] = useState(null);
   // Once true, stays true for the rest of the session — lets the Desired Heading readout keep
   // showing the last computed target (dimmed) between engagements instead of "—", while still
-  // reading "—" before the very first engagement, when autoSteerTargetThetaRef is just its unset
-  // default rather than an actual computed reflection.
+  // reading "—" before the very first engagement, when fenceLineRef is still unset.
   const [autoSteerEverEngaged, setAutoSteerEverEngaged] = useState(false);
   const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
   const trailModeRef = useRef(trailMode);
   const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason LfdRef exists
   const trailPausedRef = useRef(false);
   const boundaryLimitingRef = useRef(false);
-  const autoSteerActiveRef = useRef(false);
+  const fenceAutopilotPhaseRef = useRef(null); // null | "turn" | "track" — see the "boundary auto-steer" comment above
   const autoSteerStallSinceRef = useRef(null); // rAF timestamp (ms) the current stall started, or null — see AUTO_STEER_STALL_SPEED_KMH/AUTO_STEER_STALL_GIVEUP_MS
-  const autoSteerTargetThetaRef = useRef(0); // world heading auto-steer is chasing, frozen at engage — see reflectedHeading
-  const autoSteerCooldownUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't re-engage — see AUTO_STEER_COOLDOWN_MS
-  const autoSteerCooldownPoseRef = useRef(null); // world {x,y} at the moment of the last disengage — see AUTO_STEER_COOLDOWN_MIN_DISTANCE_M
+  const realizedSpeedKmhRef = useRef(0); // last frame's *actually achieved* speed (arc length actually integrated / dt) — see clampStepToBoundary's call site; can read well below the governor's own commanded speedRef when the boundary clamp had to shrink the step, which the stall check below watches for precisely because the governor itself has no idea that happened
+  const autoSteerDirSignRef = useRef(1); // turn direction, frozen at engage — see reflectionDirSign's own comment
+  const autoSteerTurnTargetThetaRef = useRef(0); // "turn" phase's own target — fenceLineRef.theta capped by AUTO_STEER_MAX_TURN_SWEEP_DEG, not the full reflection; "track" still pursues the real fenceLineRef.theta once handed off
+  const fenceLineRef = useRef(null); // { anchor:{x,y}, theta } — the reflected centreline "track" phase pursues; see boundaryCrossingPoint. Only ever replaced by a new engagement, never nulled back out — the Desired Heading readout reads it unconditionally whenever autoSteerEverEngaged is true.
+  const fencePrevLineRef = useRef(null); // fenceLineRef's value from *before* the current engagement overwrote it — the "track centreline" half of the reflection display (see the map render), null until a second engagement has happened
+  const fenceTurnedOutRef = useRef(false); // latches true once the commanded lock starts decreasing after a "turn" — see fenceLastCommandedLockRef and the governor's own comment on why acceleration waits for this, not just for "track" phase to start
+  const fenceLastCommandedLockRef = useRef(0); // |lock| commanded last frame during "turn"/"track", to detect that decrease
   const manualSteerUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't (re-)engage — see MANUAL_STEER_QUIET_MS
 
   // Called from every genuine user-facing steering control (arrow keys, the slider, the Lock/
   // Straight buttons) — see MANUAL_STEER_QUIET_MS. Mirrors exitMlAutopilot's role for the other
   // autopilot: get out of the driver's way the instant they touch the wheel themselves, rather than
-  // making them switch this off first. Syncing steerInput to the bus's actual current angle here
-  // matters for exactly the same reason it does in exitMlAutopilot: the continuous auto-steer law
-  // (see "boundary auto-steer" above) drives appliedSteerRef directly every frame and never calls
-  // setSteerInput while engaged, so `steerInput` state is stale here — without this, a relative nudge
-  // (arrow keys) right after disengaging would jump from that stale value instead of continuing
-  // smoothly from wherever the wheel actually is. Harmless for callers that immediately set an
-  // absolute steerInput value anyway (the slider, the lock/straight buttons) — this just gets
-  // overwritten a moment later in those cases.
+  // making them switch this off first. A no-op during the "turn" phase itself — that's the one part
+  // of the manoeuvre meant to run without the driver able to interrupt it (see the "boundary
+  // auto-steer" comment above); "track" and idle both hand back normally. Syncing steerInput to the
+  // bus's actual current angle here matters for exactly the same reason it does in exitMlAutopilot:
+  // both active phases drive appliedSteerRef directly every frame and never call setSteerInput while
+  // engaged, so `steerInput` state is stale here — without this, a relative nudge (arrow keys) right
+  // after disengaging would jump from that stale value instead of continuing smoothly from wherever
+  // the wheel actually is. Harmless for callers that immediately set an absolute steerInput value
+  // anyway (the slider, the lock/straight buttons) — this just gets overwritten a moment later then.
   function cancelFenceAutopilot() {
+    if (fenceAutopilotPhaseRef.current === "turn") return;
     manualSteerUntilRef.current = performance.now() + MANUAL_STEER_QUIET_MS;
-    if (autoSteerActiveRef.current) {
-      autoSteerActiveRef.current = false;
+    if (fenceAutopilotPhaseRef.current != null) {
+      fenceAutopilotPhaseRef.current = null;
+      // fenceLineRef is deliberately left set — the Desired Heading readout keeps showing the last
+      // computed line (dimmed) between engagements rather than needing a null check on every read.
       autoSteerStallSinceRef.current = null;
-      setAutoSteerActive(false);
+      setFenceAutopilotPhase(null);
       setSteerInput(appliedSteerRef.current);
     }
   }
@@ -1326,7 +1449,7 @@ export default function BusSteeringSimulator() {
   // driveToTargetRef below) once the bus has cleared the wall and the cap releases — otherwise a bus
   // that isn't actively holding the throttle through the corner would just stay at the reduced speed.
   const preSlowdownSpeedRef = useRef(null);
-  // Live Lfd, for autoSteerAimLockDeg/minClearanceLockDeg — those are called from the drive loop
+  // Live Lfd, for reflectionClearanceM — that's called from the drive loop
   // below, an imperative useEffect with an empty dependency array (see its own comment), so it can't
   // read Lfd as live component state; it reads this ref instead, kept in sync every render alongside
   // geomRef/speedRef/trailModeRef just below.
@@ -1433,6 +1556,7 @@ export default function BusSteeringSimulator() {
     return {
       tagsimSave: 1,
       savedAt: new Date().toISOString(),
+      appCommit: __APP_COMMIT__, // build-time git commit (see vite.config.js) — traces a saved trail back to the code that produced it
       vehicle: { Lfd, Ldt, Fo, Ro, Wb, Tw },
       controls: { steerInput, tagRatio, lockoutOn, lockoutSpeed },
       display: { showGeom, showDims, advancedOpen, viewMode, trailMode },
@@ -1547,8 +1671,20 @@ export default function BusSteeringSimulator() {
       // isn't actually driving the bus, so it doesn't kick the autopilot off.
       if (DRIVING_KEYS.has(e.key)) exitMlAutopilot();
       // Of those, only the steering keys should also cancel Fence Autopilot — see
-      // cancelFenceAutopilot's own comment; throttle/brake input doesn't touch the wheel.
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "End") cancelFenceAutopilot();
+      // cancelFenceAutopilot's own comment; throttle/brake input doesn't touch the wheel. During the
+      // "turn" phase specifically, Fence Autopilot owns the wheel outright (see the "boundary
+      // auto-steer" comment) — cancelFenceAutopilot itself already no-ops there, but a steering key
+      // still has to bail out here too, before reaching setSteerInput below: that state feeds a
+      // separate rate-limited chase effect (see its own comment, a few effects down) that would
+      // otherwise race the drive loop's own direct writes to appliedSteerRef for the exact same
+      // reason ML Autopilot's effect owns that ramp itself instead of going through setSteerInput.
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "End") {
+        if (fenceAutopilotPhaseRef.current === "turn") {
+          e.preventDefault();
+          return;
+        }
+        cancelFenceAutopilot();
+      }
       if (e.key === "ArrowLeft") {
         e.preventDefault();
         if (e.shiftKey) setSteerInput((v) => nudgeByRoadDeg(v, -QUARTER_TURN_STEER_DEG));
@@ -1740,16 +1876,144 @@ export default function BusSteeringSimulator() {
         }
       }
 
-      // Boundary speed governor (trail mode only — the boundary isn't a concept outside it):
-      // cap nextSpeed so the bus can't be driven through trailBoundHalfRef.current, whichever control put it
-      // there (throttle key or the "Drive the turn" auto-ramp both land here). See
-      // boundaryGovernorCapKmh for why a plain clamp is enough to feel like a smooth stop.
+      // Whenever a turn isn't already committed to (phase null or "track"), work out whether a
+      // full-lock reflection off the wall the bus is currently heading toward could still clear it
+      // by at least the bare target margin (AUTO_STEER_OVERHANG_CLEARANCE_M). The governor right
+      // below needs this to know how hard to decelerate; the engage check further down needs the
+      // same geometry to decide whether *now* is the moment to actually commit to the turn. Computed
+      // once and shared rather than twice — see the comments in both places for why each reads it
+      // differently (a bare floor here, a wind-up-padded one there). Live off the *current* heading
+      // either way — during "track", that's wherever pursuit has the bus pointed, which is exactly
+      // what lets a wall the reflected line runs toward re-trigger this same cycle (see the "boundary
+      // auto-steer" comment above on chaining).
+      let prospectiveReflection = null;
+      if (trailModeRef.current && fenceAutopilotPhaseRef.current !== "turn") {
+        const wall = boundaryWallAhead(poseRef.current, trailBoundHalfRef.current);
+        const prospectiveTarget = reflectedHeading(poseRef.current.theta, wall.axis);
+        const dirSign = reflectionDirSign(toDeg(wrapAngle(prospectiveTarget - poseRef.current.theta)));
+        const fullLockClearance = reflectionClearanceM(poseRef.current, prospectiveTarget, geomRef.current.bodyCorners, LfdRef.current, dirSign, trailBoundHalfRef.current);
+        prospectiveReflection = { wall, prospectiveTarget, dirSign, fullLockClearance };
+      }
+      // How much clearance the engage check (below) actually requires before committing — the bare
+      // margin plus how far the bus travels while the wheel winds up to full lock, at the crawl speed
+      // it'll actually be doing by the time that check can pass (see steerWindUpDistanceM's own
+      // comment on why TURN_CRAWL_SPEED_KMH, not the bus's current speed). Also what the governor
+      // below aims its deceleration at, via approachSpeedCapKmh — the two have to agree on the same
+      // number or the bus could reach crawl speed later (or earlier) than the point it's actually
+      // needed.
+      const turnEngageClearanceM = AUTO_STEER_OVERHANG_CLEARANCE_M + steerWindUpDistanceM(TURN_CRAWL_SPEED_KMH, Math.abs(appliedSteerRef.current));
+
+      // Boundary speed governor (trail mode only — the boundary isn't a concept outside it): cap
+      // nextSpeed so the bus can't be driven through trailBoundHalfRef.current, whichever control put
+      // it there (throttle key or the "Drive the turn" auto-ramp both land here).
+      //
+      // Not "turn" phase: aims at TURN_CRAWL_SPEED_KMH via approachSpeedCapKmh, using
+      // (prospectiveReflection's clearance - turnEngageClearanceM) as the remaining distance to glide
+      // down over — a smooth deceleration timed to reach exactly crawl speed right as the engage
+      // check below is first satisfied, not a moment before or after (see the "boundary auto-steer"
+      // comment above on why the approach is timed at all). The plain boundaryGovernorCapKmh
+      // brake-to-a-dead-stop backstop is skipped entirely while a full-lock turn still clears the
+      // wall by the bare margin — see the turnStillAvailable comment at its actual use below for why
+      // leaving it active there stops the bus well short of where the crawl-speed plan needed it to
+      // — falling back to it only once that stops being true (no reflection available at all, or the
+      // wall's already too close for even full lock).
+      //
+      // "Turn" phase itself only ever applies corneringSpeedCapKmh (g-force at full lock) — not the
+      // boundary-distance backstop below. That backstop's BOUNDARY_GOVERNOR_EXTRA_MARGIN pad (8m) is
+      // sized for ordinary free driving at whatever gentle radius a human picks; against "turn"'s own
+      // few-metre full-lock radius it swallows most or all of the manoeuvre outright, pinning speed
+      // near zero for the entire turn (worse the sharper the reflection) rather than merely trimming
+      // it — precisely the "stops dead the instant turn begins" failure mode. It would also be
+      // redundant even without that mismatch: reflectionClearanceM already checked every body corner
+      // against *all four* walls over the *entire* committed arc, with its own purpose-built margin
+      // (AUTO_STEER_OVERHANG_CLEARANCE_M), before "turn" was ever allowed to engage — see its own
+      // comment. "Turn" doesn't deviate from that predetermined, deterministic arc (no disturbance
+      // model here), so there's nothing left for a live re-check to catch; g-force is the only limit
+      // that still depends on anything not already known at engage time.
+      //
+      // The start of "track", until the bus actually turns *out* of it (see fenceTurnedOutRef below),
+      // is different: pursuit's output there isn't a pre-validated commitment, so it keeps the live
+      // boundary-distance backstop (evaluated against a straight-line projection — see below) on top
+      // of the same g-force limit. Held through that first part of "track" too, not released the
+      // instant the phase flips:
+      // overshooting the reflected target (see fenceAutopilotPhaseRef's own comment) can leave a
+      // large cross-track error right at handoff, and pure pursuit's own commanded lock right then can
+      // still be close to MAX_LOCK_DEG while it steers hard back toward the line — accelerating out of
+      // the corner *before* that correction has actually started easing off would mean taking the
+      // still-tight remainder of it at speed. fenceTurnedOutRef latches once the commanded lock
+      // actually starts decreasing (see the "track" phase below) — a real driver's cue to get back on
+      // the throttle is the wheel visibly coming off lock, not a phase label.
       // `limiting` tracks whether the clamp actually bit this frame (not just whether the heading
       // is generally aimed at a wall), so the "slowing" indicator below doesn't light up for a bus
       // that's simply parked facing the boundary from a safe distance.
       let limiting = false;
       if (trailModeRef.current) {
-        const capKmh = boundaryGovernorCapKmh(cornersPathDistance(poseRef.current, geomRef.current, trailBoundHalfRef.current));
+        // The backstop assumes whatever curvature it's given holds indefinitely (see
+        // cornersPathDistance's own comment) — true of "turn" (a deliberate, held-constant
+        // MAX_LOCK_DEG commitment) and of a human driver's own steering input, but *not* of "track"'s
+        // pursuit output: that's a momentary correction, recomputed fresh every frame, not something
+        // the bus is actually committed to for more than an instant. Feeding pursuit's live (possibly
+        // still tight, right after a sweep-capped "turn" hands off) curvature into that
+        // forever-projection can find a *different* nearby wall "soon" along the hypothetical circle
+        // and clamp speed for it — a wall pursuit was never actually going to drive into, since it'll
+        // have eased that curvature open well before completing anything like a full lap of it. So
+        // "track" evaluates the backstop against a straight line from the current heading instead
+        // (R: null) — pursuit's actual near-term path is far closer to "heading roughly at the line"
+        // than to "committed to this instant's correction forever," and a straight projection is the
+        // more honest approximation of that, not a weaker safety check.
+        const backstopGeom = fenceAutopilotPhaseRef.current === "track" ? { R: null, bodyCorners: geomRef.current.bodyCorners } : geomRef.current;
+        // BOUNDARY_GOVERNOR_EXTRA_MARGIN stays the pad everywhere it was already used (see its own
+        // comment: empirically swept against dead-on and corner approaches at both crawl and full
+        // speed — it covers genuine discrete-timestep braking overshoot, not a stylistic safety
+        // preference, and going below it was verified to let a corner actually touch a wall). It is
+        // *not* the same number as AUTO_STEER_OVERHANG_CLEARANCE_M, which is how close Fence
+        // Autopilot's own committed, pre-validated "turn" arc *plans* to graze — an earlier version of
+        // this governor swapped the two in for one another here, on the theory that the plain pad was
+        // "too conservative" once Autopilot had already closed the gap; in fact the two numbers answer
+        // different questions (how much integration slop this discrete braking formula needs vs. how
+        // tight a target the *fully pre-validated* "turn" arc picked), and using the smaller one here
+        // let a shallow, near-parallel graze genuinely creep a corner past the boundary over repeated
+        // hand-offs instead of just refusing to (a real breach, not a false stall). "Turn" itself
+        // doesn't need this pad at all — see its own branch below, which skips this check entirely
+        // because reflectionClearanceM already validated the whole committed arc up front, by a margin
+        // of its own, without relying on this discrete brake-to-distance formula's accuracy.
+        let capKmh;
+        if (fenceAutopilotPhaseRef.current === "turn") {
+          // g-force only — see the comment above for why the boundary-distance backstop itself is
+          // skipped here. Full-lock radius, not live geomRef.current.R: for a frame or two right at
+          // engage the wheel is still winding up from whatever angle it held before the turn committed
+          // (see steerWindUpDistanceM), and the g-force limit should reflect the radius the turn is
+          // actually committed to, not that transient one.
+          //
+          // Also capped at TURN_CRAWL_SPEED_KMH itself, not just g-force: the g-force limit alone can
+          // sit *above* crawl speed (a tight enough full-lock radius easily clears 1g at more than
+          // 10km/h), but every distance this phase's own safety budget was built on — the wind-up pad
+          // (steerWindUpDistanceM) and the engage-time clearance check (reflectionClearanceM) both — was
+          // computed assuming TURN_CRAWL_SPEED_KMH specifically. Letting the g-force limit alone govern
+          // would let "turn" quietly run faster than that budget assumed, covering more real distance
+          // per degree turned than the up-front prediction accounted for — a genuine, real drift past
+          // the predicted-safe arc, not just a false alarm, and the actual mechanism behind a corner
+          // reaching the boundary mid-wall (not just at a two-wall corner) during ordinary turn
+          // execution. "Turn" was never meant to be a chance to speed up anyway.
+          capKmh = Math.min(TURN_CRAWL_SPEED_KMH, corneringSpeedCapKmh(fullLockTurnRadiusM(autoSteerDirSignRef.current, LfdRef.current)));
+        } else if (fenceAutopilotPhaseRef.current === "track" && !fenceTurnedOutRef.current) {
+          const boundaryCapKmh = boundaryGovernorCapKmh(cornersPathDistance(poseRef.current, backstopGeom, trailBoundHalfRef.current));
+          capKmh = Math.min(boundaryCapKmh, corneringSpeedCapKmh(geomRef.current.R));
+        } else {
+          // Idle/approach (including "track" once turned out, chaining onto whatever wall comes next):
+          // this plain "brake to a dead stop at the wall" backstop and the crawl-speed-at-the-engage-
+          // point cap below are two *different* plans for the same wall, and — left both active
+          // together — the plain one reaches 0 well before the crawl-speed plan even needs it to. So
+          // it's skipped outright while prospectiveReflection still says a full-lock turn clears the
+          // wall by the bare margin — i.e., while the crawl-speed plan is still live and doesn't need a
+          // second, more conservative plan fighting it for the same speed. Once that stops being true
+          // (no reflection available at all, or even full lock no longer clears), this is exactly the
+          // right backstop to fall back on again.
+          const turnStillAvailable = prospectiveReflection != null && prospectiveReflection.fullLockClearance > AUTO_STEER_OVERHANG_CLEARANCE_M;
+          const boundaryCapKmh = turnStillAvailable ? Infinity : boundaryGovernorCapKmh(cornersPathDistance(poseRef.current, backstopGeom, trailBoundHalfRef.current));
+          const remainingToTrigger = prospectiveReflection != null ? Math.max(0, prospectiveReflection.fullLockClearance - turnEngageClearanceM) : Infinity;
+          capKmh = Math.min(boundaryCapKmh, approachSpeedCapKmh(remainingToTrigger, TURN_CRAWL_SPEED_KMH));
+        }
         if (nextSpeed > capKmh) {
           // Remember the speed to restore to once this cap releases — see preSlowdownSpeedRef's
           // declaration and the restore below. Normally that's just the current (pre-clamp) speed,
@@ -1778,101 +2042,166 @@ export default function BusSteeringSimulator() {
         }
       }
 
-      // "Fence Autopilot" (trail mode only, see the "boundary auto-steer" comment above): while not
-      // already engaged and past both post-disengage cooldowns (AUTO_STEER_COOLDOWN_MS, and the
-      // distance floor for slow corners — see AUTO_STEER_COOLDOWN_MIN_DISTANCE_M), watch for a wall
-      // closing in on the bus's current heading; once engaged, run the continuous steering law
-      // described above every frame until the actual heading has converged on the frozen reflected
-      // target, then hand a centred wheel back to the driver and start the cooldown before it's
-      // allowed to re-arm.
+      // "Fence Autopilot" (trail mode only, see the "boundary auto-steer" comment above): the engage
+      // check watches for the moment a full-lock turn away from the wall ahead stops having room to
+      // spare (with the wind-up-padded margin above) and commits to it, freezing the turn direction,
+      // the target heading, and the reflected centreline all at once; the "turn" phase then holds
+      // full lock until it overshoots that target, and "track" picks up pursuit of the line from
+      // there — indefinitely, since the same engage check keeps running through "track" too and can
+      // fire the next turn directly out of it.
       //
       // Mutually exclusive with ML Autopilot: both would otherwise fight over setSteerInput the
       // instant a trail-mode drive also happened to approach the recording boundary while ML
       // Autopilot was engaged. Treated the same as "trail mode switched off" below — drop out
       // cleanly, leave the wheel where it is, and don't re-arm — since ML Autopilot owning the wheel
-      // isn't "the turn finished," it's a different controller being in charge entirely.
+      // isn't "the manoeuvre finished," it's a different controller being in charge entirely.
       if (!trailModeRef.current || controlModeRef.current === "ml") {
-        // Trail mode turned off (or ML Autopilot took over) mid-turn — the boundary stops existing as
-        // a concept, so just drop out (leave the wheel wherever it was; unlike a normal disengage
-        // below this isn't "the turn finished," it's the feature being switched off, so it shouldn't
-        // yank the wheel too).
-        if (autoSteerActiveRef.current) {
-          autoSteerActiveRef.current = false;
-          setAutoSteerActive(false);
+        // Trail mode turned off (or ML Autopilot took over) mid-manoeuvre — the boundary stops
+        // existing as a concept, so just drop out (leave the wheel wherever it was; unlike a normal
+        // hand-back this isn't "the manoeuvre finished," it's the feature being switched off, so it
+        // shouldn't yank the wheel too).
+        if (fenceAutopilotPhaseRef.current != null) {
+          fenceAutopilotPhaseRef.current = null;
+          setFenceAutopilotPhase(null);
         }
       } else {
-        // AUTO_STEER_COOLDOWN_MIN_DISTANCE_M assumes the bus is free to put distance behind it
-        // before re-arming; at a corner it can disengage right next to the *second* wall, still
-        // governor-capped to ~0 (see the "boundary auto-steer" comment's stall-escape section) —
-        // waiting on 15m of travel it physically cannot make yet would deadlock it right back.
-        // Bypass the distance floor whenever that's the situation; the time floor (AUTO_STEER_COOLDOWN_MS)
-        // still applies either way.
-        const pinnedByGovernor = limiting && nextSpeed < AUTO_STEER_STALL_SPEED_KMH;
-        const clearedCooldownPose =
-          autoSteerCooldownPoseRef.current == null ||
-          pinnedByGovernor ||
-          Math.hypot(poseRef.current.x - autoSteerCooldownPoseRef.current.x, poseRef.current.y - autoSteerCooldownPoseRef.current.y) >= AUTO_STEER_COOLDOWN_MIN_DISTANCE_M;
-        if (!autoSteerActiveRef.current && t >= autoSteerCooldownUntilRef.current && t >= manualSteerUntilRef.current && clearedCooldownPose) {
-          // wall.axis (which side is closing in) still comes from the reference-point heading —
-          // that part doesn't need corner precision, it's just "which of x/y" — but the actual
-          // trigger distance is cornersPathDistance, the same metric the governor uses, so the two
-          // can't disagree about how close is "close enough" — see autoSteerLeadDistance's comment.
-          const wall = boundaryWallAhead(poseRef.current, trailBoundHalfRef.current);
-          const cornerDistance = cornersPathDistance(poseRef.current, geomRef.current, trailBoundHalfRef.current);
-          const leadDistance = autoSteerLeadDistance(nextSpeed);
-          if (cornerDistance < leadDistance) {
-            autoSteerActiveRef.current = true;
-            autoSteerStallSinceRef.current = null;
-            autoSteerTargetThetaRef.current = reflectedHeading(poseRef.current.theta, wall.axis);
-            setAutoSteerActive(true);
-            setAutoSteerEverEngaged(true);
-          }
+        if (fenceAutopilotPhaseRef.current !== "turn" && t >= manualSteerUntilRef.current && prospectiveReflection != null && prospectiveReflection.fullLockClearance <= turnEngageClearanceM) {
+          const { wall, prospectiveTarget, dirSign } = prospectiveReflection;
+          // A fresh engagement (phase was idle) starts the stall clock clean; a *chained* one (phase
+          // was already "track", picking up the next wall the reflected line runs toward) leaves
+          // whatever count is already running alone. Otherwise a reflection the bus can engage but
+          // never actually clear — nothing physically stops it re-satisfying this same condition one
+          // frame after "track" hands off, over and over, pinned at the same spot — would reset this
+          // clock every single time it re-engages, and the 2-second giveup below could never
+          // accumulate: exactly the livelock stall-giveup exists to catch, just approached repeatedly
+          // instead of continuously. Chaining onto a wall the bus is actually clearing (the normal
+          // case) still starts each visit's own turn/track work fresh — only this clock carries over.
+          const freshEngage = fenceAutopilotPhaseRef.current == null;
+          autoSteerDirSignRef.current = dirSign;
+          // "Turn" only commits to sweeping up to AUTO_STEER_MAX_TURN_SWEEP_DEG of the full
+          // reflection itself — see that constant's own comment — with "track" picking up pursuit of
+          // the real fenceLineRef.theta (set below, unchanged) for whatever's left.
+          const fullSweepRad = wrapAngle(prospectiveTarget - poseRef.current.theta);
+          const turnSweepRad = Math.sign(fullSweepRad) * Math.min(Math.abs(fullSweepRad), toRad(AUTO_STEER_MAX_TURN_SWEEP_DEG));
+          autoSteerTurnTargetThetaRef.current = poseRef.current.theta + turnSweepRad;
+          if (freshEngage) autoSteerStallSinceRef.current = null;
+          // fencePrevLineRef keeps the *outgoing* line of the previous engagement (if any) around
+          // purely for the "turn"-phase map display — the two lines together are the reflection
+          // diagram (see the map render). fenceTurnedOutRef/fenceLastCommandedLockRef reset for the
+          // new engagement — see the governor's own comment on why acceleration waits for a
+          // commanded-lock decrease, not just for "track" phase to start.
+          fencePrevLineRef.current = fenceLineRef.current;
+          fenceLineRef.current = { anchor: boundaryCrossingPoint(poseRef.current, wall), theta: prospectiveTarget };
+          fenceTurnedOutRef.current = false;
+          fenceLastCommandedLockRef.current = MAX_LOCK_DEG;
+          // Already within the rollout margin of its own target the instant it would engage (a
+          // shallow, near-parallel graze) — "turn" would have nothing to do before immediately handing
+          // back to "track" anyway (see the rollout check just below), so skip committing to it at all
+          // rather than swinging the wheel over for a single frame first. Falls through to the "track"
+          // block below, same as a normal rollout handoff.
+          const shallow = Math.abs(toDeg(turnSweepRad)) <= AUTO_STEER_ROLLOUT_MARGIN_DEG;
+          fenceAutopilotPhaseRef.current = shallow ? "track" : "turn";
+          setFenceAutopilotPhase(fenceAutopilotPhaseRef.current);
+          setAutoSteerEverEngaged(true);
         }
-        if (autoSteerActiveRef.current) {
-          const errorDeg = toDeg(wrapAngle(autoSteerTargetThetaRef.current - poseRef.current.theta));
-          const finishEngagement = () => {
-            autoSteerActiveRef.current = false;
-            autoSteerStallSinceRef.current = null;
-            autoSteerCooldownUntilRef.current = t + AUTO_STEER_COOLDOWN_MS;
-            autoSteerCooldownPoseRef.current = { x: poseRef.current.x, y: poseRef.current.y };
-            setAutoSteerActive(false);
-            // Owns appliedSteerRef directly all engagement (see the "boundary auto-steer" comment
-            // above) and never calls setSteerInput meanwhile, so that state is stale here — sync it
-            // to the wheel's actual current angle before handing control back, same fix
-            // exitMlAutopilot applies and for the same reason (see its own comment).
-            setSteerInput(appliedSteerRef.current);
-          };
 
-          // Stall give-up — see AUTO_STEER_STALL_GIVEUP_MS's comment above. `limiting` means the
-          // boundary governor is actually the thing holding speed down this frame, not just a slow
-          // approach; require that plus a sustained near-0 speed before treating it as a real stall,
-          // not a single-frame blip.
-          const stalled = nextSpeed < AUTO_STEER_STALL_SPEED_KMH && limiting;
+        if (fenceAutopilotPhaseRef.current === "turn") {
+          const errorDeg = toDeg(wrapAngle(autoSteerTurnTargetThetaRef.current - poseRef.current.theta));
+
+          // Stall give-up — see AUTO_STEER_STALL_GIVEUP_MS's comment above. Watches realizedSpeedKmhRef
+          // (what actually got integrated last frame — see its own comment), not the governor's
+          // commanded nextSpeed/limiting: a two-wall jam is one way to end up not actually moving, but
+          // the last-resort boundary clamp (clampStepToBoundary) can also shrink a step to nothing
+          // while the governor itself never felt the need to limit anything — that's still a real
+          // stall from the bus's point of view, and needs the same 2-second give-up.
+          const stalled = realizedSpeedKmhRef.current < AUTO_STEER_STALL_SPEED_KMH;
           if (stalled) {
             if (autoSteerStallSinceRef.current == null) autoSteerStallSinceRef.current = t;
           } else {
             autoSteerStallSinceRef.current = null;
           }
           const stalledOut = autoSteerStallSinceRef.current != null && t - autoSteerStallSinceRef.current >= AUTO_STEER_STALL_GIVEUP_MS;
+          // "Turn" hands off once it's within AUTO_STEER_ROLLOUT_MARGIN_DEG of its own (possibly
+          // capped — see AUTO_STEER_MAX_TURN_SWEEP_DEG) target, *before* actually crossing it — an
+          // undershoot, not an overshoot. A real driver winding off a hard lock doesn't hold it to the
+          // exact instant they cross their intended line and correct back from the far side; they
+          // start rolling the wheel back tangential to it a little early, arriving already easing out.
+          // Pure pursuit picks up from there and closes whatever's left of the angle smoothly — see
+          // pursuitDeltaFDeg — rather than "turn" itself ever needing to cross the line to know it's
+          // done. (Checked as a magnitude, not a one-sided threshold, so a shallow reflection whose
+          // full sweep never exceeds the margin still hands off correctly rather than never triggering.)
+          const rolledOut = Math.abs(errorDeg) <= AUTO_STEER_ROLLOUT_MARGIN_DEG;
 
-          const onTarget = Math.abs(errorDeg) < AUTO_STEER_FINAL_TOLERANCE_DEG;
-          const settled = Math.abs(appliedSteerRef.current) < AUTO_STEER_SETTLED_DEG;
-          if ((onTarget && settled) || stalledOut) {
-            finishEngagement();
+          if (stalledOut) {
+            // Genuine two-wall jam — holding full lock harder can't help (see
+            // AUTO_STEER_STALL_GIVEUP_MS's comment); give the wheel back rather than sitting on it.
+            // The same quiet period a human grabbing the wheel gets (MANUAL_STEER_QUIET_MS) applies
+            // here too: without it, the engage check below sees the identical, unchanged geometry one
+            // frame later and re-commits to the exact same manoeuvre immediately — not a fresh attempt,
+            // just the same failed one again, forever. A real stuck condition (nothing physically
+            // changed) won't be fixed by retrying instantly, and this at least gives whoever's watching
+            // a stable "control handed back" moment instead of an imperceptible flicker.
+            fenceAutopilotPhaseRef.current = null;
+            autoSteerStallSinceRef.current = null;
+            manualSteerUntilRef.current = t + MANUAL_STEER_QUIET_MS;
+            setFenceAutopilotPhase(null);
+            setSteerInput(appliedSteerRef.current);
+          } else if (rolledOut) {
+            fenceAutopilotPhaseRef.current = "track";
+            setFenceAutopilotPhase("track");
+            // Falls through to the "track" branch below, which picks up pursuit this same frame
+            // rather than leaving one frame with no steering command at all.
           } else {
-            // errorDeg>0 means theta needs to increase to reach the target; steerInput>0 ->
-            // deltaFdeg<0 -> theta decreases (see deltaFdeg's declaration above), so closing a
-            // positive error needs a negative steerInput — hence the sign flip here.
-            const dirSign = -(Math.sign(errorDeg) || 1);
-            const wall = boundaryWallAhead(poseRef.current, trailBoundHalfRef.current);
-            const aimLockDeg = autoSteerAimLockDeg(errorDeg, wall.distance, LfdRef.current);
-            const safeLockDeg = minClearanceLockDeg(poseRef.current, geomRef.current.bodyCorners, LfdRef.current, dirSign, trailBoundHalfRef.current);
-            const lockDeg = Math.min(MAX_LOCK_DEG, Math.max(aimLockDeg, safeLockDeg));
-            const target = dirSign * lockDeg;
-
+            const target = autoSteerDirSignRef.current * MAX_LOCK_DEG;
             // Owns the rate-limited ramp directly rather than going through setSteerInput/
             // appliedSteerRef's own chase effect — same reason and same pattern as the ML Autopilot
             // effect above (see the "boundary auto-steer" comment for the race this avoids).
+            const current = appliedSteerRef.current;
+            const diff = target - current;
+            const maxStep = steerRampRate(Math.abs(current)) * dt;
+            const next = Math.abs(diff) <= maxStep ? target : current + Math.sign(diff) * maxStep;
+            appliedSteerRef.current = next;
+            setAppliedSteerInput(next);
+          }
+        }
+
+        if (fenceAutopilotPhaseRef.current === "track") {
+          // Same stall give-up as "turn" (see its own comment on why realizedSpeedKmhRef, not the
+          // governor's commanded speed) — pure pursuit has no idea the boundary exists at all, so if
+          // the reflected line happens to run back toward a wall (a tight corner right after a bounce,
+          // most often), the governor's own boundary-distance backstop, or the last-resort boundary
+          // clamp beneath it, can pin real progress at 0 indefinitely while pursuit just keeps
+          // commanding the same lock, with nothing about that situation ever changing on its own.
+          // Sharing the ref with "turn" means a stall that started there and never let up carries its
+          // clock over rather than resetting.
+          const stalled = realizedSpeedKmhRef.current < AUTO_STEER_STALL_SPEED_KMH;
+          if (stalled) {
+            if (autoSteerStallSinceRef.current == null) autoSteerStallSinceRef.current = t;
+          } else {
+            autoSteerStallSinceRef.current = null;
+          }
+          const stalledOut = autoSteerStallSinceRef.current != null && t - autoSteerStallSinceRef.current >= AUTO_STEER_STALL_GIVEUP_MS;
+          if (stalledOut) {
+            // See the "turn" branch's own comment on why this also gets the manual quiet period —
+            // same reasoning applies here: pursuit's unchanged target line will otherwise re-trigger
+            // the identical engage next frame.
+            fenceAutopilotPhaseRef.current = null;
+            autoSteerStallSinceRef.current = null;
+            manualSteerUntilRef.current = t + MANUAL_STEER_QUIET_MS;
+            setFenceAutopilotPhase(null);
+            setSteerInput(appliedSteerRef.current);
+          } else {
+            const lookahead = Math.max(PURSUIT_MIN_LOOKAHEAD_M, (speedRef.current / 3.6) * PURSUIT_LOOKAHEAD_TIME_S);
+            const deltaFdeg = pursuitDeltaFDeg(poseRef.current, fenceLineRef.current, LfdRef.current, lookahead);
+            const target = Math.max(-MAX_LOCK_DEG, Math.min(MAX_LOCK_DEG, -deltaFdeg));
+            // See fenceTurnedOutRef's declaration and the governor's own comment: latches the instant
+            // pursuit's own commanded lock actually starts easing off, rather than the instant "track"
+            // merely began — that's what lets the speed cap above hold through whatever's left of the
+            // hard part of the correction instead of releasing on the phase label alone.
+            if (!fenceTurnedOutRef.current && Math.abs(target) < fenceLastCommandedLockRef.current) {
+              fenceTurnedOutRef.current = true;
+            }
+            fenceLastCommandedLockRef.current = Math.abs(target);
             const current = appliedSteerRef.current;
             const diff = target - current;
             const maxStep = steerRampRate(Math.abs(current)) * dt;
@@ -1893,14 +2222,29 @@ export default function BusSteeringSimulator() {
         const v = (speedRef.current * 1000) / 3600;
         const omega = g.isStraight ? 0 : v / g.R;
         const prev = poseRef.current;
-        const next = {
+        let next = {
           x: prev.x + v * dt * Math.cos(prev.theta),
           y: prev.y + v * dt * Math.sin(prev.theta),
           theta: prev.theta + omega * dt,
         };
+        // See clampStepToBoundary's own comment: the governor above is a set of predictions, not a
+        // guarantee, so this is the actual guarantee — trail mode's mapped area is never left, no
+        // matter which prediction turned out to be wrong this frame. realizedSpeedKmhRef records what
+        // actually got through, in case the clamp had to shrink the step to (near) nothing — see that
+        // ref's own comment for why the stall check below watches this instead of the commanded speed.
+        if (trailModeRef.current) {
+          const clampedNext = clampStepToBoundary(prev, next, g.bodyCorners, trailBoundHalfRef.current);
+          const achievedDist = Math.hypot(clampedNext.x - prev.x, clampedNext.y - prev.y);
+          realizedSpeedKmhRef.current = dt > 0 ? (achievedDist / dt) * 3.6 : 0;
+          next = clampedNext;
+        } else {
+          realizedSpeedKmhRef.current = speedRef.current;
+        }
         poseRef.current = next;
         setPose(next);
         maybeSampleTrail(next, g);
+      } else {
+        realizedSpeedKmhRef.current = 0;
       }
       rafRef.current = requestAnimationFrame(step);
     }
@@ -2412,6 +2756,82 @@ export default function BusSteeringSimulator() {
             <polygon points={mapBoundaryPoints(displayedView, trailBoundHalf)} fill="none" stroke={COL.trail} strokeWidth="1.4" strokeDasharray="12 8" opacity="0.5" />
           )}
 
+          {/* Fence Autopilot's target point: while not mid-turn *and not still recovering from one*,
+              the live intersection of the bus's current heading with the boundary (white, moving
+              every frame as the heading changes — see boundaryWallAhead/boundaryCrossingPoint).
+              "Turn" phase freezes it red at fenceLineRef.anchor (the same point, just no longer
+              live-updating) and holds it there through the rest of "track" too, until the bus is
+              actually back on the line (crossTrackDistanceM under FENCE_CONVERGED_CROSS_TRACK_M) —
+              overshoot is the whole point of "turn" (see the "boundary auto-steer" comment above), so
+              the target that produced it stays meaningful for a while after "turn" itself ends, not
+              just up to the phase-label change. Once converged, this block re-evaluates fresh off the
+              bus's current (now line-aligned) heading — the old frozen point simply stops being drawn
+              as a new live (white) one takes its place for whatever wall is next; no explicit "remove"
+              step needed. The dashed line from the bus to it only appears once the approach governor
+              actually starts slowing the bus down for it, or during this whole frozen/recovering
+              window — not for the ordinary case of a wall existing somewhere off in the distance the
+              current heading happens to point at.
+              While frozen, the *outgoing* reflected line the bus is turning onto (fenceLineRef) also
+              shows, grey, for as long as the marker itself stays frozen — it's the course "track" is
+              actually trying to acquire, so it stays meaningful for exactly as long as that acquiring
+              is still in progress, same as the marker. The *incoming* line the bus was tracking before
+              this bounce (fencePrevLineRef — absent for the very first bounce of a session, nothing to
+              show yet) is shorter-lived: it's only there to complete the reflection diagram while the
+              turn itself is actually happening, so it's gone as soon as "turn" is. Both drawn as full
+              construction lines through the anchor, not just rays, via extendedLineEndpoints.
+              The instant the reflected course is determined (frozen becomes true), a second marker
+              (white — it isn't being actively braked or turned for *yet*) appears where that course
+              will in turn hit the far side of the boundary, a preview of the next bounce rather than
+              something computed fresh only once the bus actually gets there. The dashed line from the
+              bus is reserved for the near marker, and only while braking or the turn itself is actually
+              under way — not through the rest of "track," where the marker stays frozen for display
+              but nothing is actively being steered or slowed for it any more. */}
+          {trailMode && (() => {
+            const converged = fenceAutopilotPhase === "track" && fenceLineRef.current && crossTrackDistanceM(pose, fenceLineRef.current) < FENCE_CONVERGED_CROSS_TRACK_M;
+            const frozen = fenceLineRef.current && (fenceAutopilotPhase === "turn" || (fenceAutopilotPhase === "track" && !converged));
+            const targetWorld = frozen
+              ? fenceLineRef.current.anchor
+              : (() => {
+                  const wall = boundaryWallAhead(pose, trailBoundHalf);
+                  return Number.isFinite(wall.distance) ? boundaryCrossingPoint(pose, wall) : null;
+                })();
+            if (!targetWorld) return null;
+            const color = frozen ? COL.alert : COL.outline;
+            const p = toScreen(displayedView, targetWorld);
+            const r = 3.5; // half of the requested 7px X
+            const cross = (x, y, strokeColor) => (
+              <g>
+                <line x1={x - r} y1={y - r} x2={x + r} y2={y + r} stroke={strokeColor} strokeWidth="2" />
+                <line x1={x - r} y1={y + r} x2={x + r} y2={y - r} stroke={strokeColor} strokeWidth="2" />
+              </g>
+            );
+            return (
+              <g>
+                {fenceAutopilotPhase === "turn" && fencePrevLineRef.current && (() => {
+                  const [a, b] = extendedLineEndpoints(fencePrevLineRef.current, trailBoundHalf * 3).map((w) => toScreen(displayedView, w));
+                  return <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={COL.constructionGrey} strokeWidth="1.2" strokeDasharray="9 7" opacity="0.6" />;
+                })()}
+                {frozen && (() => {
+                  const [a, b] = extendedLineEndpoints(fenceLineRef.current, trailBoundHalf * 3).map((w) => toScreen(displayedView, w));
+                  return <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={COL.constructionGrey} strokeWidth="1.2" strokeDasharray="9 7" opacity="0.6" />;
+                })()}
+                {frozen && (() => {
+                  const line = fenceLineRef.current;
+                  const wall = boundaryWallAhead({ x: line.anchor.x, y: line.anchor.y, theta: line.theta }, trailBoundHalf);
+                  if (!Number.isFinite(wall.distance)) return null;
+                  const opposingWorld = boundaryCrossingPoint({ x: line.anchor.x, y: line.anchor.y, theta: line.theta }, wall);
+                  const op = toScreen(displayedView, opposingWorld);
+                  return cross(op.x, op.y, COL.outline);
+                })()}
+                {(boundaryLimiting || fenceAutopilotPhase === "turn") && (() => {
+                  const busScreen = toScreen(displayedView, pose);
+                  return <line x1={busScreen.x} y1={busScreen.y} x2={p.x} y2={p.y} stroke={color} strokeWidth="1.4" strokeDasharray="6 5" opacity="0.8" />;
+                })()}
+                {cross(p.x, p.y, color)}
+              </g>
+            );
+          })()}
+
           {/* single-corner test course (see src/course.js) — same straight/arc/straight lane the
               headless ML env's off-track check uses, drawn as painted road-edge lines so a human can
               see and drive the identical course a trained policy will eventually be scored on.
@@ -2771,20 +3191,20 @@ export default function BusSteeringSimulator() {
           </div>
         )}
         {/* Shown whenever the boundary speed governor (see boundaryGovernorCapKmh) is actively
-            reducing speed this frame — suppressed once trailPaused or auto-steer takes over (i.e.
-            the boundary's already been reached, or the bus is already being turned away from it),
+            reducing speed this frame — suppressed once trailPaused or Fence Autopilot takes over
+            (i.e. the boundary's already been reached, or the bus is already turning away from it),
             so only one of the three indicators shows at a time. */}
-        {trailMode && boundaryLimiting && !trailPaused && !autoSteerActive && (
+        {trailMode && boundaryLimiting && !trailPaused && !fenceAutopilotPhase && (
           <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.trail, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
             Approaching mapped area limit — slowing
           </div>
         )}
         {/* Shown whenever "Fence Autopilot" — the user-facing name for the boundary auto-steer (see
-            "boundary auto-steer" above) — is actively turning the bus away from the mapped-area wall
-            it was closing in on. */}
-        {trailMode && autoSteerActive && !trailPaused && (
+            "boundary auto-steer" above) — is turning the bus away from a mapped-area wall ("turn"
+            phase) or tracking the reflected line afterward ("track" phase). */}
+        {trailMode && fenceAutopilotPhase && !trailPaused && (
           <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.trail, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
-            Fence Autopilot — steering away from mapped area limit
+            Fence Autopilot — {fenceAutopilotPhase === "turn" ? "steering away from mapped area limit" : "tracking reflected line"}
           </div>
         )}
         {/* Day-to-day driving is the up/down arrow keys (see the drive-loop physics above); this
@@ -2851,10 +3271,10 @@ export default function BusSteeringSimulator() {
           <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
             <div style={{ flex: 1, minWidth: 0 }}>
               <SteeringWheel angleDeg={appliedSteerInput} />
-              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }} accent={COL.front} large />
+              <SteppedSlider label="Front steer input (+ = right / offside)" unit="°" value={steerInput} steps={STEER_STEPS} onChange={(v) => { if (fenceAutopilotPhaseRef.current === "turn") return; exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }} accent={COL.front} large />
               <div style={{ display: "flex", gap: 8, justifyContent: "center", marginTop: 4 }}>
                 {[["Lock ←", -50, "Full lock left"], ["Straight", 0, "Straight"], ["Lock →", 50, "Full lock right"]].map(([lbl, v, title]) => (
-                  <button key={lbl} title={title} className="btn" style={{ flex: "1 1 0", fontSize: 12, padding: "4px 4px", whiteSpace: "nowrap" }} onClick={() => { exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }}>{lbl}</button>
+                  <button key={lbl} title={title} className="btn" style={{ flex: "1 1 0", fontSize: 12, padding: "4px 4px", whiteSpace: "nowrap" }} onClick={() => { if (fenceAutopilotPhaseRef.current === "turn") return; exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }}>{lbl}</button>
                 ))}
               </div>
             </div>
@@ -2871,8 +3291,8 @@ export default function BusSteeringSimulator() {
               <div style={{ display: "flex", gap: 14, marginTop: 6 }}>
                 <HeadingReadout
                   label="Desired"
-                  value={autoSteerEverEngaged ? fmt(headingDegDisplay(autoSteerTargetThetaRef.current), 1) + "°" : "—"}
-                  accent={autoSteerActive ? COL.trail : COL.textDim}
+                  value={autoSteerEverEngaged ? fmt(headingDegDisplay(fenceLineRef.current.theta), 1) + "°" : "—"}
+                  accent={fenceAutopilotPhase ? COL.trail : COL.textDim}
                 />
                 <HeadingReadout label="Actual" value={fmt(headingDegDisplay(pose.theta), 1) + "°"} />
               </div>
