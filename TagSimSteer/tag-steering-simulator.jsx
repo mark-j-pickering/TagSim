@@ -723,43 +723,17 @@ function cornersPathDistance(pose, geom, trailBoundHalf) {
   return min;
 }
 
-// True if every body corner at `pose` is within the trailBoundHalf square — the actual "did we
-// breach" test used by clampStepToBoundary below.
-function allBodyCornersWithin(pose, bodyCorners, trailBoundHalf) {
+// True if every body corner at `pose` is outside the trailBoundHalf square — the bus has fully left
+// the mapped area, not just overhung one corner of it mid-turn (which is tolerated: only a complete
+// exit triggers the drive loop's auto-cancel-and-stop, see its own comment at the call site). Trail
+// mode no longer clamps the bus's position to stay inside the boundary at all — see the "Fence
+// Autopilot" comment above for why that hard invariant was replaced with this softer response.
+function allBodyCornersOutside(pose, bodyCorners, trailBoundHalf) {
   for (const key of ["FL", "FR", "RL", "RR"]) {
     const p = poseTransform(bodyCorners[key], pose);
-    if (Math.abs(p.x) > trailBoundHalf || Math.abs(p.y) > trailBoundHalf) return false;
+    if (Math.abs(p.x) <= trailBoundHalf && Math.abs(p.y) <= trailBoundHalf) return false;
   }
   return true;
-}
-
-// Last-resort backstop for the one physics step the drive loop is about to take: the speed governor
-// above is a set of closed-form *predictions* (brake-to-a-distance formulas, a bounded-arc sample at
-// engage time, a straight-line projection during "track") about how close a corner will come to the
-// boundary — good enough to keep ordinary driving smooth, but, as their own comments note, each is an
-// approximation with its own blind spot (discrete-timestep braking overshoot, a shallow reflection
-// nibbling its own graze margin down over repeated hand-offs, and so on). Rather than chase every such
-// blind spot one at a time, this makes the actual boundary an invariant the integration step itself
-// can't violate: if the plain step (`next`) would still land a corner outside, shrink it — bisecting
-// the fraction of *this one step* actually taken, since `next` is already this integrator's own
-// straight-chord approximation of the frame's motion (see the call site), not a true arc — until every
-// corner is back within bounds, or until even a fraction of a step doesn't move it (already breached
-// coming in, e.g. from a save file or a future governor bug; don't compound it further). This is a
-// backstop, not the primary defence — it should bite rarely, and only ever by a hair.
-function clampStepToBoundary(prev, next, bodyCorners, trailBoundHalf) {
-  if (allBodyCornersWithin(next, bodyCorners, trailBoundHalf)) return next;
-  if (!allBodyCornersWithin(prev, bodyCorners, trailBoundHalf)) return prev;
-  const at = (f) => ({
-    x: prev.x + (next.x - prev.x) * f,
-    y: prev.y + (next.y - prev.y) * f,
-    theta: prev.theta + wrapAngle(next.theta - prev.theta) * f,
-  });
-  let lo = 0, hi = 1;
-  for (let i = 0; i < 20; i++) {
-    const mid = (lo + hi) / 2;
-    if (allBodyCornersWithin(at(mid), bodyCorners, trailBoundHalf)) lo = mid; else hi = mid;
-  }
-  return at(lo);
 }
 
 // Maximum speed (km/h) the governor allows at the given remaining path-distance to the boundary.
@@ -821,6 +795,20 @@ function corneringSpeedCapKmh(R) {
 // its own, independently-verified cycle when its own turn comes.
 //
 // Trail-mode only, same as the governor — the boundary is a trail-mode-only concept.
+//
+// The boundary itself is advisory, not a wall the physics enforces: the drive loop no longer clamps
+// position to stay inside it (see allBodyCornersOutside's own comment) — a bad prediction, a shallow
+// grazing reflection, or a corner tighter than the bus can turn out of can all still genuinely drive
+// it past an edge, and that's allowed to happen. What the drive loop does instead is watch for the
+// bus having left *entirely* (every body corner outside, not just one mid-turn overhang) and, on that
+// transition, force-cancel whatever phase was running and auto-brake to a stop — see the drive loop's
+// own comment at the pose-integration step.
+//
+// The whole system (governor braking and turn/track steering both) also has an explicit master
+// on/off, fenceAutopilotEnabledRef — on by default, off after the driver hits 'C' ("Cancel
+// Autosteer", interrupts even "turn") until 'R' re-arms it. Distinct from cancelFenceAutopilot's
+// existing implicit cancel-on-steering-input (which only ever pauses the *current* manoeuvre and
+// self re-arms after MANUAL_STEER_QUIET_MS): 'C' is a deliberate, sticky kill switch.
 const TURN_CRAWL_SPEED_KMH = 10;
 
 // Maximum speed (km/h) allowed `distance` metres out from a point the bus needs to be doing
@@ -1404,6 +1392,10 @@ export default function BusSteeringSimulator() {
   // Mirrors fenceAutopilotPhaseRef, only for display — null, "turn", or "track"; see the "boundary
   // auto-steer" comment above for what each phase does.
   const [fenceAutopilotPhase, setFenceAutopilotPhase] = useState(null);
+  // Mirrors fenceAutopilotEnabledRef, only for display — the master on/off for the whole Fence
+  // Autopilot system (governor braking and turn/track steering both), on by default. 'C' turns it
+  // off (and force-cancels any in-progress phase); 'R' turns it back on — see those keydown handlers.
+  const [fenceAutopilotEnabled, setFenceAutopilotEnabled] = useState(true);
   // Once true, stays true for the rest of the session — lets the Desired Heading readout keep
   // showing the last computed target (dimmed) between engagements instead of "—", while still
   // reading "—" before the very first engagement, when fenceLineRef is still unset.
@@ -1414,8 +1406,10 @@ export default function BusSteeringSimulator() {
   const trailPausedRef = useRef(false);
   const boundaryLimitingRef = useRef(false);
   const fenceAutopilotPhaseRef = useRef(null); // null | "turn" | "track" — see the "boundary auto-steer" comment above
+  const fenceAutopilotEnabledRef = useRef(true); // live source of truth for fenceAutopilotEnabled (state above mirrors it for display) — gates both the governor and the engage check in the drive loop; see the C/R keydown handlers
+  const fullyOutsideBoundaryRef = useRef(false); // edge-detector for "the bus has just fully left the mapped area" (all 4 body corners outside) — see the drive loop's own comment on why this fires once per crossing, not every frame spent outside
   const autoSteerStallSinceRef = useRef(null); // rAF timestamp (ms) the current stall started, or null — see AUTO_STEER_STALL_SPEED_KMH/AUTO_STEER_STALL_GIVEUP_MS
-  const realizedSpeedKmhRef = useRef(0); // last frame's *actually achieved* speed (arc length actually integrated / dt) — see clampStepToBoundary's call site; can read well below the governor's own commanded speedRef when the boundary clamp had to shrink the step, which the stall check below watches for precisely because the governor itself has no idea that happened
+  const realizedSpeedKmhRef = useRef(0); // last frame's actually-integrated speed (arc length actually integrated / dt) — the stall check below watches this rather than the governor's commanded speed
   const autoSteerDirSignRef = useRef(1); // turn direction, frozen at engage — see reflectionDirSign's own comment
   const autoSteerTurnTargetThetaRef = useRef(0); // "turn" phase's own target — fenceLineRef.theta capped by AUTO_STEER_MAX_TURN_SWEEP_DEG, not the full reflection; "track" still pursues the real fenceLineRef.theta once handed off
   const fenceLineRef = useRef(null); // { anchor:{x,y}, theta } — the reflected centreline "track" phase pursues; see boundaryCrossingPoint. Only ever replaced by a new engagement, never nulled back out — the Desired Heading readout reads it unconditionally whenever autoSteerEverEngaged is true.
@@ -1439,6 +1433,15 @@ export default function BusSteeringSimulator() {
   // anyway (the slider, the lock/straight buttons) — this just gets overwritten a moment later then.
   function cancelFenceAutopilot() {
     if (fenceAutopilotPhaseRef.current === "turn") return;
+    forceCancelFenceAutopilot();
+  }
+
+  // Shared body behind cancelFenceAutopilot (which refuses to interrupt "turn" — see its own
+  // comment) and the explicit 'C' "Cancel Autosteer" key / the full-boundary-exit auto-stop below,
+  // both of which *do* need to interrupt "turn": a driver hitting a dedicated cancel key, or the bus
+  // having already left the mapped area entirely, both call for handing the wheel back immediately
+  // rather than letting a committed turn keep running.
+  function forceCancelFenceAutopilot() {
     manualSteerUntilRef.current = performance.now() + MANUAL_STEER_QUIET_MS;
     if (fenceAutopilotPhaseRef.current != null) {
       fenceAutopilotPhaseRef.current = null;
@@ -1723,6 +1726,24 @@ export default function BusSteeringSimulator() {
         // like Bus/Circle/'B' already do, rather than freezing a one-shot snapshot.
         e.preventDefault();
         selectViewModeRef.current("trail");
+      } else if (e.key.toLowerCase() === "c" && !e.repeat) {
+        // Explicit "Cancel Autosteer" override. Distinct from cancelFenceAutopilot (called
+        // automatically by ordinary steering input, see below): this is a dedicated kill switch, so
+        // it interrupts even the "turn" phase (forceCancelFenceAutopilot, not cancelFenceAutopilot)
+        // and disables the whole Fence Autopilot system — governor braking as well as turn/track
+        // steering — until 'R' re-arms it. 'A' was already taken by the trail-view-mode shortcut
+        // above, hence 'R' ("re-arm") rather than the more obvious 'A' ("autosteer, on").
+        e.preventDefault();
+        fenceAutopilotEnabledRef.current = false;
+        setFenceAutopilotEnabled(false);
+        forceCancelFenceAutopilot();
+      } else if (e.key.toLowerCase() === "r" && !e.repeat) {
+        // Re-arm Fence Autopilot after an explicit 'C' cancel. On by default, so this only matters
+        // after 'C' — doesn't force an immediate engagement, just lets the ordinary per-frame engage
+        // check (see the "boundary auto-steer" comment) resume evaluating from here on.
+        e.preventDefault();
+        fenceAutopilotEnabledRef.current = true;
+        setFenceAutopilotEnabled(true);
       } else if (e.key.toLowerCase() === "m" && !e.repeat) {
         // Switch to the "grid" view mode: frames the current S/M/L boundary square. Trail-mode only
         // — the boundary isn't a concept outside it (same gating the governor/auto-steer use).
@@ -1892,7 +1913,7 @@ export default function BusSteeringSimulator() {
       // what lets a wall the reflected line runs toward re-trigger this same cycle (see the "boundary
       // auto-steer" comment above on chaining).
       let prospectiveReflection = null;
-      if (trailModeRef.current && fenceAutopilotPhaseRef.current !== "turn") {
+      if (trailModeRef.current && fenceAutopilotEnabledRef.current && fenceAutopilotPhaseRef.current !== "turn") {
         const wall = boundaryWallAhead(poseRef.current, trailBoundHalfRef.current);
         const prospectiveTarget = reflectedHeading(poseRef.current.theta, wall.axis);
         const dirSign = reflectionDirSign(toDeg(wrapAngle(prospectiveTarget - poseRef.current.theta)));
@@ -1953,7 +1974,7 @@ export default function BusSteeringSimulator() {
       // is generally aimed at a wall), so the "slowing" indicator below doesn't light up for a bus
       // that's simply parked facing the boundary from a safe distance.
       let limiting = false;
-      if (trailModeRef.current) {
+      if (trailModeRef.current && fenceAutopilotEnabledRef.current) {
         // The backstop assumes whatever curvature it's given holds indefinitely (see
         // cornersPathDistance's own comment) — true of "turn" (a deliberate, held-constant
         // MAX_LOCK_DEG commitment) and of a human driver's own steering input, but *not* of "track"'s
@@ -2058,14 +2079,16 @@ export default function BusSteeringSimulator() {
       //
       // Mutually exclusive with ML Autopilot: both would otherwise fight over setSteerInput the
       // instant a trail-mode drive also happened to approach the recording boundary while ML
-      // Autopilot was engaged. Treated the same as "trail mode switched off" below — drop out
-      // cleanly, leave the wheel where it is, and don't re-arm — since ML Autopilot owning the wheel
-      // isn't "the manoeuvre finished," it's a different controller being in charge entirely.
-      if (!trailModeRef.current || controlModeRef.current === "ml") {
-        // Trail mode turned off (or ML Autopilot took over) mid-manoeuvre — the boundary stops
+      // Autopilot was engaged. Treated the same as "trail mode switched off"/"explicitly disabled"
+      // below — drop out cleanly, leave the wheel where it is, and don't re-arm — since ML Autopilot
+      // owning the wheel isn't "the manoeuvre finished," it's a different controller being in charge
+      // entirely.
+      if (!trailModeRef.current || controlModeRef.current === "ml" || !fenceAutopilotEnabledRef.current) {
+        // Trail mode turned off, ML Autopilot took over, or the driver hit 'C' — the boundary stops
         // existing as a concept, so just drop out (leave the wheel wherever it was; unlike a normal
         // hand-back this isn't "the manoeuvre finished," it's the feature being switched off, so it
-        // shouldn't yank the wheel too).
+        // shouldn't yank the wheel too). The 'C' key itself already force-cancels immediately (see
+        // its keydown handler) — this is just the loop staying out of the way afterward.
         if (fenceAutopilotPhaseRef.current != null) {
           fenceAutopilotPhaseRef.current = null;
           setFenceAutopilotPhase(null);
@@ -2115,11 +2138,10 @@ export default function BusSteeringSimulator() {
           const errorDeg = toDeg(wrapAngle(autoSteerTurnTargetThetaRef.current - poseRef.current.theta));
 
           // Stall give-up — see AUTO_STEER_STALL_GIVEUP_MS's comment above. Watches realizedSpeedKmhRef
-          // (what actually got integrated last frame — see its own comment), not the governor's
-          // commanded nextSpeed/limiting: a two-wall jam is one way to end up not actually moving, but
-          // the last-resort boundary clamp (clampStepToBoundary) can also shrink a step to nothing
-          // while the governor itself never felt the need to limit anything — that's still a real
-          // stall from the bus's point of view, and needs the same 2-second give-up.
+          // (what actually got integrated last frame — see its own comment) rather than the
+          // governor's commanded nextSpeed/limiting, since an extreme-geometry corner (the box
+          // smaller than the turning circle) can pin the g-force-limited crawl speed itself near zero
+          // even though the governor never felt the need to actively limit anything.
           const stalled = realizedSpeedKmhRef.current < AUTO_STEER_STALL_SPEED_KMH;
           if (stalled) {
             if (autoSteerStallSinceRef.current == null) autoSteerStallSinceRef.current = t;
@@ -2228,23 +2250,29 @@ export default function BusSteeringSimulator() {
         const v = (speedRef.current * 1000) / 3600;
         const omega = g.isStraight ? 0 : v / g.R;
         const prev = poseRef.current;
-        let next = {
+        const next = {
           x: prev.x + v * dt * Math.cos(prev.theta),
           y: prev.y + v * dt * Math.sin(prev.theta),
           theta: prev.theta + omega * dt,
         };
-        // See clampStepToBoundary's own comment: the governor above is a set of predictions, not a
-        // guarantee, so this is the actual guarantee — trail mode's mapped area is never left, no
-        // matter which prediction turned out to be wrong this frame. realizedSpeedKmhRef records what
-        // actually got through, in case the clamp had to shrink the step to (near) nothing — see that
-        // ref's own comment for why the stall check below watches this instead of the commanded speed.
-        if (trailModeRef.current) {
-          const clampedNext = clampStepToBoundary(prev, next, g.bodyCorners, trailBoundHalfRef.current);
-          const achievedDist = Math.hypot(clampedNext.x - prev.x, clampedNext.y - prev.y);
-          realizedSpeedKmhRef.current = dt > 0 ? (achievedDist / dt) * 3.6 : 0;
-          next = clampedNext;
-        } else {
-          realizedSpeedKmhRef.current = speedRef.current;
+        realizedSpeedKmhRef.current = speedRef.current;
+        // Trail mode no longer clamps position to the boundary square — the bus can actually drive
+        // out (see allBodyCornersOutside's own comment). What replaces the hard clamp: the moment
+        // every body corner has left the square (a mid-turn overhang past one edge is tolerated —
+        // only a complete exit counts), force-cancel whatever Fence Autopilot phase was running and
+        // auto-brake to a stop, same mechanism as a Page Down press. fullyOutsideBoundaryRef makes
+        // this a one-shot trigger on the outside-transition rather than re-armed every frame the bus
+        // remains outside, so the driver can immediately override it with the throttle (ArrowUp
+        // already clears autoBrakeRef.current, same as it does for a real Page Down) instead of
+        // fighting a continuously-reasserted auto-brake while driving back toward the box.
+        if (trailModeRef.current && fenceAutopilotEnabledRef.current) {
+          const fullyOutside = allBodyCornersOutside(next, g.bodyCorners, trailBoundHalfRef.current);
+          if (fullyOutside && !fullyOutsideBoundaryRef.current) {
+            forceCancelFenceAutopilot();
+            if (!brakeHeldRef.current && !autoBrakeRef.current) brakeHeldSinceRef.current = t;
+            autoBrakeRef.current = true;
+          }
+          fullyOutsideBoundaryRef.current = fullyOutside;
         }
         poseRef.current = next;
         setPose(next);
@@ -3211,6 +3239,13 @@ export default function BusSteeringSimulator() {
             Fence Autopilot — {fenceAutopilotPhase === "turn" ? "steering away from mapped area limit" : "tracking reflected line"}
           </div>
         )}
+        {/* Shown after an explicit 'C' cancel — the whole Fence Autopilot system (governor braking
+            included, not just turn/track steering) is off until 'R' re-arms it. */}
+        {trailMode && !fenceAutopilotEnabled && !trailPaused && (
+          <div style={{ position: "absolute", left: "50%", bottom: 40, transform: "translateX(-50%)", fontSize: 11, color: COL.alert, background: "rgba(10,26,44,0.85)", padding: "3px 8px", borderRadius: 3, whiteSpace: "nowrap" }}>
+            Fence Autopilot — OFF (press R to re-arm)
+          </div>
+        )}
         {/* Day-to-day driving is the up/down arrow keys (see the drive-loop physics above); this
             button is a one-click convenience: start from rest by ramping to DRIVE_THE_TURN_TARGET_KMH
             via that same throttle physics, or an immediate full stop once moving. */}
@@ -3267,6 +3302,8 @@ export default function BusSteeringSimulator() {
               <div>A — Smoothly zoom to fit the recorded trail</div>
               <div>M — Smoothly zoom to fit the mapped-area boundary (trail mode only)</div>
               <div>B — Close-up {CLOSE_RADIUS_M}m view, tracking the bus (biased toward what's ahead)</div>
+              <div>C — Cancel Autosteer (trail mode only) — turns Fence Autopilot off outright, even mid-turn</div>
+              <div>R — Re-arm Autosteer after a 'C' cancel (on by default, so this only matters after 'C')</div>
               <div>Automatic — handbrake sets {HANDBRAKE_ENGAGE_DELAY_MS / 1000}s after coming to rest, releases on pulling away</div>
             </div>
           </Collapsible>
