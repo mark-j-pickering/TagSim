@@ -1016,12 +1016,15 @@ function crossTrackDistanceM(pose, line) {
 // certified tolerance.
 const FENCE_CONVERGED_CROSS_TRACK_M = 1.0;
 
-// The two endpoints of `line` extended `halfLen` either side of its anchor — for drawing an anchored
-// line/direction as a full construction line on the map (see the "turn"-phase render below), not just
-// a ray from the anchor forward.
-function extendedLineEndpoints(line, halfLen) {
-  const dx = Math.cos(line.theta) * halfLen, dy = Math.sin(line.theta) * halfLen;
-  return [{ x: line.anchor.x - dx, y: line.anchor.y - dy }, { x: line.anchor.x + dx, y: line.anchor.y + dy }];
+// Where `line` (an anchor+theta reflection line, forward direction only) next crosses the recording
+// boundary — the "opposite target" a reflected line is actually leading to, and the far end of the
+// bounded segment the map render draws for it (see the target-cross block below). Reuses
+// boundaryWallAhead/boundaryCrossingPoint by treating the line's anchor+theta as a one-off pose;
+// null if that heading happens to run parallel to both boundary axes (never happens in practice once
+// a wall was actually reflected off of, but boundaryWallAhead itself can return Infinity).
+function lineBoundaryCrossing(line, trailBoundHalf) {
+  const wall = boundaryWallAhead({ x: line.anchor.x, y: line.anchor.y, theta: line.theta }, trailBoundHalf);
+  return Number.isFinite(wall.distance) ? boundaryCrossingPoint({ x: line.anchor.x, y: line.anchor.y, theta: line.theta }, wall) : null;
 }
 
 const AUTO_STEER_STALL_SPEED_KMH = 0.5; // effectively stopped, not just slow
@@ -1073,6 +1076,7 @@ const COL = {
   bodyTrail: "#8ef2b0",
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
   alert: "#ff4d4d",
+  newTarget: "#4ade80",
   constructionGrey: "#8fa0ae",
 };
 
@@ -1419,6 +1423,7 @@ export default function BusSteeringSimulator() {
   const fenceTurnedOutRef = useRef(false); // latches true once the commanded lock starts decreasing after a "turn" — see fenceLastCommandedLockRef and the governor's own comment on why acceleration waits for this, not just for "track" phase to start
   const fenceLastCommandedLockRef = useRef(0); // |lock| commanded last frame during "turn"/"track", to detect that decrease
   const manualSteerUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't (re-)engage — see MANUAL_STEER_QUIET_MS
+  const prospectiveReflectionRef = useRef(null); // { wall, prospectiveTarget, dirSign, fullLockClearance }, recomputed every frame the governor runs (phase null/"track") — mirrored here purely so the map render can preview the not-yet-committed reflection line/target once braking starts, before "turn" freezes fenceLineRef itself
 
   // Called from every genuine user-facing steering control (arrow keys, the slider, the Lock/
   // Straight buttons) — see MANUAL_STEER_QUIET_MS. Mirrors exitMlAutopilot's role for the other
@@ -1894,6 +1899,7 @@ export default function BusSteeringSimulator() {
         const fullLockClearance = reflectionClearanceM(poseRef.current, prospectiveTarget, geomRef.current.bodyCorners, LfdRef.current, dirSign, trailBoundHalfRef.current);
         prospectiveReflection = { wall, prospectiveTarget, dirSign, fullLockClearance };
       }
+      prospectiveReflectionRef.current = prospectiveReflection;
       // How much clearance the engage check (below) actually requires before committing — the bare
       // margin plus how far the bus travels while the wheel winds up to full lock, at the crawl speed
       // it'll actually be doing by the time that check can pass (see steerWindUpDistanceM's own
@@ -2756,48 +2762,46 @@ export default function BusSteeringSimulator() {
             <polygon points={mapBoundaryPoints(displayedView, trailBoundHalf)} fill="none" stroke={COL.trail} strokeWidth="1.4" strokeDasharray="12 8" opacity="0.5" />
           )}
 
-          {/* Fence Autopilot's target point: while not mid-turn *and not still recovering from one*,
-              the live intersection of the bus's current heading with the boundary (white, moving
-              every frame as the heading changes — see boundaryWallAhead/boundaryCrossingPoint).
-              "Turn" phase freezes it red at fenceLineRef.anchor (the same point, just no longer
-              live-updating) and holds it there through the rest of "track" too, until the bus is
-              actually back on the line (crossTrackDistanceM under FENCE_CONVERGED_CROSS_TRACK_M) —
-              overshoot is the whole point of "turn" (see the "boundary auto-steer" comment above), so
-              the target that produced it stays meaningful for a while after "turn" itself ends, not
-              just up to the phase-label change. Once converged, this block re-evaluates fresh off the
-              bus's current (now line-aligned) heading — the old frozen point simply stops being drawn
-              as a new live (white) one takes its place for whatever wall is next; no explicit "remove"
-              step needed. The dashed line from the bus to it only appears once the approach governor
-              actually starts slowing the bus down for it, or during this whole frozen/recovering
-              window — not for the ordinary case of a wall existing somewhere off in the distance the
-              current heading happens to point at.
-              While frozen, the *outgoing* reflected line the bus is turning onto (fenceLineRef) also
-              shows, grey, for as long as the marker itself stays frozen — it's the course "track" is
-              actually trying to acquire, so it stays meaningful for exactly as long as that acquiring
-              is still in progress, same as the marker. The *incoming* line the bus was tracking before
-              this bounce (fencePrevLineRef — absent for the very first bounce of a session, nothing to
-              show yet) is shorter-lived: it's only there to complete the reflection diagram while the
-              turn itself is actually happening, so it's gone as soon as "turn" is. Both drawn as full
-              construction lines through the anchor, not just rays, via extendedLineEndpoints.
-              The instant the reflected course is determined (frozen becomes true), a second marker
-              (white — it isn't being actively braked or turned for *yet*) appears where that course
-              will in turn hit the far side of the boundary, a preview of the next bounce rather than
-              something computed fresh only once the bus actually gets there. The dashed line from the
-              bus is reserved for the near marker, and only while braking or the turn itself is actually
-              under way — not through the rest of "track," where the marker stays frozen for display
-              but nothing is actively being steered or slowed for it any more. */}
+          {/* Fence Autopilot's target point(s). Three states:
+              - Ordinary (no wall imminent): just the live intersection of the bus's current heading
+                with the boundary (white, moving every frame — boundaryWallAhead/boundaryCrossingPoint),
+                no line, no second marker.
+              - Approaching (boundaryLimiting, but not yet committed to a turn): the same near marker,
+                still white and still live, but now paired with the *prospective* reflected line
+                (prospectiveReflectionRef — the same not-yet-committed geometry the governor itself is
+                already braking for) and its own far-side "opposite target" — both appear together as
+                soon as braking starts, not only once "turn" actually engages.
+              - Autosteering ("turn", or "track" before it's back on the line — see
+                FENCE_CONVERGED_CROSS_TRACK_M): frozen at fenceLineRef, unchanging for the rest of the
+                manoeuvre. The near marker (where the *old* heading met the wall) turns red, the far
+                "opposite target" (where the *new* reflected line leads to) turns green. No line is
+                drawn from the bus to the near marker here — that line is an approach cue, not a status
+                indicator worth keeping once the turn itself is under way. Once converged, this whole
+                block reverts to the ordinary live-white case for whatever wall is next; no explicit
+                "remove" step needed.
+              Both the reflected line and (during "turn") the incoming line the bus was tracking before
+              this bounce (fencePrevLineRef) are drawn as bounded segments — anchor to that line's own
+              far-side boundary crossing (lineBoundaryCrossing) — not infinite construction lines. */}
           {trailMode && (() => {
             const converged = fenceAutopilotPhase === "track" && fenceLineRef.current && crossTrackDistanceM(pose, fenceLineRef.current) < FENCE_CONVERGED_CROSS_TRACK_M;
             const frozen = fenceLineRef.current && (fenceAutopilotPhase === "turn" || (fenceAutopilotPhase === "track" && !converged));
-            const targetWorld = frozen
-              ? fenceLineRef.current.anchor
+            const approaching = !frozen && boundaryLimiting && prospectiveReflectionRef.current != null;
+            const activeLine = frozen
+              ? fenceLineRef.current
+              : approaching
+              ? { anchor: boundaryCrossingPoint(pose, prospectiveReflectionRef.current.wall), theta: prospectiveReflectionRef.current.prospectiveTarget }
+              : null;
+            const nearWorld = activeLine
+              ? activeLine.anchor
               : (() => {
                   const wall = boundaryWallAhead(pose, trailBoundHalf);
                   return Number.isFinite(wall.distance) ? boundaryCrossingPoint(pose, wall) : null;
                 })();
-            if (!targetWorld) return null;
-            const color = frozen ? COL.alert : COL.outline;
-            const p = toScreen(displayedView, targetWorld);
+            if (!nearWorld) return null;
+            const farWorld = activeLine ? lineBoundaryCrossing(activeLine, trailBoundHalf) : null;
+            const nearColor = frozen ? COL.alert : COL.outline;
+            const farColor = frozen ? COL.newTarget : COL.outline;
+            const nearP = toScreen(displayedView, nearWorld);
             const r = 3.5; // half of the requested 7px X
             const cross = (x, y, strokeColor) => (
               <g>
@@ -2807,27 +2811,27 @@ export default function BusSteeringSimulator() {
             );
             return (
               <g>
-                {fenceAutopilotPhase === "turn" && fencePrevLineRef.current && (() => {
-                  const [a, b] = extendedLineEndpoints(fencePrevLineRef.current, trailBoundHalf * 3).map((w) => toScreen(displayedView, w));
+                {frozen && fenceAutopilotPhase === "turn" && fencePrevLineRef.current && (() => {
+                  const prevFar = lineBoundaryCrossing(fencePrevLineRef.current, trailBoundHalf);
+                  if (!prevFar) return null;
+                  const a = toScreen(displayedView, fencePrevLineRef.current.anchor);
+                  const b = toScreen(displayedView, prevFar);
                   return <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={COL.constructionGrey} strokeWidth="1.2" strokeDasharray="9 7" opacity="0.6" />;
                 })()}
-                {frozen && (() => {
-                  const [a, b] = extendedLineEndpoints(fenceLineRef.current, trailBoundHalf * 3).map((w) => toScreen(displayedView, w));
+                {activeLine && farWorld && (() => {
+                  const a = toScreen(displayedView, activeLine.anchor);
+                  const b = toScreen(displayedView, farWorld);
                   return <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={COL.constructionGrey} strokeWidth="1.2" strokeDasharray="9 7" opacity="0.6" />;
                 })()}
-                {frozen && (() => {
-                  const line = fenceLineRef.current;
-                  const wall = boundaryWallAhead({ x: line.anchor.x, y: line.anchor.y, theta: line.theta }, trailBoundHalf);
-                  if (!Number.isFinite(wall.distance)) return null;
-                  const opposingWorld = boundaryCrossingPoint({ x: line.anchor.x, y: line.anchor.y, theta: line.theta }, wall);
-                  const op = toScreen(displayedView, opposingWorld);
-                  return cross(op.x, op.y, COL.outline);
+                {farWorld && (() => {
+                  const p = toScreen(displayedView, farWorld);
+                  return cross(p.x, p.y, farColor);
                 })()}
-                {(boundaryLimiting || fenceAutopilotPhase === "turn") && (() => {
+                {approaching && (() => {
                   const busScreen = toScreen(displayedView, pose);
-                  return <line x1={busScreen.x} y1={busScreen.y} x2={p.x} y2={p.y} stroke={color} strokeWidth="1.4" strokeDasharray="6 5" opacity="0.8" />;
+                  return <line x1={busScreen.x} y1={busScreen.y} x2={nearP.x} y2={nearP.y} stroke={nearColor} strokeWidth="1.4" strokeDasharray="6 5" opacity="0.8" />;
                 })()}
-                {cross(p.x, p.y, color)}
+                {cross(nearP.x, nearP.y, nearColor)}
               </g>
             );
           })()}
