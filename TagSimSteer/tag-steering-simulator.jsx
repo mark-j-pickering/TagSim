@@ -967,6 +967,19 @@ function boundaryCrossingPoint(pose, wall) {
 const PURSUIT_MIN_LOOKAHEAD_M = 10;
 const PURSUIT_LOOKAHEAD_TIME_S = 1.5;
 
+// Hysteresis band for "pursuit is fine-tuning noise, not steering" — see pursuitHoldStraightRef and
+// the "track" phase's own comment at its use. ENTER is tight (a commanded correction under a fifth
+// of a degree, cross-track already well inside FENCE_CONVERGED_CROSS_TRACK_M); EXIT is deliberately
+// much looser. A single shared threshold would let the residual correction hover exactly on the line
+// and flip in and out of the deadband every frame — its own small bang-bang chatter, no better than
+// the wiggle it was meant to fix. The gap between enter and exit is what a real driver's "close
+// enough, stop fiddling" judgement provides for free: once satisfied, a small further drift doesn't
+// immediately put them back on edge.
+const PURSUIT_DEADBAND_ENTER_DEG = 0.2;
+const PURSUIT_DEADBAND_ENTER_XT_M = 0.3;
+const PURSUIT_DEADBAND_EXIT_DEG = 1.0;
+const PURSUIT_DEADBAND_EXIT_XT_M = 0.6;
+
 // Pure-pursuit steering angle (bicycle-model geometry-angle convention — deltaFdeg, not steerInput;
 // see deltaFdeg's own declaration for the sign flip callers need) toward a point `lookaheadDist`
 // ahead of the bus's own position along `line`, rather than the more textbook framing of a point
@@ -1416,6 +1429,7 @@ export default function BusSteeringSimulator() {
   const fencePrevLineRef = useRef(null); // fenceLineRef's value from *before* the current engagement overwrote it — the "track centreline" half of the reflection display (see the map render), null until a second engagement has happened
   const fenceTurnedOutRef = useRef(false); // latches true once the commanded lock starts decreasing after a "turn" — see fenceLastCommandedLockRef and the governor's own comment on why acceleration waits for this, not just for "track" phase to start
   const fenceLastCommandedLockRef = useRef(0); // |lock| commanded last frame during "turn"/"track", to detect that decrease
+  const pursuitHoldStraightRef = useRef(false); // latches once pure pursuit's own residual correction and cross-track both drop inside PURSUIT_DEADBAND_ENTER_*, releases only once either clearly exceeds PURSUIT_DEADBAND_EXIT_* — see the "track" phase's own comment on why a hard single-threshold cutoff isn't enough here
   const manualSteerUntilRef = useRef(0); // rAF timestamp (ms) before which auto-steer won't (re-)engage — see MANUAL_STEER_QUIET_MS
   const prospectiveReflectionRef = useRef(null); // { wall, prospectiveTarget, dirSign, fullLockClearance }, recomputed every frame the governor runs (phase null/"track") — mirrored here purely so the map render can preview the not-yet-committed reflection line/target once braking starts, before "turn" freezes fenceLineRef itself
 
@@ -2123,6 +2137,7 @@ export default function BusSteeringSimulator() {
           fenceLineRef.current = { anchor: boundaryCrossingPoint(poseRef.current, wall), theta: prospectiveTarget };
           fenceTurnedOutRef.current = false;
           fenceLastCommandedLockRef.current = MAX_LOCK_DEG;
+          pursuitHoldStraightRef.current = false;
           // Already within the rollout margin of its own target the instant it would engage (a
           // shallow, near-parallel graze) — "turn" would have nothing to do before immediately handing
           // back to "track" anyway (see the rollout check just below), so skip committing to it at all
@@ -2221,7 +2236,33 @@ export default function BusSteeringSimulator() {
           } else {
             const lookahead = Math.max(PURSUIT_MIN_LOOKAHEAD_M, (speedRef.current / 3.6) * PURSUIT_LOOKAHEAD_TIME_S);
             const deltaFdeg = pursuitDeltaFDeg(poseRef.current, fenceLineRef.current, LfdRef.current, lookahead);
-            const target = Math.max(-MAX_LOCK_DEG, Math.min(MAX_LOCK_DEG, -deltaFdeg));
+            let target = Math.max(-MAX_LOCK_DEG, Math.min(MAX_LOCK_DEG, -deltaFdeg));
+            // Once the bus is essentially already on the line, stop chasing pure pursuit's own
+            // fine-convergence noise: its aim-point geometry doesn't converge monotonically to exactly
+            // zero as cross-track and heading error both approach zero together — the correction it
+            // wants can overshoot the line by a hair and flip sign before settling, a real (if tiny,
+            // sub-degree-of-front-lock) S-wiggle visible in the trail right where "track" finishes
+            // rolling out. Not the large bang-coast-retry oscillation the three-phase turn/track law
+            // already fixed, but a smaller residual of the same shape.
+            //
+            // Latched with hysteresis (pursuitHoldStraightRef), not a single threshold: this sim has
+            // no tyre slip or disturbance model, so a bus already this close to dead-straight-on-the-
+            // line has no real drift to correct — holding the wheel dead straight is exactly right,
+            // not an approximation — but the residual correction needed to fully close the last hair
+            // of heading error decays asymptotically rather than hitting zero, and can sit for whole
+            // seconds almost exactly on a single cutoff value. A one-sided deadband there just turns
+            // the sub-degree wiggle into a sub-degree *chatter*, flipping in and out of the deadband
+            // every frame. Entering on a tight threshold and only releasing on a much looser one means
+            // that once satisfied, a little further (very slow) drift doesn't immediately re-trigger it.
+            const xtNow = crossTrackDistanceM(poseRef.current, fenceLineRef.current);
+            if (pursuitHoldStraightRef.current) {
+              if (Math.abs(target) > PURSUIT_DEADBAND_EXIT_DEG || xtNow > PURSUIT_DEADBAND_EXIT_XT_M) {
+                pursuitHoldStraightRef.current = false;
+              }
+            } else if (Math.abs(target) < PURSUIT_DEADBAND_ENTER_DEG && xtNow < PURSUIT_DEADBAND_ENTER_XT_M) {
+              pursuitHoldStraightRef.current = true;
+            }
+            if (pursuitHoldStraightRef.current) target = 0;
             // See fenceTurnedOutRef's declaration and the governor's own comment: latches the instant
             // pursuit's own commanded lock actually starts easing off, rather than the instant "track"
             // merely began — that's what lets the speed cap above hold through whatever's left of the
