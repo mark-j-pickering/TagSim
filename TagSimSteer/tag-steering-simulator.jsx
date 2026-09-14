@@ -1532,6 +1532,7 @@ export default function BusSteeringSimulator() {
   function maybeSampleTrail(nextPose, g) {
     if (!trailModeRef.current) return;
     const half = trailBoundHalfRef.current;
+    const wasPaused = trailPausedRef.current;
     const outOfBounds = Math.abs(nextPose.x) > half || Math.abs(nextPose.y) > half;
     if (outOfBounds !== trailPausedRef.current) {
       trailPausedRef.current = outOfBounds;
@@ -1540,7 +1541,13 @@ export default function BusSteeringSimulator() {
     if (outOfBounds) return;
     const samples = trailRef.current;
     const last = samples[samples.length - 1];
-    if (last) {
+    // The min-spacing skip only makes sense against a genuinely adjacent previous sample — coming
+    // back from a pause, `last` is wherever the bus left the mapped area, possibly nowhere near
+    // `nextPose` (trail mode no longer clamps position to the boundary — see allBodyCornersOutside's
+    // own comment — so a real excursion outside can cover any distance before returning). Recording
+    // this one unconditionally, tagged newSegment, is what lets the render side start a fresh ribbon
+    // here instead of drawing one long spurious edge straight across the map connecting the two.
+    if (last && !wasPaused) {
       const dx = nextPose.x - last.poseX, dy = nextPose.y - last.poseY;
       if (dx * dx + dy * dy < TRAIL_MIN_SPACING_SQ) return;
     }
@@ -1548,6 +1555,7 @@ export default function BusSteeringSimulator() {
     const axleHalfW = singleAxleBandHalfWidth(g.Tw); // same formula for front and tag — neither is a dual pair
     samples.push({
       poseX: nextPose.x, poseY: nextPose.y, theta: nextPose.theta,
+      newSegment: wasPaused,
       left: poseTransform({ x: 0, y: halfW }, nextPose),
       right: poseTransform({ x: 0, y: -halfW }, nextPose),
       frontLeft: poseTransform({ x: g.Lfd, y: axleHalfW }, nextPose),
@@ -2639,18 +2647,34 @@ export default function BusSteeringSimulator() {
   const trailSamples = trailRef.current;
   const trailWorldRibbons = useMemo(() => {
     if (!trailMode || trailSamples.length < 2) return null;
-    const ribbon = (leftKey, rightKey) => [
-      ...trailSamples.map((s) => s[leftKey]),
-      ...trailSamples.map((s) => s[rightKey]).reverse(),
+    // Split into contiguous segments wherever a sample is tagged newSegment (see maybeSampleTrail):
+    // trail recording pauses while the bus is outside the mapped area and picks up again wherever it
+    // re-enters, which can be anywhere — trail mode no longer clamps position to the boundary (see
+    // allBodyCornersOutside's own comment). A single flat ribbon across that gap has no way to know
+    // the two sides aren't actually adjacent, and draws one long spurious edge connecting them
+    // straight across the map. One ribbon per segment instead leaves a real, visible gap there.
+    const segments = [[]];
+    for (const s of trailSamples) {
+      if (s.newSegment && segments[segments.length - 1].length > 0) segments.push([]);
+      segments[segments.length - 1].push(s);
+    }
+    const validSegments = segments.filter((seg) => seg.length >= 2);
+    const ribbon = (seg, leftKey, rightKey) => [
+      ...seg.map((s) => s[leftKey]),
+      ...seg.map((s) => s[rightKey]).reverse(),
     ];
-    return { drive: ribbon("left", "right"), front: ribbon("frontLeft", "frontRight"), tag: ribbon("tagLeft", "tagRight") };
+    return {
+      drive: validSegments.map((seg) => ribbon(seg, "left", "right")),
+      front: validSegments.map((seg) => ribbon(seg, "frontLeft", "frontRight")),
+      tag: validSegments.map((seg) => ribbon(seg, "tagLeft", "tagRight")),
+    };
   }, [trailMode, trailVersion]);
-  const trailPolygonPoints = trailWorldRibbons && ptsToPath(trailWorldRibbons.drive.map((p) => toScreen(displayedView, p)));
+  const trailPolygonPointsList = trailWorldRibbons && trailWorldRibbons.drive.map((ribbon) => ptsToPath(ribbon.map((p) => toScreen(displayedView, p))));
   // Second and third bands: the front and tag axles' own tracks, each sampled at that axle's own
   // along-chassis offset (see singleAxleBandHalfWidth) — separate ribbons since they follow
   // different curves than the drive-axle band above once the bus is turning.
-  const frontTrailPolygonPoints = trailWorldRibbons && ptsToPath(trailWorldRibbons.front.map((p) => toScreen(displayedView, p)));
-  const tagTrailPolygonPoints = trailWorldRibbons && ptsToPath(trailWorldRibbons.tag.map((p) => toScreen(displayedView, p)));
+  const frontTrailPolygonPointsList = trailWorldRibbons && trailWorldRibbons.front.map((ribbon) => ptsToPath(ribbon.map((p) => toScreen(displayedView, p))));
+  const tagTrailPolygonPointsList = trailWorldRibbons && trailWorldRibbons.tag.map((ribbon) => ptsToPath(ribbon.map((p) => toScreen(displayedView, p))));
 
   // Body footprint band: the ground actually driven over by the whole body, including the front
   // and rear overhang "mowing the grass" wider through a turn — not just the corridor traced by a
@@ -2685,6 +2709,11 @@ export default function BusSteeringSimulator() {
     const worldCornersAt = (s) => corners.map((c) => poseTransform(c, { x: s.poseX, y: s.poseY, theta: s.theta }));
     const hulls = [];
     for (let i = 1; i < trailSamples.length; i++) {
+      // Skip the step spanning a segment break (see maybeSampleTrail/trailWorldRibbons) — the two
+      // samples aren't actually adjacent (recording paused while the bus was outside the mapped
+      // area), so their hull would be one long sliver stretching across the gap instead of ground
+      // actually driven over.
+      if (trailSamples[i].newSegment) continue;
       hulls.push(convexHull([...worldCornersAt(trailSamples[i - 1]), ...worldCornersAt(trailSamples[i])]));
     }
     return hulls;
@@ -2695,11 +2724,15 @@ export default function BusSteeringSimulator() {
         const corners = [geom.bodyCorners.FL, geom.bodyCorners.FR, geom.bodyCorners.RL, geom.bodyCorners.RR];
         const worldCornersAt = (poseLike) => corners.map((c) => poseTransform(c, poseLike));
         const lastSample = trailSamples[trailSamples.length - 1];
-        const capHull = convexHull([
+        // Skipped while recording is paused (bus currently outside the mapped area, see
+        // maybeSampleTrail): `pose` is wherever it's actually driven off to, not adjacent to
+        // `lastSample`, so this cap would be the same stretched-sliver problem the segment-break
+        // skip above avoids for the recorded samples themselves.
+        const capHull = trailPaused ? null : convexHull([
           ...worldCornersAt({ x: lastSample.poseX, y: lastSample.poseY, theta: lastSample.theta }),
           ...worldCornersAt(pose),
         ]);
-        return [...curedBodyHullsWorld, capHull].map(hullToPathD).join(" ");
+        return [...curedBodyHullsWorld, ...(capHull ? [capHull] : [])].map(hullToPathD).join(" ");
       })()
     : null;
 
@@ -2959,20 +2992,23 @@ export default function BusSteeringSimulator() {
           {/* trail: painted record of the corridor actually driven so far (see docs/trail-display-mode.md).
               Fill only, no stroke — an outline on a band built from left-then-right-reversed edge
               points draws a straight closing edge across the front and back of the band on every
-              polygon, which reads as a spurious solid line cutting across the axles. */}
-          {trailPolygonPoints && (
-            <polygon points={trailPolygonPoints} fill={COL.trail} fillOpacity="0.16" />
-          )}
+              polygon, which reads as a spurious solid line cutting across the axles. One polygon per
+              contiguous segment (see trailWorldRibbons) rather than one spanning the whole trail —
+              a gap from driving outside the mapped area and back (recording pauses out there) would
+              otherwise connect straight across as a single band. */}
+          {trailPolygonPointsList && trailPolygonPointsList.map((pts, i) => (
+            <polygon key={"trail" + i} points={pts} fill={COL.trail} fillOpacity="0.16" />
+          ))}
           {/* second band: the front axle's own track, drawn in the same colour used for the front
               axle everywhere else in this view (wheels 1–2, mowing-the-grass lines) */}
-          {frontTrailPolygonPoints && (
-            <polygon points={frontTrailPolygonPoints} fill={COL.front} fillOpacity="0.16" />
-          )}
+          {frontTrailPolygonPointsList && frontTrailPolygonPointsList.map((pts, i) => (
+            <polygon key={"frontTrail" + i} points={pts} fill={COL.front} fillOpacity="0.16" />
+          ))}
           {/* third band: the tag axle's own track, drawn in the same colour used for the tag axle
               everywhere else in this view (wheels 7–8, tail-swing lines) */}
-          {tagTrailPolygonPoints && (
-            <polygon points={tagTrailPolygonPoints} fill={COL.tag} fillOpacity="0.16" />
-          )}
+          {tagTrailPolygonPointsList && tagTrailPolygonPointsList.map((pts, i) => (
+            <polygon key={"tagTrail" + i} points={pts} fill={COL.tag} fillOpacity="0.16" />
+          ))}
 
           {/* optional geometry construction lines */}
           {showGeom && !geom.isStraight && wheelDefs.map((w) => {
