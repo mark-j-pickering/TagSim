@@ -17,6 +17,10 @@ const CLOSE_RADIUS_M = 15; // 'B' key: close-up view radius around the bus, see 
 const CLOSE_FORWARD_BIAS = 1 / 3; // how far back from the front bumper (as a fraction of overall length) the close-up centres on
 const MIN_ZOOM = 0.02; // low enough to zoom out to roughly the full 1km² trail-recording area (S/M presets — see TRAIL_SIZE_PRESETS)
 const MAX_ZOOM = 6;
+// Imported site-drawing convention (see handleLoadMapImage): an SVG's own coordinate units are always
+// treated as millimetres, so an imported drawing's scale is fully determined by its viewBox/width —
+// no per-file calibration UI. Draw/export site plans at 1 SVG unit = 1mm to line up correctly.
+const SVG_MM_TO_M = 0.001;
 
 // Trail-recording/boundary square half-extent presets (metres) — S/M/L, selectable in Advanced
 // settings. "half" is the same quantity the rest of the file already calls TRAIL_BOUND_HALF; M (500)
@@ -196,6 +200,24 @@ function fitBoundsView(bounds, vb, margin) {
 
 function toScreen(view, p) {
   return { x: view.originX - p.y * view.scale, y: view.originY - p.x * view.scale };
+}
+
+// Reads an imported site drawing's <svg viewBox="minX minY w h"> (falling back to its width/height
+// attributes, origin at 0,0, if it has no viewBox — width/height are parsed as plain numbers, any
+// unit suffix like "mm"/"px" is stripped since SVG_MM_TO_M's millimetre convention already fixes
+// the unit). Returns null if neither is present/usable.
+function parseSvgViewBox(svgEl) {
+  const raw = svgEl.getAttribute("viewBox");
+  if (raw) {
+    const parts = raw.trim().split(/[\s,]+/).map(Number);
+    if (parts.length === 4 && parts.every((n) => isFinite(n)) && parts[2] > 0 && parts[3] > 0) {
+      return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
+    }
+  }
+  const w = parseFloat(svgEl.getAttribute("width"));
+  const h = parseFloat(svgEl.getAttribute("height"));
+  if (isFinite(w) && isFinite(h) && w > 0 && h > 0) return { x: 0, y: 0, w, h };
+  return null;
 }
 
 function longLineScreen(yOffset, pose, view) {
@@ -1488,6 +1510,11 @@ export default function BusSteeringSimulator() {
   // just-loaded pose/trail in place instead of clobbering them.
   const skipResetRef = useRef(false);
   const fileInputRef = useRef(null);
+  const mapImageInputRef = useRef(null);
+  // Imported site drawing (see handleLoadMapImage): { markup, viewBox: {x,y,w,h} } in the SVG's own
+  // millimetre-convention units, or null when none is loaded. Not part of the Save/Load JSON — it's
+  // re-imported from its own file each session, same as the bus reference photo isn't re-saved.
+  const [mapImage, setMapImage] = useState(null);
 
   // Driver controls: up/down arrow key state read imperatively by the drive loop each frame (see
   // below), rather than React state — these change many times a second while held and never need
@@ -1662,6 +1689,32 @@ export default function BusSteeringSimulator() {
         applySaveData(data);
       } catch (err) {
         alert("Couldn't load that file: " + err.message);
+      }
+    };
+    reader.onerror = () => alert("Couldn't read that file.");
+    reader.readAsText(file);
+  }
+
+  // ---------- imported site drawing (map background) ----------
+  // Loads an SVG file as a scaled background layer under the vehicle/trail — see SVG_MM_TO_M for
+  // the fixed millimetre-units convention this relies on (no calibration step, no rotation).
+  function handleLoadMapImage(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // allow re-selecting the same file next time
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const doc = new DOMParser().parseFromString(String(reader.result), "image/svg+xml");
+        const svgEl = doc.documentElement;
+        if (!svgEl || svgEl.nodeName !== "svg" || doc.querySelector("parsererror")) {
+          throw new Error("Not a valid SVG file");
+        }
+        const viewBox = parseSvgViewBox(svgEl);
+        if (!viewBox) throw new Error("SVG has no usable viewBox or width/height");
+        setMapImage({ markup: svgEl.innerHTML, viewBox });
+      } catch (err) {
+        alert("Couldn't load that drawing: " + err.message);
       }
     };
     reader.onerror = () => alert("Couldn't read that file.");
@@ -2825,6 +2878,15 @@ export default function BusSteeringSimulator() {
             Load
           </button>
           <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleLoadFile} style={{ display: "none" }} />
+          <button className="btn" onClick={() => mapImageInputRef.current && mapImageInputRef.current.click()} title="Import a site drawing (SVG, 1 unit = 1mm) to drive over, scaled automatically from its viewBox" style={{ fontSize: 13, padding: "6px 10px" }}>
+            Import Drawing
+          </button>
+          {mapImage && (
+            <button className="btn" onClick={() => setMapImage(null)} title="Remove the imported drawing" style={{ fontSize: 13, padding: "6px 10px" }}>
+              Clear Drawing
+            </button>
+          )}
+          <input ref={mapImageInputRef} type="file" accept="image/svg+xml,.svg" onChange={handleLoadMapImage} style={{ display: "none" }} />
         </div>
       </div>
 
@@ -2855,7 +2917,29 @@ export default function BusSteeringSimulator() {
             </clipPath>
           </defs>
           <g clipPath="url(#mapClip)">
-          <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />
+          {/* Grid ground plane, replaced by the imported site drawing (if any) below — the two would
+              otherwise visually fight each other. */}
+          {!mapImage && <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />}
+
+          {/* Imported site drawing (see handleLoadMapImage/SVG_MM_TO_M): the file's own markup,
+              inlined untouched and placed with a plain translate+uniform-scale — no rotation, no
+              per-file calibration. Its viewBox centre is anchored at world (0,0) (the screen point
+              (originX,originY) — same anchor the grid pattern above uses), and 1 SVG unit = 1mm is
+              baked in as SVG_MM_TO_M, so the drawing's own "up"/"right" land as screen up/right,
+              scaled to real-world size and panning/zooming with everything else on the map. */}
+          {mapImage && (() => {
+            const k = displayedView.scale * SVG_MM_TO_M;
+            const anchorU = mapImage.viewBox.x + mapImage.viewBox.w / 2;
+            const anchorV = mapImage.viewBox.y + mapImage.viewBox.h / 2;
+            const tx = displayedView.originX - k * anchorU;
+            const ty = displayedView.originY - k * anchorV;
+            return (
+              <g
+                transform={`translate(${tx} ${ty}) scale(${k})`}
+                dangerouslySetInnerHTML={{ __html: mapImage.markup }}
+              />
+            );
+          })()}
 
           {/* trail-recording bound: the square (trailBoundHalf, S/M/L in Advanced settings) trail
               sampling is capped to, drawn so the limit is visible before it's hit rather than only discovered via the

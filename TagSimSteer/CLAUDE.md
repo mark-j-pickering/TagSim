@@ -361,6 +361,52 @@ branches (circular vs straight-line versions).
   visible area. If you add more far-extending geometry, make sure it stays
   inside the `<g clipPath="url(#mapClip)">` group.
 
+## Imported site drawings (map background)
+
+"Import Drawing" (header toolbar, beside Save/Load) loads an SVG file as a
+scaled background layer under the vehicle/trail, so a driver can rehearse
+against a real site layout (depot lanes, a specific junction, etc.) instead
+of the abstract grid. Deliberately narrow scope, arrived at after discussion
+ruled out several bigger options:
+
+- **No parameterised scenario library** (tabs for "slip lane"/"roundabout"/
+  etc., each generating its own road geometry) — considered and rejected in
+  favour of importing pre-drawn site plans instead of modelling road shapes
+  parametrically. `src/course.js`'s single-corner course generator (used by
+  the ML training pipeline, see "Porting to 3D / C#" below and
+  `src/env.js`) is unrelated to this and untouched.
+- **No real-world geo-referenced basemap** (map tiles, lat/lon projection) —
+  the world frame stays plain metres with no geographic anchor; "real-world"
+  here just means "drawn to scale," not "at a real location."
+- **No calibration UI at all** — no click-two-points-and-enter-a-distance
+  step, no rotation, no manual origin placement. Every import uses a fixed
+  convention instead: **an SVG's own coordinate units are always millimetres**
+  (`SVG_MM_TO_M`) — so a drawing's real-world size is read directly from its
+  `viewBox`/`width`+`height` (`parseSvgViewBox`), no per-file input needed.
+  Draw/export site plans at 1 SVG unit = 1 mm for this to come out right.
+- The imported markup is placed with a plain translate + uniform scale, not
+  a general affine transform — its `viewBox` centre lands on world (0,0),
+  and its own "up"/"right" render as screen up/right (same axes the grid/
+  trail already use — see `toScreen`), matching how the file looks opened
+  in any normal SVG viewer, just correctly proportioned and drivable over.
+- Raw SVG markup is inlined via `dangerouslySetInnerHTML` into a `<g>` in
+  the map's own coordinate space (see `handleLoadMapImage`), not rendered
+  as a rasterised `<image>` — keeps it crisp at any zoom level, and it's
+  literally the same technique the JSX name suggests, just applied to SVG
+  content instead of HTML.
+- The grid pattern hides while a drawing is loaded (`!mapImage` gate on the
+  grid `<rect>`) — the two visually fight otherwise.
+- Not persisted through Save/Load — re-imported from its own file each
+  session, same reasoning as the bus reference photo not being embedded in
+  the save JSON.
+- **DXF import and a geo-referenced aerial-photo layer are explicitly
+  future work**, not built now. Both would reuse this same placement
+  mechanism (DXF needs a parser to become SVG-shaped paths first; an aerial
+  photo is a raster `<image>` instead of inlined vector markup) — the
+  millimetre-convention/no-rotation design was chosen partly because it
+  carries forward cleanly to those, not because it's assumed to be
+  permanent for every future source.
+
 ## Porting to 3D / C#
 
 `computeGeometry` (and its small helper functions — `wheelStaticCorners`,
