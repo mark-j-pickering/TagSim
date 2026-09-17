@@ -369,6 +369,14 @@ against a real site layout (depot lanes, a specific junction, etc.) instead
 of the abstract grid. Deliberately narrow scope, arrived at after discussion
 ruled out several bigger options:
 
+`docs/example-site-plans/depot-exit.svg` is a worked example to load and
+drive against — a depot driveway meeting a public road (kerbs, footpaths, a
+give-way line, a labelled shed), drawn at the 1-unit-=-1mm convention below.
+The sim's world origin (where the bus starts) lands at the drawing's
+viewBox centre, a few metres inside the driveway from the road. Verified by
+importing it and driving out through a right turn onto the road in a real
+browser session — not just a scale/orientation sanity check.
+
 - **No parameterised scenario library** (tabs for "slip lane"/"roundabout"/
   etc., each generating its own road geometry) — considered and rejected in
   favour of importing pre-drawn site plans instead of modelling road shapes

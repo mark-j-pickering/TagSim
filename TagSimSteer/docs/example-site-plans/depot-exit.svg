@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 70000 50000">
+  <!--
+    Realistic-ish depot-exit site plan, 1 SVG unit = 1mm (TagSimSteer's fixed
+    import convention). 70m x 50m. Sim world origin (0,0) lands at this
+    viewBox's centre (35000,25000) — i.e. mid-driveway, ~9m south of the
+    road kerb, which is where the bus starts on import.
+
+    Layout: a public east-west road across the top third, a depot driveway
+    running south from a crossover in the road's footpath, a depot shed to
+    the west, open yard elsewhere.
+  -->
+
+  <!-- yard ground (gravel/grass) -->
+  <rect x="0" y="0" width="70000" height="50000" fill="#3a4a34"/>
+
+  <!-- depot shed -->
+  <rect x="2000" y="24000" width="26000" height="22000" fill="#55524a" stroke="#cfcfcf" stroke-width="120"/>
+  <text x="15000" y="35500" font-size="1400" fill="#cccccc" text-anchor="middle" font-family="sans-serif">DEPOT SHED</text>
+
+  <!-- public road carriageway (7m: two 3.5m lanes) -->
+  <rect x="0" y="11500" width="70000" height="7000" fill="#2b2b2e"/>
+  <!-- dashed centreline -->
+  <line x1="0" y1="15000" x2="70000" y2="15000" stroke="#f5c542" stroke-width="150" stroke-dasharray="2000 1500"/>
+  <!-- road edge kerbs, broken for the driveway crossover (u 31000-39000) -->
+  <line x1="0" y1="11500" x2="31000" y2="11500" stroke="#eeeeee" stroke-width="150"/>
+  <line x1="39000" y1="11500" x2="70000" y2="11500" stroke="#eeeeee" stroke-width="150"/>
+  <line x1="0" y1="18500" x2="31000" y2="18500" stroke="#eeeeee" stroke-width="150"/>
+  <line x1="39000" y1="18500" x2="70000" y2="18500" stroke="#eeeeee" stroke-width="150"/>
+  <text x="4000" y="7500" font-size="1600" fill="#cccccc" font-family="sans-serif">MAIN STREET</text>
+
+  <!-- footpaths, both sides, broken for the same crossover -->
+  <rect x="0" y="9000" width="31000" height="2500" fill="#6b6b66"/>
+  <rect x="39000" y="9000" width="31000" height="2500" fill="#6b6b66"/>
+  <rect x="0" y="18500" width="31000" height="2500" fill="#6b6b66"/>
+  <rect x="39000" y="18500" width="31000" height="2500" fill="#6b6b66"/>
+
+  <!-- driveway crossover apron through the footpath/kerb gap -->
+  <rect x="31000" y="18500" width="8000" height="2500" fill="#333336"/>
+  <!-- give-way dashed line at the driveway mouth, facing the road -->
+  <line x1="32000" y1="21000" x2="38000" y2="21000" stroke="#eeeeee" stroke-width="150" stroke-dasharray="500 350"/>
+
+  <!-- depot driveway (6m wide), crossover down to the yard's south edge -->
+  <rect x="32000" y="21000" width="6000" height="29000" fill="#333336"/>
+  <line x1="32000" y1="21000" x2="32000" y2="50000" stroke="#eeeeee" stroke-width="100"/>
+  <line x1="38000" y1="21000" x2="38000" y2="50000" stroke="#eeeeee" stroke-width="100"/>
+  <!-- direction-of-travel arrow, pointing out to the road -->
+  <polygon points="35000,32000 33800,35500 34700,35500 34700,39000 35300,39000 35300,35500 36200,35500" fill="#cccccc"/>
+  <text x="21000" y="41500" font-size="1400" fill="#cccccc" font-family="sans-serif">DEPOT DRIVEWAY</text>
+
+  <!-- gate posts either side of the crossover -->
+  <rect x="30600" y="20600" width="700" height="900" fill="#1c1c1c"/>
+  <rect x="38700" y="20600" width="700" height="900" fill="#1c1c1c"/>
+</svg>
