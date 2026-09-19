@@ -390,16 +390,14 @@ browser session — not just a scale/orientation sanity check.
   here just means "drawn to scale," not "at a real location."
 - **No click-and-measure calibration UI** — no click-two-points-and-enter-
   a-distance step, no rotation, no manual origin placement. Every import
-  picks from exactly two fixed unit conventions instead — **mm** or **1/1000
-  inch (mil)** — via a small picker (`mapImageUnit`) next to the Import
-  Drawing button, applied via `SVG_UNIT_TO_M`. mm covers anything authored/
-  exported to scale in millimetres; mil exists because sign-cutting/vinyl/
-  CNC software very often emits raw coordinates in that unit with no metric
-  conversion and no unit metadata to tell them apart — found by testing
-  against a real SignMaster SVG export (`viewBox` up to ~988799 — absurd as
-  millimetres, sane as ~25m in thousandths of an inch). The picked unit is
-  captured into the loaded `mapImage` itself, not read live, so toggling the
-  picker afterwards can't rescale an already-loaded drawing.
+  uses one fixed convention: **an SVG or DXF file's own coordinate units are
+  always millimetres** (`SVG_MM_TO_M`) — a drawing's real-world size is read
+  directly from its own numbers, no per-file input needed. (An earlier
+  version offered a second mil/1000in convention too, for sign-cutting/
+  vinyl/CNC software that sometimes emits coordinates in that unit — found
+  via a real SignMaster export, but dropped again once it turned out not to
+  be needed in practice; its `SVG_UNIT_TO_M` entry is recoverable from git
+  history if that changes.)
 - Both formats place their content with a plain translate + uniform scale,
   not a general affine transform — content is centred on world (0,0), and
   its own "up"/"right" render as screen up/right (same axes the grid/trail
@@ -408,7 +406,7 @@ browser session — not just a scale/orientation sanity check.
 - **SVG**: the file's own markup is inlined via `dangerouslySetInnerHTML`
   into a `<g>` in the map's own coordinate space (see `handleLoadMapImage`),
   not rendered as a rasterised `<image>` — keeps it crisp at any zoom level.
-  Its scale is re-derived live every render from `mapImage.unitToM` and the
+  Its scale is re-derived live every render from `SVG_MM_TO_M` and the
   current view, since the untouched foreign markup can't be pre-transformed.
 - **DXF**: has no native web rendering to lean on the way SVG's markup does,
   so `src/dxfImport.js` parses it into plain world-space shape objects once
@@ -426,28 +424,60 @@ browser session — not just a scale/orientation sanity check.
   10-255 gets a deterministic grey fallback rather than a guessed-from-
   memory "exact" value, since the full AutoCAD palette isn't safe to
   reproduce without risking silently-wrong colours). `SPLINE` edges/entities,
-  multi-loop/island `HATCH`, `TEXT`/`MTEXT`, 3D entities, and the older
-  `POLYLINE`/`VERTEX` pre-LWPOLYLINE form are skipped with a `console.warn`
-  rather than mis-rendered — not a general CAD-file renderer, just enough
-  for site-plan-style drawings.
-  - **Colour resolution needs closed regions, not just edges**: a raw `LINE`
-    is only an edge with no "inside" — e.g. a rectangle plus one dividing
-    line is 5 disconnected segments, and nothing in that data says which
-    side is which region (solving that in general is planar face detection,
-    deliberately not built here). To get independently-coloured areas, draw
-    each one as its own closed `LWPOLYLINE` or `HATCH`, on its own layer/
-    colour — that's the only thing DXF itself has to say "this area is a
-    region," and the importer fills exactly those.
-  - Arc/bulge sweep and large-arc-flag are derived from 3 already-known
-    points on the arc (start/mid/end — sampled once in DXF-space at parse
-    time, carried through the DXF→world transform as plain points, not
-    re-derived as an angle in some other frame) rather than hand-tracking
-    signs through the DXF→world→screen transform chain — see `toWorld`'s
-    and `arcFlags`'s own comments for why that's the robust way to do it.
+  multi-loop/island `HATCH`, 3D entities, and the older `POLYLINE`/`VERTEX`
+  pre-LWPOLYLINE form are skipped with a `console.warn` rather than
+  mis-rendered — not a general CAD-file renderer, just enough for
+  site-plan-style drawings.
+  - **Colouring adjacent regions without retracing shared edges —
+    polygonization**: a raw `LINE` is only an edge with no "inside," so two
+    ways to get a coloured region: (1) draw it as its own closed
+    `LWPOLYLINE`/`HATCH` (simplest, but means retracing any edge shared with
+    a neighbour), or (2) draw the shared edge network **once** — e.g. a road
+    outline plus lane dividers, each line drawn only once — and drop a
+    `POINT` or `TEXT`/`MTEXT` entity inside each region, coloured however
+    that region should be filled. `polygonizeFaces()` treats the LINE/ARC
+    network as a planar graph and traces every enclosed loop (the same core
+    technique as PostGIS's `ST_Polygonize`/Shapely's `polygonize`: at each
+    vertex, always continue along whichever edge is immediately clockwise
+    from the direction just arrived from), keeping only loops with positive
+    signed area (the bounded interior faces; the one unbounded "outer" face
+    per connected network comes out negative) that have a marker inside
+    them — an unmarked face contributes nothing, since its edges already
+    render individually as plain line/arc shapes, so files with no markers
+    pay no cost here. **Requires real shared vertices at junctions** — e.g.
+    a lane divider's endpoint must land exactly on a vertex of the boundary
+    it meets (split the boundary there, using your CAD tool's endpoint
+    snap), not partway along an unsplit line (a "T" against an edge's
+    interior isn't detected; this deliberately doesn't do general
+    segment-intersection splitting, only vertex-snapped adjacency,
+    `SNAP_TOL_M` = 1mm). `POINT`/`TEXT`/`MTEXT` are never drawn as their own
+    visible shape — they're markers only.
+  - **Starting the bus somewhere specific**: a `LINE` on a layer named
+    `BUS_START` (case-insensitive; first one found wins if there are
+    several) sets the vehicle's starting pose instead of being drawn — its
+    first point is the position, its direction (first point -> second
+    point) is the heading. `handleLoadMapImage` applies it the same way
+    `applySaveData` applies a Load: reset `pose`/`poseRef`, stop (`speed`
+    0), and clear the trail — a new starting context, not just a background
+    swap.
+  - Arc/bulge sweep and large-arc-flag (for rendering) are derived from 3
+    already-known points on the arc (start/mid/end — sampled once in
+    DXF-space at parse time, carried through the DXF→world transform as
+    plain points, not re-derived as an angle in some other frame) rather
+    than hand-tracking signs through the DXF→world→screen transform chain —
+    see `toWorld`'s and `arcFlags`'s own comments for why that's the robust
+    way to do it. `polygonizeFaces`' own angle math (departure/arrival
+    tangents at a vertex, for choosing the next edge around a face) is a
+    separate, independent piece of code from `arcFlags`/`dxfShapePathD` even
+    though the underlying sweep-normalisation trick is the same idea —
+    kept apart deliberately so changes to one can't risk regressing the
+    other's already browser-verified behaviour.
   - Verified against a real DXF (an Onshape export whose SVG conversion via
-    SignMaster was the original scale-mismatch bug report) and a synthetic
-    rectangle split into two closed, differently-coloured `LWPOLYLINE`s, in
-    a real browser session both times, not just unit tests.
+    SignMaster was the original scale-mismatch bug report), a synthetic
+    rectangle split into two closed, differently-coloured `LWPOLYLINE`s, and
+    a 4-lane shared-edge-network + `POINT` markers + `BUS_START` file
+    (`docs/example-site-plans/multi-lane-shared.dxf`), in a real browser
+    session each time, not just unit tests.
 - The grid pattern hides while a drawing is loaded (`!mapImage` gate on the
   grid `<rect>`) — the two visually fight otherwise.
 - Not persisted through Save/Load — re-imported from its own file each

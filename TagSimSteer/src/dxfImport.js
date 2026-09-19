@@ -8,9 +8,14 @@
 // Supported entities: LINE, ARC, CIRCLE, LWPOLYLINE (straight and bulge/arc segments, open or
 // closed), and HATCH limited to solid fill with boundary loops that are either a single polyline-type
 // loop or an edge-type loop made only of line/arc edges (the common, simple "fill this closed shape"
-// case). Anything else (SPLINE edges/entities, multi-loop HATCH with islands, TEXT, 3D entities, POLYLINE/
+// case). Anything else (SPLINE edges/entities, multi-loop HATCH with islands, 3D entities, POLYLINE/
 // VERTEX's older pre-LWPOLYLINE form, blocks/inserts) is skipped with a console.warn rather than
 // mis-rendered — deliberately not a general CAD-file renderer, just enough for site-plan-style drawings.
+//
+// Two further, non-drawn entity kinds (see extractEntities' own comment for the exact rules):
+// POINT/TEXT/MTEXT become colour "markers" consumed by polygonizeFaces() to colour an enclosed region
+// found from a shared LINE/ARC network (so adjacent regions can share a boundary drawn once, never
+// retraced); a LINE on a layer named BUS_START sets the vehicle's starting pose instead of being drawn.
 //
 // Colour resolution, in order: the entity's own true-colour (group 420, 24-bit RGB) > the entity's own
 // ACI colour (group 62, when not BYLAYER=256/BYBLOCK=0) > its layer's ACI colour (from the TABLES/LAYER
@@ -168,11 +173,21 @@ function polylineSegments(verts, closed) {
 }
 
 // ---------- entity extraction (raw DXF-space, not yet transformed to world) ----------
+// Beyond ordinary drawable shapes, this also pulls out two kinds of control entity — neither is
+// rendered as its own visible shape, both are consumed elsewhere:
+//   - POINT/TEXT/MTEXT -> "markers": a colour-resolvable position used to tag an enclosed region found
+//     by polygonizeFaces() with that colour (see the module-level comment on why DXF needs this at
+//     all — it has no native "this enclosed area is coloured X" concept outside HATCH).
+//   - a LINE on a layer named "BUS_START" (case-insensitive) -> the vehicle's starting pose: its first
+//     point is the start position, its direction (first point -> second point) is the start heading.
+//     At most one is used; if several exist, the first one found wins.
 function extractEntities(pairs, layerColors) {
   const entitiesStart = findSectionStart(pairs, "ENTITIES");
-  if (entitiesStart < 0) return [];
+  if (entitiesStart < 0) return { shapes: [], markers: [], busStartRaw: null };
   const records = splitRecords(pairs, entitiesStart + 1, ["ENDSEC"]);
   const shapes = [];
+  const markers = [];
+  let busStartRaw = null;
   const skipped = {};
   const warnSkip = (type) => { skipped[type] = (skipped[type] || 0) + 1; };
 
@@ -181,7 +196,17 @@ function extractEntities(pairs, layerColors) {
     const color = resolveColor(rec.pairs, layer, layerColors);
 
     if (rec.type === "LINE") {
-      shapes.push({ type: "line", p0: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, p1: { x: parseFloat(firstVal(rec.pairs, 11, 0)), y: parseFloat(firstVal(rec.pairs, 21, 0)) }, color });
+      const p0 = { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) };
+      const p1 = { x: parseFloat(firstVal(rec.pairs, 11, 0)), y: parseFloat(firstVal(rec.pairs, 21, 0)) };
+      if (layer.toUpperCase() === "BUS_START") {
+        if (!busStartRaw) busStartRaw = { p0, p1 };
+      } else {
+        shapes.push({ type: "line", p0, p1, color });
+      }
+    } else if (rec.type === "POINT") {
+      markers.push({ pos: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, color });
+    } else if (rec.type === "TEXT" || rec.type === "MTEXT") {
+      markers.push({ pos: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, color });
     } else if (rec.type === "CIRCLE") {
       shapes.push({ type: "circle", center: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, r: parseFloat(firstVal(rec.pairs, 40, 0)), color });
     } else if (rec.type === "ARC") {
@@ -251,7 +276,7 @@ function extractEntities(pairs, layerColors) {
         if (ok && segs.length >= 3) shapes.push({ type: "polyline", segments: segs, closed: true, filled: true, color });
         else warnSkip("HATCH (spline edge or too few edges)");
       }
-    } else if (["TEXT", "MTEXT", "POLYLINE", "VERTEX", "SPLINE", "INSERT", "POINT", "3DFACE", "SOLID", "DIMENSION"].includes(rec.type)) {
+    } else if (["POLYLINE", "VERTEX", "SPLINE", "INSERT", "3DFACE", "SOLID", "DIMENSION"].includes(rec.type)) {
       warnSkip(rec.type);
     }
   }
@@ -260,7 +285,7 @@ function extractEntities(pairs, layerColors) {
   if (skippedTypes.length) {
     console.warn("DXF import: skipped unsupported entities —", skippedTypes.map((t) => `${t} x${skipped[t]}`).join(", "));
   }
-  return shapes;
+  return { shapes, markers, busStartRaw };
 }
 
 function shapeBoundsPoints(shape) {
@@ -269,6 +294,150 @@ function shapeBoundsPoints(shape) {
   if (shape.type === "arc") return [{ x: shape.center.x - shape.r, y: shape.center.y - shape.r }, { x: shape.center.x + shape.r, y: shape.center.y + shape.r }];
   if (shape.type === "polyline") return shape.segments.flatMap((s) => [s.p0, s.p1]);
   return [];
+}
+
+// ---------- polygonization (shared-edge face detection) ----------
+// Builds every enclosed face from a network of LINE/ARC edges that may share endpoints/edges (drawn
+// once, not retraced per adjacent region) — the same core technique behind PostGIS's ST_Polygonize /
+// Shapely's polygonize: treat the edges as a planar graph, and at each vertex always continue along
+// whichever other edge is immediately clockwise from the direction just arrived from, tracing out each
+// minimal enclosed loop. A face only becomes a filled, coloured shape when a marker (see
+// extractEntities) falls inside it — an unmarked face contributes nothing (its edges already render
+// individually as plain line/arc shapes), so files with no markers pay no cost here.
+//
+// Requires real shared VERTICES at junctions, not just one edge's endpoint happening to touch another
+// edge's interior (a "T" — e.g. a lane divider ending partway along one long unsplit boundary line):
+// this deliberately doesn't do general segment-intersection/edge-splitting, only vertex-snapped
+// adjacency (SNAP_TOL_M below). Draw the boundary in segments that meet the divider with a real vertex
+// (use your CAD tool's endpoint/vertex snap) — a T-junction against an un-split edge won't be found.
+const SNAP_TOL_M = 0.001; // 1mm — absorbs DXF export float noise between what's meant to be one shared vertex
+
+function snapKey(p) {
+  return `${Math.round(p.x / SNAP_TOL_M)},${Math.round(p.y / SNAP_TOL_M)}`;
+}
+
+// Same normalized-sweep derivation as dxfShapePathD's arcFlags (see its own comment for why sampling
+// 3 known points beats recomputing an angle in some other frame) — kept as a separate copy rather than
+// shared, so changes here can't risk regressing the already browser-verified rendering path.
+function arcSweepInfo(c, p0, mid, p1) {
+  const a0 = Math.atan2(p0.y - c.y, p0.x - c.x);
+  const norm = (a) => (((a - a0) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const am = norm(Math.atan2(mid.y - c.y, mid.x - c.x));
+  const a1 = norm(Math.atan2(p1.y - c.y, p1.x - c.x));
+  const sweep = a1 >= am ? a1 : -(2 * Math.PI - a1);
+  return { a0, sweep };
+}
+
+function sampleEdge(edge, t) {
+  if (!edge.arc) return { x: edge.p0.x + (edge.p1.x - edge.p0.x) * t, y: edge.p0.y + (edge.p1.y - edge.p0.y) * t };
+  const { a0, sweep } = arcSweepInfo(edge.arc.center, edge.p0, edge.arc.mid, edge.p1);
+  const a = a0 + sweep * t;
+  return { x: edge.arc.center.x + edge.arc.r * Math.cos(a), y: edge.arc.center.y + edge.arc.r * Math.sin(a) };
+}
+
+function orientedEdge(e, dir) {
+  return dir ? e : { p0: e.p1, p1: e.p0, arc: e.arc };
+}
+
+// Direction of travel along a directed half-edge (p0->p1 if dir, else p1->p0), sampled near its start
+// (atStart: which way travel LEAVES this vertex) or its end (atStart=false: which way travel is
+// HEADING as it arrives, extrapolated forward — the tangent to continue straight on).
+function travelAngle(e, dir, atStart) {
+  const oe = orientedEdge(e, dir);
+  if (atStart) {
+    const near = sampleEdge(oe, 0.02);
+    return Math.atan2(near.y - oe.p0.y, near.x - oe.p0.x);
+  }
+  const near = sampleEdge(oe, 0.98);
+  return Math.atan2(oe.p1.y - near.y, oe.p1.x - near.x);
+}
+
+function signedArea(points) {
+  let a = 0;
+  for (let i = 0; i < points.length; i++) {
+    const p = points[i], q = points[(i + 1) % points.length];
+    a += p.x * q.y - q.x * p.y;
+  }
+  return a / 2;
+}
+
+function pointInPolygon(pt, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+    if ((yi > pt.y) !== (yj > pt.y) && pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function flattenOriented(e, dir, samples) {
+  const oe = orientedEdge(e, dir);
+  const pts = [];
+  for (let i = 0; i < samples; i++) pts.push(sampleEdge(oe, i / samples));
+  return pts;
+}
+
+// worldShapes/worldMarkers are already in world-space metres (post toWorld) — polygonization only
+// needs to reason about relative geometry, and doing it here (rather than in raw DXF space) means one
+// consistent piece of angle/sweep math instead of two.
+export function polygonizeFaces(worldShapes, worldMarkers) {
+  const edges = worldShapes
+    .filter((s) => s.type === "line" || s.type === "arc")
+    .map((s) => ({ p0: s.p0, p1: s.p1, arc: s.type === "arc" ? { center: s.center, r: s.r, mid: s.mid } : null }));
+  if (edges.length < 3 || worldMarkers.length === 0) return [];
+
+  const adjacency = new Map(); // snapKey -> [{edgeIdx, atP0}]
+  const addAdj = (key, entry) => { if (!adjacency.has(key)) adjacency.set(key, []); adjacency.get(key).push(entry); };
+  edges.forEach((e, idx) => { addAdj(snapKey(e.p0), { edgeIdx: idx, atP0: true }); addAdj(snapKey(e.p1), { edgeIdx: idx, atP0: false }); });
+
+  const visited = new Set();
+  const loops = [];
+  for (let idx = 0; idx < edges.length; idx++) {
+    for (const dir of [true, false]) {
+      const startKey = `${idx}:${dir}`;
+      if (visited.has(startKey)) continue;
+      const loop = [];
+      let curIdx = idx, curDir = dir;
+      let guard = 0;
+      while (guard++ < edges.length * 2 + 5) {
+        const key = `${curIdx}:${curDir}`;
+        if (visited.has(key) && !(curIdx === idx && curDir === dir && loop.length === 0)) break;
+        if (visited.has(key)) break;
+        visited.add(key);
+        loop.push({ edgeIdx: curIdx, dir: curDir });
+        const e = edges[curIdx];
+        const arrivingAt = curDir ? e.p1 : e.p0;
+        const ref = travelAngle(e, curDir, false) + Math.PI; // reversed arrival heading
+        const here = adjacency.get(snapKey(arrivingAt)) || [];
+        let best = null, bestTurn = Infinity;
+        for (const cand of here) {
+          const isReverseOfCurrent = cand.edgeIdx === curIdx && cand.atP0 !== curDir;
+          if (isReverseOfCurrent && here.length > 1) continue; // don't reverse back unless it's a dead end
+          const dep = travelAngle(edges[cand.edgeIdx], cand.atP0, true);
+          const turn = ((ref - dep) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+          if (turn < bestTurn) { bestTurn = turn; best = { edgeIdx: cand.edgeIdx, dir: cand.atP0 }; }
+        }
+        if (!best) break;
+        curIdx = best.edgeIdx; curDir = best.dir;
+        if (curIdx === idx && curDir === dir) { loop.push({ edgeIdx: curIdx, dir: curDir, closing: true }); break; }
+      }
+      if (loop.length >= 3) loops.push(loop.filter((s) => !s.closing));
+    }
+  }
+
+  const faces = [];
+  for (const loop of loops) {
+    const flat = loop.flatMap(({ edgeIdx, dir }) => flattenOriented(edges[edgeIdx], dir, edges[edgeIdx].arc ? 12 : 1));
+    if (signedArea(flat) <= 1e-9) continue; // outer/unbounded face (or degenerate) — not a fillable interior region
+    const marker = worldMarkers.find((m) => pointInPolygon(m.pos, flat));
+    if (!marker) continue; // no colour to give it — leave its edges to render individually
+    const segments = loop.map(({ edgeIdx, dir }) => {
+      const oe = orientedEdge(edges[edgeIdx], dir);
+      return { p0: oe.p0, p1: oe.p1, arc: oe.arc ? { center: oe.arc.center, r: oe.arc.r, mid: oe.arc.mid } : null };
+    });
+    faces.push({ type: "polyline", closed: true, filled: true, color: marker.color, segments });
+  }
+  return faces;
 }
 
 // world.x = unitToM*(v - anchorV); world.y = -unitToM*(u - anchorU) — "file's own up/right land as
@@ -284,15 +453,16 @@ function toWorld(p, anchor, unitToM) {
 }
 
 // Top-level entry point: raw DXF text + the chosen unit conversion (SVG_UNIT_TO_M['mm' | 'mil'], same
-// picker the SVG import path uses) -> { shapes } in WORLD-SPACE metres, ready for toScreen() each
-// frame exactly like the rest of the app's geometry — no per-render unit math, unlike the SVG import
-// path (which keeps re-deriving its placement transform live because it's placing untouched foreign
-// markup, not shapes this app controls).
+// picker the SVG import path uses) -> { shapes, widthM, heightM, startPose } in WORLD-SPACE metres,
+// ready for toScreen() each frame exactly like the rest of the app's geometry — no per-render unit
+// math, unlike the SVG import path (which keeps re-deriving its placement transform live because it's
+// placing untouched foreign markup, not shapes this app controls). startPose is null unless the file
+// had a BUS_START layer line (see extractEntities) — the caller decides what to do with it.
 export function parseDxfToWorldShapes(text, unitToM) {
   const pairs = tokenize(text);
   if (findSectionStart(pairs, "ENTITIES") < 0) throw new Error("No ENTITIES section found — not a DXF file this importer recognises");
   const layerColors = parseLayerColors(pairs);
-  const rawShapes = extractEntities(pairs, layerColors);
+  const { shapes: rawShapes, markers: rawMarkers, busStartRaw } = extractEntities(pairs, layerColors);
   if (rawShapes.length === 0) throw new Error("No supported entities found (LINE/ARC/CIRCLE/LWPOLYLINE/simple HATCH)");
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -319,7 +489,16 @@ export function parseDxfToWorldShapes(text, unitToM) {
     };
   });
 
-  return { shapes: worldShapes, widthM: (maxX - minX) * unitToM, heightM: (maxY - minY) * unitToM };
+  const worldMarkers = rawMarkers.map((m) => ({ pos: tf(m.pos), color: m.color }));
+  worldShapes.push(...polygonizeFaces(worldShapes, worldMarkers));
+
+  let startPose = null;
+  if (busStartRaw) {
+    const p0 = tf(busStartRaw.p0), p1 = tf(busStartRaw.p1);
+    startPose = { x: p0.x, y: p0.y, theta: Math.atan2(p1.y - p0.y, p1.x - p0.x) };
+  }
+
+  return { shapes: worldShapes, widthM: (maxX - minX) * unitToM, heightM: (maxY - minY) * unitToM, startPose };
 }
 
 // ---------- screen-space rendering helpers ----------
