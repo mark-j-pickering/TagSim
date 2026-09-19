@@ -271,13 +271,16 @@ function shapeBoundsPoints(shape) {
   return [];
 }
 
-// world.x = -unitToM*(v - anchorV); world.y = -unitToM*(u - anchorU) — same "file's own up/right land
-// as screen up/right, no rotation" placement the SVG import path uses (see tag-steering-simulator.jsx,
-// SVG_UNIT_TO_M), derived by requiring toScreen(view, worldPoint) reproduce the same screen position a
-// direct translate+scale of the raw (u,v) would. Keeping DXF and SVG imports visually consistent this
-// way means the same site drawn/exported either way lands the same way on the map.
+// world.x = unitToM*(v - anchorV); world.y = -unitToM*(u - anchorU) — "file's own up/right land as
+// screen up/right, no rotation," same placement intent as the SVG import path (see
+// tag-steering-simulator.jsx, SVG_UNIT_TO_M). NOT the same formula, though, and deliberately so: SVG's
+// y-axis increases downward (screen convention), but DXF's y-axis increases upward (standard CAD/math
+// convention) — reusing SVG's formula unmodified here was an earlier bug (mirrored top-to-bottom
+// relative to any real CAD viewer, caught by testing against a real DXF); the x/y roles are swapped
+// the same way for both formats (matching toScreen's own axis convention), but the v term's sign
+// flips between them specifically to correct for that y-up-vs-y-down difference.
 function toWorld(p, anchor, unitToM) {
-  return { x: -unitToM * (p.y - anchor.y), y: -unitToM * (p.x - anchor.x) };
+  return { x: unitToM * (p.y - anchor.y), y: -unitToM * (p.x - anchor.x) };
 }
 
 // Top-level entry point: raw DXF text + the chosen unit conversion (SVG_UNIT_TO_M['mm' | 'mil'], same
