@@ -482,11 +482,34 @@ browser session — not just a scale/orientation sanity check.
     though the underlying sweep-normalisation trick is the same idea —
     kept apart deliberately so changes to one can't risk regressing the
     other's already browser-verified behaviour.
+  - **Line weight and line type** (DXF groups `370`/`6`) are read and
+    rendered, not just colour — same BYLAYER-fallback shape as colour
+    (`resolveLineweight`/`resolveLinetypeDashes`: entity's own value > its
+    layer's (`TABLES`/`LAYER` groups `370`/`6`) > a default). Line type uses
+    the drawing's own real dash pattern from `TABLES`/`LTYPE` (group `49`'s
+    segment lengths), not a guessed generic dashed look. **Line weight is
+    deliberately not a literal real-world-mm-to-px conversion** — this
+    app's usual zoom (a site plan spanning tens-to-hundreds of metres) makes
+    even a "heavy" 2mm DXF lineweight sub-pixel (≈0.04px at a typical view
+    scale), so a literal conversion would render every weight identically
+    at 0px and the whole feature would be invisible in normal use. Instead
+    `dxfShapeStrokeWidth` takes the larger of (a) a minimum on-screen width
+    by weight *category* (`LINEWEIGHT_BASELINE_PX` — thin/normal/heavy stay
+    visually distinct at the zoom this app is actually used at) and (b) the
+    true real-world-scaled width — a floor, not a fixed value, so a heavy
+    line still gets genuinely thicker than a thin one once zoomed in close
+    enough for the real size to exceed that floor (inspecting a kerb line
+    from a few metres away), while thin lines never vanish and heavy ones
+    aren't fake-thick at normal zoom.
   - Verified against a real DXF (an Onshape export whose SVG conversion via
     SignMaster was the original scale-mismatch bug report), a synthetic
-    rectangle split into two closed, differently-coloured `LWPOLYLINE`s, and
-    a 4-lane shared-edge-network + `POINT` markers + `BUS_START` file
-    (`docs/example-site-plans/multi-lane-shared.dxf`), in a real browser
+    rectangle split into two closed, differently-coloured `LWPOLYLINE`s, a
+    4-lane shared-edge-network + `POINT`/`TEXT` markers + `BUS_START` file
+    (`docs/example-site-plans/multi-lane-shared.dxf`,
+    `multi-lane-textcolor.dxf`), and a `LAYER`+`LTYPE` file exercising
+    BYLAYER inheritance, explicit per-entity overrides, a real dash-dot
+    pattern, and a visibly-heavier line side by side
+    (`docs/example-site-plans/lineweight-linetype.dxf`), in a real browser
     session each time, not just unit tests.
 - The grid pattern hides while a drawing is loaded (`!mapImage` gate on the
   grid `<rect>`) — the two visually fight otherwise.

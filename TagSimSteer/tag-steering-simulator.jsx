@@ -3,7 +3,7 @@ import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
 import { createEnv, observe, DEFAULT_COURSE_OPTIONS, CRUISE_SPEED_KMH } from "./src/env.js";
 import { createPolicy, makePolicyFn } from "./src/policy.js";
 import trainedPolicyData from "./src/trained-policy.json";
-import { parseDxfToWorldShapes, dxfShapePathD } from "./src/dxfImport.js";
+import { parseDxfToWorldShapes, dxfShapePathD, dxfShapeStrokeWidth, dxfShapeStrokeDasharray } from "./src/dxfImport.js";
 
 // ---------- constants ----------
 // VB is the height of the SVG's abstract coordinate space, always 1000 units — it's the reference
@@ -2977,18 +2977,23 @@ export default function BusSteeringSimulator() {
               <circle> elements through the same toScreen() every other map element uses, since DXF
               (unlike SVG) has no native markup this app can just inline. A filled polyline (a closed
               LWPOLYLINE or simple HATCH boundary — see dxfImport.js) is a distinct coloured region;
-              everything else is stroke-only line art, same as raw LINE/ARC entities always are. */}
+              everything else is stroke-only line art, same as raw LINE/ARC entities always are.
+              Stroke width/dash come from the entity's own DXF lineweight/linetype — see
+              dxfShapeStrokeWidth's own comment for why lineweight isn't a literal real-world-mm-to-px
+              conversion (it'd be sub-pixel-invisible at this app's usual site-plan-scale zoom). */}
           {mapImage && mapImage.kind === "dxf" && (
             <g>
               {mapImage.shapes.map((shape, i) => {
                 const toScr = (p) => toScreen(displayedView, p);
+                const strokeWidth = dxfShapeStrokeWidth(shape, displayedView.scale);
+                const strokeDasharray = dxfShapeStrokeDasharray(shape, displayedView.scale);
                 if (shape.type === "circle") {
                   const c = toScr(shape.center);
-                  return <circle key={i} cx={c.x} cy={c.y} r={shape.r * displayedView.scale} fill="none" stroke={shape.color} strokeWidth="1.5" />;
+                  return <circle key={i} cx={c.x} cy={c.y} r={shape.r * displayedView.scale} fill="none" stroke={shape.color} strokeWidth={strokeWidth} strokeDasharray={strokeDasharray} />;
                 }
                 const d = dxfShapePathD(shape, toScr, displayedView.scale);
                 if (!d) return null;
-                return <path key={i} d={d} fill={shape.filled ? shape.color : "none"} fillOpacity={shape.filled ? 0.55 : 1} stroke={shape.color} strokeWidth="1.5" />;
+                return <path key={i} d={d} fill={shape.filled ? shape.color : "none"} fillOpacity={shape.filled ? 0.55 : 1} stroke={shape.color} strokeWidth={strokeWidth} strokeDasharray={strokeDasharray} />;
               })}
             </g>
           )}

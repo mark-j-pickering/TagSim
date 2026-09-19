@@ -102,29 +102,60 @@ function firstVal(pairs, code, fallback) {
   return fallback;
 }
 
-// ---------- layer colour table ----------
-function parseLayerColors(pairs) {
-  const layers = {};
+// ---------- TABLES section: LAYER (colour/lineweight/linetype-name) and LTYPE (dash patterns) ----------
+// Finds a specific named table within TABLES (which holds several — VPORT, LTYPE, LAYER, ...).
+function findTable(pairs, tableName) {
   const tablesStart = findSectionStart(pairs, "TABLES");
-  if (tablesStart < 0) return layers;
-  // Find the LAYER table specifically (TABLES holds several tables — VPORT, LTYPE, LAYER, ...).
-  let layerTableStart = -1;
+  if (tablesStart < 0) return -1;
   for (let i = tablesStart; i < pairs.length; i++) {
     if (pairs[i][0] === 0 && pairs[i][1] === "TABLE") {
       const nameAt = i + 1;
-      if (pairs[nameAt] && pairs[nameAt][0] === 2 && pairs[nameAt][1] === "LAYER") { layerTableStart = i; break; }
+      if (pairs[nameAt] && pairs[nameAt][0] === 2 && pairs[nameAt][1] === tableName) return i;
     }
     if (pairs[i][0] === 0 && pairs[i][1] === "ENDSEC") break;
   }
-  if (layerTableStart < 0) return layers;
+  return -1;
+}
+
+// One pass over the LAYER table for everything a layer can supply as a BYLAYER default: colour
+// (group 62), lineweight (group 370, hundredths of a mm — see resolveLineweight), and linetype name
+// (group 6, looked up in ltypeDashes — see parseLtypeDashes) — kept as one function/one table-scan
+// rather than three, since it's the same records either way.
+function parseLayerTable(pairs) {
+  const colors = {}, lineweights = {}, linetypes = {};
+  const layerTableStart = findTable(pairs, "LAYER");
+  if (layerTableStart < 0) return { colors, lineweights, linetypes };
   const records = splitRecords(pairs, layerTableStart + 1, ["ENDTAB"]);
   for (const rec of records) {
     if (rec.type !== "LAYER") continue;
     const name = firstVal(rec.pairs, 2, null);
+    if (name == null) continue;
     const aci = parseInt(firstVal(rec.pairs, 62, "7"), 10);
-    if (name != null) layers[name] = isFinite(aci) ? aci : 7;
+    colors[name] = isFinite(aci) ? aci : 7;
+    const lw = parseInt(firstVal(rec.pairs, 370, ""), 10);
+    if (isFinite(lw)) lineweights[name] = lw;
+    const lt = firstVal(rec.pairs, 6, null);
+    if (lt != null) linetypes[name] = lt;
   }
-  return layers;
+  return { colors, lineweights, linetypes };
+}
+
+// LTYPE table: each named linetype's actual dash pattern — group 49 (repeated) gives each segment's
+// length in drawing units (same raw units as coordinates, positive = pen-down/dash, negative =
+// pen-up/gap, 0 = a dot), the real pattern rather than a guessed-at generic dashed look.
+function parseLtypeDashes(pairs) {
+  const dashes = {};
+  const ltypeTableStart = findTable(pairs, "LTYPE");
+  if (ltypeTableStart < 0) return dashes;
+  const records = splitRecords(pairs, ltypeTableStart + 1, ["ENDTAB"]);
+  for (const rec of records) {
+    if (rec.type !== "LTYPE") continue;
+    const name = firstVal(rec.pairs, 2, null);
+    if (name == null) continue;
+    const segs = rec.pairs.filter(([c]) => c === 49).map(([, v]) => parseFloat(v));
+    if (segs.length) dashes[name] = segs;
+  }
+  return dashes;
 }
 
 function resolveColor(entPairs, layer, layerColors) {
@@ -135,6 +166,34 @@ function resolveColor(entPairs, layer, layerColors) {
   const layerAci = layerColors[layer];
   if (layerAci != null) return aciToRgb(layerAci);
   return "#c8c8c8";
+}
+
+// DEFAULT (-3)/unset lineweight resolves to this — most DXF-consuming viewers' own "Default" weight
+// preference, not a value the spec itself mandates; 0.25mm is the common convention (AutoCAD's own
+// classic default) rather than an asserted spec fact.
+const LWDEFAULT_HUNDREDTHS_MM = 25;
+
+// Same BYLAYER-fallback shape as resolveColor: entity's own group 370 (hundredths of a mm; -1 =
+// BYLAYER, -2 = BYBLOCK — treated the same as BYLAYER here since blocks/inserts aren't supported, -3
+// = DEFAULT) > its layer's own lineweight > LWDEFAULT_HUNDREDTHS_MM. Always returns a number, never
+// null — every shape gets a real width, not just ones that happened to specify one.
+function resolveLineweight(entPairs, layer, layerLineweights) {
+  const raw = parseInt(firstVal(entPairs, 370, "-1"), 10);
+  if (isFinite(raw) && raw >= 0) return raw;
+  if (raw === -3) return LWDEFAULT_HUNDREDTHS_MM;
+  const layerLw = layerLineweights[layer];
+  if (layerLw != null && layerLw >= 0) return layerLw;
+  return LWDEFAULT_HUNDREDTHS_MM;
+}
+
+// Same BYLAYER-fallback shape again: entity's own group 6 linetype name > its layer's own linetype
+// name > "CONTINUOUS". "CONTINUOUS"/"BYLAYER"/"BYBLOCK"/unresolved names all mean "no dash pattern"
+// (solid) — returns the raw dash-length array (drawing units, signed) from ltypeDashes, or null.
+function resolveLinetypeDashes(entPairs, layer, layerLinetypes, ltypeDashes) {
+  let name = firstVal(entPairs, 6, "BYLAYER");
+  if (name === "BYLAYER" || name === "BYBLOCK") name = layerLinetypes[layer] || "CONTINUOUS";
+  if (name === "CONTINUOUS") return null;
+  return ltypeDashes[name] || null;
 }
 
 // ---------- bulge (DXF's compact way of encoding an arc segment in a polyline) ----------
@@ -197,7 +256,8 @@ function polylineSegments(verts, closed) {
 //   - a LINE on a layer named "BUS_START" (case-insensitive) -> the vehicle's starting pose: its first
 //     point is the start position, its direction (first point -> second point) is the start heading.
 //     At most one is used; if several exist, the first one found wins.
-function extractEntities(pairs, layerColors) {
+function extractEntities(pairs, layerTable, ltypeDashes) {
+  const { colors: layerColors, lineweights: layerLineweights, linetypes: layerLinetypes } = layerTable;
   const entitiesStart = findSectionStart(pairs, "ENTITIES");
   if (entitiesStart < 0) return { shapes: [], markers: [], busStartRaw: null };
   const records = splitRecords(pairs, entitiesStart + 1, ["ENDSEC"]);
@@ -210,6 +270,10 @@ function extractEntities(pairs, layerColors) {
   for (const rec of records) {
     const layer = firstVal(rec.pairs, 8, "0");
     const color = resolveColor(rec.pairs, layer, layerColors);
+    // widthMm/dashRaw are per-record (an entity has one lineweight/linetype, even a multi-segment
+    // polyline), attached uniformly to whatever shape(s) this record produces below.
+    const widthMm = resolveLineweight(rec.pairs, layer, layerLineweights);
+    const dashRaw = resolveLinetypeDashes(rec.pairs, layer, layerLinetypes, ltypeDashes);
 
     if (rec.type === "LINE") {
       const p0 = { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) };
@@ -217,7 +281,7 @@ function extractEntities(pairs, layerColors) {
       if (layer.toUpperCase() === "BUS_START") {
         if (!busStartRaw) busStartRaw = { p0, p1 };
       } else {
-        shapes.push({ type: "line", p0, p1, color });
+        shapes.push({ type: "line", p0, p1, color, widthMm, dashRaw });
       }
     } else if (rec.type === "POINT") {
       markers.push({ pos: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, color });
@@ -225,7 +289,7 @@ function extractEntities(pairs, layerColors) {
       const label = firstVal(rec.pairs, 1, "");
       markers.push({ pos: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, color: colorFromLabelText(label) || color });
     } else if (rec.type === "CIRCLE") {
-      shapes.push({ type: "circle", center: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, r: parseFloat(firstVal(rec.pairs, 40, 0)), color });
+      shapes.push({ type: "circle", center: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, r: parseFloat(firstVal(rec.pairs, 40, 0)), color, widthMm, dashRaw });
     } else if (rec.type === "ARC") {
       const cx = parseFloat(firstVal(rec.pairs, 10, 0)), cy = parseFloat(firstVal(rec.pairs, 20, 0));
       const r = parseFloat(firstVal(rec.pairs, 40, 0));
@@ -233,7 +297,7 @@ function extractEntities(pairs, layerColors) {
       const a1raw = parseFloat(firstVal(rec.pairs, 51, 0)) * Math.PI / 180;
       const sweep = ((a1raw - a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) || 2 * Math.PI;
       shapes.push({
-        type: "arc", color, r,
+        type: "arc", color, r, widthMm, dashRaw,
         center: { x: cx, y: cy },
         p0: { x: cx + r * Math.cos(a0), y: cy + r * Math.sin(a0) },
         mid: { x: cx + r * Math.cos(a0 + sweep / 2), y: cy + r * Math.sin(a0 + sweep / 2) },
@@ -242,7 +306,7 @@ function extractEntities(pairs, layerColors) {
     } else if (rec.type === "LWPOLYLINE") {
       const closed = (parseInt(firstVal(rec.pairs, 70, "0"), 10) & 1) === 1;
       const verts = readVertices(rec.pairs);
-      if (verts.length >= 2) shapes.push({ type: "polyline", segments: polylineSegments(verts, closed), closed, filled: closed, color });
+      if (verts.length >= 2) shapes.push({ type: "polyline", segments: polylineSegments(verts, closed), closed, filled: closed, color, widthMm, dashRaw });
       else warnSkip("LWPOLYLINE (too few vertices)");
     } else if (rec.type === "HATCH") {
       const nLoops = parseInt(firstVal(rec.pairs, 91, "0"), 10);
@@ -260,7 +324,7 @@ function extractEntities(pairs, layerColors) {
         const endAt = sub.findIndex(([c]) => c === 97);
         const vertexPairs = endAt >= 0 ? sub.slice(0, endAt) : sub;
         const verts = readVertices(vertexPairs);
-        if (verts.length >= 3) shapes.push({ type: "polyline", segments: polylineSegments(verts, true), closed: true, filled: true, color });
+        if (verts.length >= 3) shapes.push({ type: "polyline", segments: polylineSegments(verts, true), closed: true, filled: true, color, widthMm, dashRaw });
         else warnSkip("HATCH (degenerate polyline boundary)");
       } else {
         // Edge-type boundary: 93 = edge count, then per edge 72=edge type, 1=line, 2=arc (3=ellipse,
@@ -290,7 +354,7 @@ function extractEntities(pairs, layerColors) {
             } else { ok = false; break; }
           } else j++;
         }
-        if (ok && segs.length >= 3) shapes.push({ type: "polyline", segments: segs, closed: true, filled: true, color });
+        if (ok && segs.length >= 3) shapes.push({ type: "polyline", segments: segs, closed: true, filled: true, color, widthMm, dashRaw });
         else warnSkip("HATCH (spline edge or too few edges)");
       }
     } else if (["POLYLINE", "VERTEX", "SPLINE", "INSERT", "3DFACE", "SOLID", "DIMENSION"].includes(rec.type)) {
@@ -452,7 +516,11 @@ export function polygonizeFaces(worldShapes, worldMarkers) {
       const oe = orientedEdge(edges[edgeIdx], dir);
       return { p0: oe.p0, p1: oe.p1, arc: oe.arc ? { center: oe.arc.center, r: oe.arc.r, mid: oe.arc.mid } : null };
     });
-    faces.push({ type: "polyline", closed: true, filled: true, color: marker.color, segments });
+    // A synthesized face has no single source entity to take a lineweight/linetype from (it's built
+    // from several edges' worth of network) — default width, solid outline. Already in world-space
+    // (polygonizeFaces runs on worldShapes), so widthM/dashM directly, not the raw widthMm/dashRaw
+    // fields extractEntities' shapes carry before parseDxfToWorldShapes' unit conversion.
+    faces.push({ type: "polyline", closed: true, filled: true, color: marker.color, widthM: LWDEFAULT_HUNDREDTHS_MM / 100000, dashM: null, segments });
   }
   return faces;
 }
@@ -478,8 +546,9 @@ function toWorld(p, anchor, unitToM) {
 export function parseDxfToWorldShapes(text, unitToM) {
   const pairs = tokenize(text);
   if (findSectionStart(pairs, "ENTITIES") < 0) throw new Error("No ENTITIES section found — not a DXF file this importer recognises");
-  const layerColors = parseLayerColors(pairs);
-  const { shapes: rawShapes, markers: rawMarkers, busStartRaw } = extractEntities(pairs, layerColors);
+  const layerTable = parseLayerTable(pairs);
+  const ltypeDashes = parseLtypeDashes(pairs);
+  const { shapes: rawShapes, markers: rawMarkers, busStartRaw } = extractEntities(pairs, layerTable, ltypeDashes);
   if (rawShapes.length === 0) throw new Error("No supported entities found (LINE/ARC/CIRCLE/LWPOLYLINE/simple HATCH)");
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -492,13 +561,19 @@ export function parseDxfToWorldShapes(text, unitToM) {
   const anchor = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
 
   const tf = (p) => toWorld(p, anchor, unitToM);
+  // Lineweight (group 370) is always physical hundredths-of-a-mm regardless of the drawing's own
+  // coordinate unit convention (see resolveLineweight) — widthM doesn't go through unitToM. Dash
+  // pattern lengths (group 49) are drawing-unit distances exactly like coordinates, so dashM does.
+  const widthM = (mm100) => mm100 / 100000;
+  const dashM = (raw) => (raw ? raw.map((v) => v * unitToM) : null);
   const worldShapes = rawShapes.map((shape) => {
-    if (shape.type === "line") return { type: "line", p0: tf(shape.p0), p1: tf(shape.p1), color: shape.color };
-    if (shape.type === "circle") return { type: "circle", center: tf(shape.center), r: shape.r * unitToM, color: shape.color };
-    if (shape.type === "arc") return { type: "arc", center: tf(shape.center), r: shape.r * unitToM, p0: tf(shape.p0), mid: tf(shape.mid), p1: tf(shape.p1), color: shape.color };
+    if (shape.type === "line") return { type: "line", p0: tf(shape.p0), p1: tf(shape.p1), color: shape.color, widthM: widthM(shape.widthMm), dashM: dashM(shape.dashRaw) };
+    if (shape.type === "circle") return { type: "circle", center: tf(shape.center), r: shape.r * unitToM, color: shape.color, widthM: widthM(shape.widthMm), dashM: dashM(shape.dashRaw) };
+    if (shape.type === "arc") return { type: "arc", center: tf(shape.center), r: shape.r * unitToM, p0: tf(shape.p0), mid: tf(shape.mid), p1: tf(shape.p1), color: shape.color, widthM: widthM(shape.widthMm), dashM: dashM(shape.dashRaw) };
     // polyline
     return {
       type: "polyline", closed: shape.closed, filled: shape.filled, color: shape.color,
+      widthM: widthM(shape.widthMm), dashM: dashM(shape.dashRaw),
       segments: shape.segments.map((s) => ({
         p0: tf(s.p0), p1: tf(s.p1),
         arc: s.arc ? { center: tf(s.arc.center), r: s.arc.r * unitToM, mid: tf(s.arc.mid) } : null,
@@ -568,4 +643,37 @@ export function dxfShapePathD(shape, toScreenFn, viewScale) {
     return d.trim();
   }
   return null; // circle
+}
+
+// A literal real-world-mm -> screen-px conversion is worthless at this app's usual zoom: a site plan
+// spans tens-to-hundreds of metres, so even a "heavy" 2mm DXF lineweight comes out under a pixel
+// (2mm * ~20px/m ≈ 0.04px) — every weight would render identically at 0px and the whole feature would
+// be invisible in normal use. So a lineweight maps to a MINIMUM on-screen width by weight category
+// (thin/normal/heavy stay visually distinct at the zoom levels this app is actually used at) rather
+// than a literal physical width — but it's a floor, not a fixed value: dxfShapeStrokeWidth still
+// computes the true real-world-scaled width too, so a heavy line genuinely gets thicker than a thin
+// one once you're zoomed in close enough for the real-world size to exceed this floor (e.g. inspecting
+// a kerb line from a few metres away) — thin lines never disappear, heavy ones aren't fake-thick.
+const LINEWEIGHT_BASELINE_PX = [[0, 0.6], [13, 0.8], [25, 1.0], [35, 1.2], [50, 1.5], [70, 1.8], [100, 2.2], [140, 2.6]];
+function lineweightBaselinePx(mm100) {
+  for (const [max, px] of LINEWEIGHT_BASELINE_PX) if (mm100 <= max) return px;
+  return 3.2;
+}
+
+export function dxfShapeStrokeWidth(shape, viewScale) {
+  return Math.max(lineweightBaselinePx(shape.widthM * 100000), shape.widthM * viewScale);
+}
+
+// SVG stroke-dasharray from a DXF dash pattern already converted to world metres (dashM — see
+// parseDxfToWorldShapes) — scaled to the current view like everything else (dash length behaves like
+// any other on-map distance, not like lineweight's own deliberately-not-purely-physical scaling
+// above), then made screen-legible: SVG dasharray only takes positive alternating lengths, but DXF's
+// own pattern is signed (positive = dash, negative = gap) and a 0 entry means "a dot," which as a
+// literal 0-length dash would just vanish — so each length's sign is dropped (position in the array
+// already alternates dash/gap, matching SVG's own alternation) and a 0 becomes a short dot the current
+// stroke width's own size, the same way a plotter draws one.
+export function dxfShapeStrokeDasharray(shape, viewScale) {
+  if (!shape.dashM) return undefined;
+  const strokeW = dxfShapeStrokeWidth(shape, viewScale);
+  return shape.dashM.map((v) => Math.max(Math.abs(v) * viewScale, v === 0 ? strokeW * 0.5 : 0.4)).join(" ");
 }
