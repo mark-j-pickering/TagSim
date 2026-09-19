@@ -17,10 +17,15 @@ const CLOSE_RADIUS_M = 15; // 'B' key: close-up view radius around the bus, see 
 const CLOSE_FORWARD_BIAS = 1 / 3; // how far back from the front bumper (as a fraction of overall length) the close-up centres on
 const MIN_ZOOM = 0.02; // low enough to zoom out to roughly the full 1km² trail-recording area (S/M presets — see TRAIL_SIZE_PRESETS)
 const MAX_ZOOM = 6;
-// Imported site-drawing convention (see handleLoadMapImage): an SVG's own coordinate units are always
-// treated as millimetres, so an imported drawing's scale is fully determined by its viewBox/width —
-// no per-file calibration UI. Draw/export site plans at 1 SVG unit = 1mm to line up correctly.
-const SVG_MM_TO_M = 0.001;
+// Imported site-drawing convention (see handleLoadMapImage): an SVG's own coordinate units are
+// always one of these two fixed, known real-world sizes — so an imported drawing's scale is fully
+// determined by its viewBox/width and a two-way unit pick at import time, no click-and-measure
+// calibration UI. "mm" covers anything authored/exported to scale in millimetres (the common case
+// for a vector tool set to metric units); "mil" (1/1000 inch, 0.0254mm) covers sign-cutting/vinyl/
+// CNC software, which very often emits raw SVG coordinates in that unit with no metric conversion —
+// found by testing against a real SignMaster export (viewBox up to ~988799 — absurd as millimetres,
+// but a sane ~25m as thousandths of an inch).
+const SVG_UNIT_TO_M = { mm: 0.001, mil: 0.0000254 };
 
 // Trail-recording/boundary square half-extent presets (metres) — S/M/L, selectable in Advanced
 // settings. "half" is the same quantity the rest of the file already calls TRAIL_BOUND_HALF; M (500)
@@ -1511,10 +1516,15 @@ export default function BusSteeringSimulator() {
   const skipResetRef = useRef(false);
   const fileInputRef = useRef(null);
   const mapImageInputRef = useRef(null);
-  // Imported site drawing (see handleLoadMapImage): { markup, viewBox: {x,y,w,h} } in the SVG's own
-  // millimetre-convention units, or null when none is loaded. Not part of the Save/Load JSON — it's
-  // re-imported from its own file each session, same as the bus reference photo isn't re-saved.
+  // Imported site drawing (see handleLoadMapImage): { markup, viewBox: {x,y,w,h}, unitToM } — unitToM
+  // (from SVG_UNIT_TO_M) is captured at import time, not read live off mapImageUnit below, so
+  // switching the unit picker afterwards can't retroactively rescale an already-loaded drawing. null
+  // when none is loaded. Not part of the Save/Load JSON — it's re-imported from its own file each
+  // session, same as the bus reference photo isn't re-saved.
   const [mapImage, setMapImage] = useState(null);
+  // Which SVG_UNIT_TO_M entry the *next* import uses — a driver-picked fact about the source file
+  // (which CAD/sign/vinyl tool produced it), not something the app can infer from the numbers alone.
+  const [mapImageUnit, setMapImageUnit] = useState("mm");
 
   // Driver controls: up/down arrow key state read imperatively by the drive loop each frame (see
   // below), rather than React state — these change many times a second while held and never need
@@ -1696,8 +1706,10 @@ export default function BusSteeringSimulator() {
   }
 
   // ---------- imported site drawing (map background) ----------
-  // Loads an SVG file as a scaled background layer under the vehicle/trail — see SVG_MM_TO_M for
-  // the fixed millimetre-units convention this relies on (no calibration step, no rotation).
+  // Loads an SVG file as a scaled background layer under the vehicle/trail — see SVG_UNIT_TO_M for
+  // the fixed unit conventions this relies on (no click-and-measure calibration step, no rotation).
+  // mapImageUnit (the "MM"/"1/1000 IN" picker next to the Import Drawing button) says which one this
+  // file uses; captured into the loaded mapImage itself so later toggling the picker doesn't rescale it.
   function handleLoadMapImage(e) {
     const file = e.target.files && e.target.files[0];
     e.target.value = ""; // allow re-selecting the same file next time
@@ -1712,7 +1724,7 @@ export default function BusSteeringSimulator() {
         }
         const viewBox = parseSvgViewBox(svgEl);
         if (!viewBox) throw new Error("SVG has no usable viewBox or width/height");
-        setMapImage({ markup: svgEl.innerHTML, viewBox });
+        setMapImage({ markup: svgEl.innerHTML, viewBox, unitToM: SVG_UNIT_TO_M[mapImageUnit] });
       } catch (err) {
         alert("Couldn't load that drawing: " + err.message);
       }
@@ -2878,7 +2890,18 @@ export default function BusSteeringSimulator() {
             Load
           </button>
           <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleLoadFile} style={{ display: "none" }} />
-          <button className="btn" onClick={() => mapImageInputRef.current && mapImageInputRef.current.click()} title="Import a site drawing (SVG, 1 unit = 1mm) to drive over, scaled automatically from its viewBox" style={{ fontSize: 13, padding: "6px 10px" }}>
+          {/* Which SVG_UNIT_TO_M convention the next imported drawing uses — a fact about the source
+              file/software (e.g. sign-cutting/vinyl/CNC tools commonly emit raw SVG coordinates in
+              1/1000", not mm), not something the file's own numbers can tell us on their own. */}
+          <div style={{ display: "flex", gap: 2 }} title="Real-world unit of the SVG file's own coordinates — pick before Import Drawing">
+            <button className={"btn" + (mapImageUnit === "mm" ? " btnOn" : "")} onClick={() => setMapImageUnit("mm")} style={{ fontSize: 13, padding: "6px 8px" }}>
+              mm
+            </button>
+            <button className={"btn" + (mapImageUnit === "mil" ? " btnOn" : "")} onClick={() => setMapImageUnit("mil")} style={{ fontSize: 13, padding: "6px 8px" }}>
+              1/1000in
+            </button>
+          </div>
+          <button className="btn" onClick={() => mapImageInputRef.current && mapImageInputRef.current.click()} title={`Import a site drawing (SVG, 1 unit = 1${mapImageUnit === "mil" ? "/1000 inch" : "mm"}) to drive over, scaled automatically from its viewBox`} style={{ fontSize: 13, padding: "6px 10px" }}>
             Import Drawing
           </button>
           {mapImage && (
@@ -2921,14 +2944,14 @@ export default function BusSteeringSimulator() {
               otherwise visually fight each other. */}
           {!mapImage && <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />}
 
-          {/* Imported site drawing (see handleLoadMapImage/SVG_MM_TO_M): the file's own markup,
+          {/* Imported site drawing (see handleLoadMapImage/SVG_UNIT_TO_M): the file's own markup,
               inlined untouched and placed with a plain translate+uniform-scale — no rotation, no
-              per-file calibration. Its viewBox centre is anchored at world (0,0) (the screen point
-              (originX,originY) — same anchor the grid pattern above uses), and 1 SVG unit = 1mm is
-              baked in as SVG_MM_TO_M, so the drawing's own "up"/"right" land as screen up/right,
-              scaled to real-world size and panning/zooming with everything else on the map. */}
+              click-and-measure calibration. Its viewBox centre is anchored at world (0,0) (the screen
+              point (originX,originY) — same anchor the grid pattern above uses), and its own
+              "up"/"right" land as screen up/right, scaled to real-world size (via the unit it was
+              imported with — mapImage.unitToM) and panning/zooming with everything else on the map. */}
           {mapImage && (() => {
-            const k = displayedView.scale * SVG_MM_TO_M;
+            const k = displayedView.scale * mapImage.unitToM;
             const anchorU = mapImage.viewBox.x + mapImage.viewBox.w / 2;
             const anchorV = mapImage.viewBox.y + mapImage.viewBox.h / 2;
             const tx = displayedView.originX - k * anchorU;
