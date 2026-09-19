@@ -452,6 +452,16 @@ browser session — not just a scale/orientation sanity check.
     segment-intersection splitting, only vertex-snapped adjacency,
     `SNAP_TOL_M` = 1mm). `POINT`/`TEXT`/`MTEXT` are never drawn as their own
     visible shape — they're markers only.
+  - **A `TEXT`/`MTEXT` marker's own text, if it looks like a colour (a hex
+    code, or a plain word passed straight through as a CSS colour keyword —
+    `colorFromLabelText`), overrides its resolved DXF colour.** Exists
+    because whether a CAD tool makes assigning an arbitrary colour to one
+    entity easy varies a lot — Onshape's own DXF layers, in testing, looked
+    like its fixed internal categories (sketch geometry, dimension lines,
+    etc.), not anything hand-picked — but typing a label always works,
+    everywhere. A label that doesn't look like a colour (e.g. "LANE3") just
+    falls back to the entity's/layer's own resolved colour as normal, so
+    plain documentation labels are harmless.
   - **Starting the bus somewhere specific**: a `LINE` on a layer named
     `BUS_START` (case-insensitive; first one found wins if there are
     several) sets the vehicle's starting pose instead of being drawn — its

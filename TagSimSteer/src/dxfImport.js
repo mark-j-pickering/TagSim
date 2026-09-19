@@ -1,5 +1,5 @@
 // Minimal DXF (ASCII, R12-and-up group-code format) reader for the "Import Drawing" map background
-// (see tag-steering-simulator.jsx's handleLoadMapImage / SVG_UNIT_TO_M). Unlike the SVG import path
+// (see tag-steering-simulator.jsx's handleLoadMapImage / SVG_MM_TO_M). Unlike the SVG import path
 // (which just inlines the file's own markup untouched), DXF has no native web rendering, so this
 // module parses entities into plain world-space shape descriptions that the component renders as
 // ordinary SVG elements — same toScreen() pipeline as every other geometry in the app, not a second
@@ -15,7 +15,10 @@
 // Two further, non-drawn entity kinds (see extractEntities' own comment for the exact rules):
 // POINT/TEXT/MTEXT become colour "markers" consumed by polygonizeFaces() to colour an enclosed region
 // found from a shared LINE/ARC network (so adjacent regions can share a boundary drawn once, never
-// retraced); a LINE on a layer named BUS_START sets the vehicle's starting pose instead of being drawn.
+// retraced) — a TEXT/MTEXT marker's own content, if it looks like a colour (a hex code or a plain
+// word), overrides its resolved DXF colour (see colorFromLabelText), since not every CAD tool makes
+// assigning an arbitrary colour to one entity easy, but typing a label always works; a LINE on a
+// layer named BUS_START sets the vehicle's starting pose instead of being drawn.
 //
 // Colour resolution, in order: the entity's own true-colour (group 420, 24-bit RGB) > the entity's own
 // ACI colour (group 62, when not BYLAYER=256/BYBLOCK=0) > its layer's ACI colour (from the TABLES/LAYER
@@ -39,6 +42,19 @@ function aciToRgb(aci) {
 function trueColorToRgb(v) {
   const n = Number(v) >>> 0;
   return `rgb(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255})`;
+}
+
+// A TEXT/MTEXT marker's own content, if it looks like a colour, overrides its resolved DXF colour
+// (see extractEntities) — hex (#f00/#ff0000) or a plain word passed straight through as a CSS colour
+// keyword (the browser already knows "red"/"cornflowerblue"/etc., no name->hex table to get wrong
+// here). This exists because whether a CAD tool lets you assign an arbitrary colour to one sketch
+// entity varies a lot (Onshape's own DXF layers, in testing, looked like its fixed internal
+// categories, not anything hand-picked) — but typing a word as a text label works everywhere.
+function colorFromLabelText(text) {
+  const t = (text || "").trim();
+  if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(t)) return t;
+  if (/^[a-z]{3,20}$/i.test(t)) return t.toLowerCase();
+  return null;
 }
 
 // ---------- group-code tokenizer ----------
@@ -206,7 +222,8 @@ function extractEntities(pairs, layerColors) {
     } else if (rec.type === "POINT") {
       markers.push({ pos: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, color });
     } else if (rec.type === "TEXT" || rec.type === "MTEXT") {
-      markers.push({ pos: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, color });
+      const label = firstVal(rec.pairs, 1, "");
+      markers.push({ pos: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, color: colorFromLabelText(label) || color });
     } else if (rec.type === "CIRCLE") {
       shapes.push({ type: "circle", center: { x: parseFloat(firstVal(rec.pairs, 10, 0)), y: parseFloat(firstVal(rec.pairs, 20, 0)) }, r: parseFloat(firstVal(rec.pairs, 40, 0)), color });
     } else if (rec.type === "ARC") {
