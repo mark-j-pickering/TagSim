@@ -1,0 +1,80 @@
+  0
+SECTION
+  2
+TABLES
+  0
+TABLE
+  2
+LAYER
+  0
+LAYER
+  2
+LEFT_HALF
+ 62
+     1
+  0
+LAYER
+  2
+RIGHT_HALF
+ 62
+     5
+  0
+ENDTAB
+  0
+ENDSEC
+  0
+SECTION
+  2
+ENTITIES
+  0
+LWPOLYLINE
+  8
+LEFT_HALF
+ 90
+     4
+ 70
+     1
+ 10
+0.0
+ 20
+0.0
+ 10
+10000.0
+ 20
+0.0
+ 10
+10000.0
+ 20
+20000.0
+ 10
+0.0
+ 20
+20000.0
+  0
+LWPOLYLINE
+  8
+RIGHT_HALF
+ 90
+     4
+ 70
+     1
+ 10
+10000.0
+ 20
+0.0
+ 10
+20000.0
+ 20
+0.0
+ 10
+20000.0
+ 20
+20000.0
+ 10
+10000.0
+ 20
+20000.0
+  0
+ENDSEC
+  0
+EOF

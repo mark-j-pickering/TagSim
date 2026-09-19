@@ -363,11 +363,13 @@ branches (circular vs straight-line versions).
 
 ## Imported site drawings (map background)
 
-"Import Drawing" (header toolbar, beside Save/Load) loads an SVG file as a
-scaled background layer under the vehicle/trail, so a driver can rehearse
-against a real site layout (depot lanes, a specific junction, etc.) instead
-of the abstract grid. Deliberately narrow scope, arrived at after discussion
-ruled out several bigger options:
+"Import Drawing" (header toolbar, beside Save/Load) loads an SVG **or DXF**
+file as a scaled background layer under the vehicle/trail, so a driver can
+rehearse against a real site layout (depot lanes, a specific junction, etc.)
+instead of the abstract grid. Deliberately narrow scope, arrived at after
+discussion ruled out several bigger options, and extended once with real
+external files (a SignMaster export, then its source DXF) that exposed real
+gaps in the first pass:
 
 `docs/example-site-plans/depot-exit.svg` is a worked example to load and
 drive against — a depot driveway meeting a public road (kerbs, footpaths, a
@@ -386,34 +388,74 @@ browser session — not just a scale/orientation sanity check.
 - **No real-world geo-referenced basemap** (map tiles, lat/lon projection) —
   the world frame stays plain metres with no geographic anchor; "real-world"
   here just means "drawn to scale," not "at a real location."
-- **No calibration UI at all** — no click-two-points-and-enter-a-distance
-  step, no rotation, no manual origin placement. Every import uses a fixed
-  convention instead: **an SVG's own coordinate units are always millimetres**
-  (`SVG_MM_TO_M`) — so a drawing's real-world size is read directly from its
-  `viewBox`/`width`+`height` (`parseSvgViewBox`), no per-file input needed.
-  Draw/export site plans at 1 SVG unit = 1 mm for this to come out right.
-- The imported markup is placed with a plain translate + uniform scale, not
-  a general affine transform — its `viewBox` centre lands on world (0,0),
-  and its own "up"/"right" render as screen up/right (same axes the grid/
-  trail already use — see `toScreen`), matching how the file looks opened
-  in any normal SVG viewer, just correctly proportioned and drivable over.
-- Raw SVG markup is inlined via `dangerouslySetInnerHTML` into a `<g>` in
-  the map's own coordinate space (see `handleLoadMapImage`), not rendered
-  as a rasterised `<image>` — keeps it crisp at any zoom level, and it's
-  literally the same technique the JSX name suggests, just applied to SVG
-  content instead of HTML.
+- **No click-and-measure calibration UI** — no click-two-points-and-enter-
+  a-distance step, no rotation, no manual origin placement. Every import
+  picks from exactly two fixed unit conventions instead — **mm** or **1/1000
+  inch (mil)** — via a small picker (`mapImageUnit`) next to the Import
+  Drawing button, applied via `SVG_UNIT_TO_M`. mm covers anything authored/
+  exported to scale in millimetres; mil exists because sign-cutting/vinyl/
+  CNC software very often emits raw coordinates in that unit with no metric
+  conversion and no unit metadata to tell them apart — found by testing
+  against a real SignMaster SVG export (`viewBox` up to ~988799 — absurd as
+  millimetres, sane as ~25m in thousandths of an inch). The picked unit is
+  captured into the loaded `mapImage` itself, not read live, so toggling the
+  picker afterwards can't rescale an already-loaded drawing.
+- Both formats place their content with a plain translate + uniform scale,
+  not a general affine transform — content is centred on world (0,0), and
+  its own "up"/"right" render as screen up/right (same axes the grid/trail
+  already use — see `toScreen`), matching how the file looks opened in any
+  normal viewer, just correctly proportioned and drivable over.
+- **SVG**: the file's own markup is inlined via `dangerouslySetInnerHTML`
+  into a `<g>` in the map's own coordinate space (see `handleLoadMapImage`),
+  not rendered as a rasterised `<image>` — keeps it crisp at any zoom level.
+  Its scale is re-derived live every render from `mapImage.unitToM` and the
+  current view, since the untouched foreign markup can't be pre-transformed.
+- **DXF**: has no native web rendering to lean on the way SVG's markup does,
+  so `src/dxfImport.js` parses it into plain world-space shape objects once
+  at import time (unit conversion already baked into their coordinates), and
+  the component renders those as ordinary `<path>`/`<circle>` elements
+  through the very same `toScreen()` pipeline as every other piece of map
+  geometry — not a second rendering mechanism. Supported entities: `LINE`,
+  `ARC`, `CIRCLE`, `LWPOLYLINE` (straight and bulge/arc segments, open or
+  closed), and `HATCH` limited to solid fill with either a single
+  polyline-type boundary loop or an edge-type loop made only of line/arc
+  edges (the common "fill this closed shape" case) — colour resolved from
+  the entity's own true-colour/ACI colour, falling back to its layer's ACI
+  colour from the `TABLES`/`LAYER` section (`ACI_RGB_EXACT` only has exact
+  RGB for the 9 standard low indices everyone actually draws with; index
+  10-255 gets a deterministic grey fallback rather than a guessed-from-
+  memory "exact" value, since the full AutoCAD palette isn't safe to
+  reproduce without risking silently-wrong colours). `SPLINE` edges/entities,
+  multi-loop/island `HATCH`, `TEXT`/`MTEXT`, 3D entities, and the older
+  `POLYLINE`/`VERTEX` pre-LWPOLYLINE form are skipped with a `console.warn`
+  rather than mis-rendered — not a general CAD-file renderer, just enough
+  for site-plan-style drawings.
+  - **Colour resolution needs closed regions, not just edges**: a raw `LINE`
+    is only an edge with no "inside" — e.g. a rectangle plus one dividing
+    line is 5 disconnected segments, and nothing in that data says which
+    side is which region (solving that in general is planar face detection,
+    deliberately not built here). To get independently-coloured areas, draw
+    each one as its own closed `LWPOLYLINE` or `HATCH`, on its own layer/
+    colour — that's the only thing DXF itself has to say "this area is a
+    region," and the importer fills exactly those.
+  - Arc/bulge sweep and large-arc-flag are derived from 3 already-known
+    points on the arc (start/mid/end — sampled once in DXF-space at parse
+    time, carried through the DXF→world transform as plain points, not
+    re-derived as an angle in some other frame) rather than hand-tracking
+    signs through the DXF→world→screen transform chain — see `toWorld`'s
+    and `arcFlags`'s own comments for why that's the robust way to do it.
+  - Verified against a real DXF (an Onshape export whose SVG conversion via
+    SignMaster was the original scale-mismatch bug report) and a synthetic
+    rectangle split into two closed, differently-coloured `LWPOLYLINE`s, in
+    a real browser session both times, not just unit tests.
 - The grid pattern hides while a drawing is loaded (`!mapImage` gate on the
   grid `<rect>`) — the two visually fight otherwise.
 - Not persisted through Save/Load — re-imported from its own file each
   session, same reasoning as the bus reference photo not being embedded in
   the save JSON.
-- **DXF import and a geo-referenced aerial-photo layer are explicitly
-  future work**, not built now. Both would reuse this same placement
-  mechanism (DXF needs a parser to become SVG-shaped paths first; an aerial
-  photo is a raster `<image>` instead of inlined vector markup) — the
-  millimetre-convention/no-rotation design was chosen partly because it
-  carries forward cleanly to those, not because it's assumed to be
-  permanent for every future source.
+- **A geo-referenced aerial-photo layer is explicitly future work**, not
+  built now. It would reuse this same placement mechanism, as a raster
+  `<image>` instead of inlined/parsed vector content.
 
 ## Porting to 3D / C#
 
