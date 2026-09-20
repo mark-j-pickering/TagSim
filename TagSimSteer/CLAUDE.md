@@ -415,19 +415,33 @@ browser session — not just a scale/orientation sanity check.
   through the very same `toScreen()` pipeline as every other piece of map
   geometry — not a second rendering mechanism. Supported entities: `LINE`,
   `ARC`, `CIRCLE`, `LWPOLYLINE` (straight and bulge/arc segments, open or
-  closed), and `HATCH` limited to solid fill with either a single
-  polyline-type boundary loop or an edge-type loop made only of line/arc
-  edges (the common "fill this closed shape" case) — colour resolved from
-  the entity's own true-colour/ACI colour, falling back to its layer's ACI
-  colour from the `TABLES`/`LAYER` section (`ACI_RGB_EXACT` only has exact
-  RGB for the 9 standard low indices everyone actually draws with; index
-  10-255 gets a deterministic grey fallback rather than a guessed-from-
-  memory "exact" value, since the full AutoCAD palette isn't safe to
-  reproduce without risking silently-wrong colours). `SPLINE` edges/entities,
-  multi-loop/island `HATCH`, 3D entities, and the older `POLYLINE`/`VERTEX`
-  pre-LWPOLYLINE form are skipped with a `console.warn` rather than
-  mis-rendered — not a general CAD-file renderer, just enough for
-  site-plan-style drawings.
+  closed), and `HATCH` limited to solid fill, with any number of boundary
+  loops (group `91`), each either a polyline-type loop or an edge-type loop
+  made only of line/arc edges — a HATCH's loops beyond the first aren't
+  separate shapes, they're island holes cut out of the same fill (e.g. a
+  paved area with an unpaved circle cut out of it), so they become one
+  shape's `segments` (outer loop) + `extraLoops` (the rest), rendered as
+  one `<path>` with several `M...Z` subpaths under `fill-rule="evenodd"`
+  (`dxfShapePathD`/`segmentsToPathD`) — evenodd is what actually punches
+  the holes, correctly, without the importer ever having to work out which
+  loop is an island or which way any of them wind. Any parse failure in any
+  loop (an unsupported edge type, a degenerate loop) skips the whole HATCH
+  rather than rendering a partial, wrong-looking fill. Colour resolved from
+  the entity's own true-colour (group 420) or ACI colour (group 62), falling
+  back to its **layer's** true-colour or ACI colour from `TABLES`/`LAYER`
+  (in that order — a layer can carry both, same as an entity can;
+  `ACI_RGB_EXACT` only has exact RGB for the 9 standard low indices everyone
+  actually draws with, index 10-255 gets a deterministic grey fallback
+  rather than a guessed-from-memory "exact" value, since the full AutoCAD
+  palette isn't safe to reproduce without risking silently-wrong colours —
+  reading the layer's true-colour too, not just entity-level, matters a lot
+  here: a real DXF with every `HATCH` fill `BYLAYER` and each layer's real
+  colour only in group 420 rendered every region an arbitrary unrelated
+  grey until this was fixed, found by comparing a real import against the
+  drawing's own reference screenshot). `SPLINE`/ellipse edges, 3D entities,
+  and the older `POLYLINE`/`VERTEX` pre-LWPOLYLINE form are skipped with a
+  `console.warn` rather than mis-rendered — not a general CAD-file
+  renderer, just enough for site-plan-style drawings.
   - **Colouring adjacent regions without retracing shared edges —
     polygonization**: a raw `LINE` is only an edge with no "inside," so two
     ways to get a coloured region: (1) draw it as its own closed
@@ -482,12 +496,42 @@ browser session — not just a scale/orientation sanity check.
     though the underlying sweep-normalisation trick is the same idea —
     kept apart deliberately so changes to one can't risk regressing the
     other's already browser-verified behaviour.
+  - **Line weight and line type** (DXF groups `370`/`6`) are read and
+    rendered, not just colour — same BYLAYER-fallback shape as colour
+    (`resolveLineweight`/`resolveLinetypeDashes`: entity's own value > its
+    layer's (`TABLES`/`LAYER` groups `370`/`6`) > a default). Line type uses
+    the drawing's own real dash pattern from `TABLES`/`LTYPE` (group `49`'s
+    segment lengths), not a guessed generic dashed look. **Line weight is
+    deliberately not a literal real-world-mm-to-px conversion** — this
+    app's usual zoom (a site plan spanning tens-to-hundreds of metres) makes
+    even a "heavy" 2mm DXF lineweight sub-pixel (≈0.04px at a typical view
+    scale), so a literal conversion would render every weight identically
+    at 0px and the whole feature would be invisible in normal use. Instead
+    `dxfShapeStrokeWidth` takes the larger of (a) a minimum on-screen width
+    by weight *category* (`LINEWEIGHT_BASELINE_PX` — thin/normal/heavy stay
+    visually distinct at the zoom this app is actually used at) and (b) the
+    true real-world-scaled width — a floor, not a fixed value, so a heavy
+    line still gets genuinely thicker than a thin one once zoomed in close
+    enough for the real size to exceed that floor (inspecting a kerb line
+    from a few metres away), while thin lines never vanish and heavy ones
+    aren't fake-thick at normal zoom.
   - Verified against a real DXF (an Onshape export whose SVG conversion via
     SignMaster was the original scale-mismatch bug report), a synthetic
-    rectangle split into two closed, differently-coloured `LWPOLYLINE`s, and
-    a 4-lane shared-edge-network + `POINT` markers + `BUS_START` file
-    (`docs/example-site-plans/multi-lane-shared.dxf`), in a real browser
-    session each time, not just unit tests.
+    rectangle split into two closed, differently-coloured `LWPOLYLINE`s, a
+    4-lane shared-edge-network + `POINT`/`TEXT` markers + `BUS_START` file
+    (`docs/example-site-plans/multi-lane-shared.dxf`,
+    `multi-lane-textcolor.dxf`), a `LAYER`+`LTYPE` file exercising BYLAYER
+    inheritance, explicit per-entity overrides, a real dash-dot pattern, and
+    a visibly-heavier line side by side
+    (`docs/example-site-plans/lineweight-linetype.dxf`), a richer,
+    properly-layered real-world export of the same site exercising
+    layer-true-colour BYLAYER resolution and a genuine multi-loop `HATCH`
+    (`docs/example-site-plans/Sherwood_Base_layered.dxf`), and a synthetic
+    single-colour square with an island hole cut out of it
+    (`docs/example-site-plans/multiloop-hole.dxf`), to confirm
+    `fill-rule="evenodd"` actually punches the hole rather than being
+    coincidentally invisible against the dark map background — in a real
+    browser session each time, not just unit tests.
 - The grid pattern hides while a drawing is loaded (`!mapImage` gate on the
   grid `<rect>`) — the two visually fight otherwise.
 - Not persisted through Save/Load — re-imported from its own file each
