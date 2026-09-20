@@ -418,12 +418,18 @@ browser session — not just a scale/orientation sanity check.
   closed), and `HATCH` limited to solid fill with either a single
   polyline-type boundary loop or an edge-type loop made only of line/arc
   edges (the common "fill this closed shape" case) — colour resolved from
-  the entity's own true-colour/ACI colour, falling back to its layer's ACI
-  colour from the `TABLES`/`LAYER` section (`ACI_RGB_EXACT` only has exact
-  RGB for the 9 standard low indices everyone actually draws with; index
-  10-255 gets a deterministic grey fallback rather than a guessed-from-
-  memory "exact" value, since the full AutoCAD palette isn't safe to
-  reproduce without risking silently-wrong colours). `SPLINE` edges/entities,
+  the entity's own true-colour (group 420) or ACI colour (group 62), falling
+  back to its **layer's** true-colour or ACI colour from `TABLES`/`LAYER`
+  (in that order — a layer can carry both, same as an entity can;
+  `ACI_RGB_EXACT` only has exact RGB for the 9 standard low indices everyone
+  actually draws with, index 10-255 gets a deterministic grey fallback
+  rather than a guessed-from-memory "exact" value, since the full AutoCAD
+  palette isn't safe to reproduce without risking silently-wrong colours —
+  reading the layer's true-colour too, not just entity-level, matters a lot
+  here: a real DXF with every `HATCH` fill `BYLAYER` and each layer's real
+  colour only in group 420 rendered every region an arbitrary unrelated
+  grey until this was fixed, found by comparing a real import against the
+  drawing's own reference screenshot). `SPLINE` edges/entities,
   multi-loop/island `HATCH`, 3D entities, and the older `POLYLINE`/`VERTEX`
   pre-LWPOLYLINE form are skipped with a `console.warn` rather than
   mis-rendered — not a general CAD-file renderer, just enough for

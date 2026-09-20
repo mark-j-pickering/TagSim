@@ -118,13 +118,15 @@ function findTable(pairs, tableName) {
 }
 
 // One pass over the LAYER table for everything a layer can supply as a BYLAYER default: colour
-// (group 62), lineweight (group 370, hundredths of a mm — see resolveLineweight), and linetype name
-// (group 6, looked up in ltypeDashes — see parseLtypeDashes) — kept as one function/one table-scan
-// rather than three, since it's the same records either way.
+// (group 420 true-colour, and/or group 62 ACI — a layer can carry both, same as an entity can, and
+// true-colour wins when present; missing this for layers specifically — only reading entity-level
+// 420 — was a real bug, see resolveColor's comment), lineweight (group 370, hundredths of a mm — see
+// resolveLineweight), and linetype name (group 6, looked up in ltypeDashes — see parseLtypeDashes) —
+// kept as one function/one table-scan rather than several, since it's the same records either way.
 function parseLayerTable(pairs) {
-  const colors = {}, lineweights = {}, linetypes = {};
+  const colors = {}, trueColors = {}, lineweights = {}, linetypes = {};
   const layerTableStart = findTable(pairs, "LAYER");
-  if (layerTableStart < 0) return { colors, lineweights, linetypes };
+  if (layerTableStart < 0) return { colors, trueColors, lineweights, linetypes };
   const records = splitRecords(pairs, layerTableStart + 1, ["ENDTAB"]);
   for (const rec of records) {
     if (rec.type !== "LAYER") continue;
@@ -132,12 +134,14 @@ function parseLayerTable(pairs) {
     if (name == null) continue;
     const aci = parseInt(firstVal(rec.pairs, 62, "7"), 10);
     colors[name] = isFinite(aci) ? aci : 7;
+    const trueColor = firstVal(rec.pairs, 420, null);
+    if (trueColor != null) trueColors[name] = trueColor;
     const lw = parseInt(firstVal(rec.pairs, 370, ""), 10);
     if (isFinite(lw)) lineweights[name] = lw;
     const lt = firstVal(rec.pairs, 6, null);
     if (lt != null) linetypes[name] = lt;
   }
-  return { colors, lineweights, linetypes };
+  return { colors, trueColors, lineweights, linetypes };
 }
 
 // LTYPE table: each named linetype's actual dash pattern — group 49 (repeated) gives each segment's
@@ -158,11 +162,19 @@ function parseLtypeDashes(pairs) {
   return dashes;
 }
 
-function resolveColor(entPairs, layer, layerColors) {
+// BYLAYER resolution needs the layer's true-colour checked too, not just its ACI — a layer can carry
+// both (group 420 + group 62), same as an entity can, and a real DXF (all its HATCH fills BYLAYER,
+// each layer's real colour only in group 420 — see parseLayerTable's comment) showed this was a real
+// gap: entities resolved fine (their own 420 was already read), but anything BYLAYER fell straight to
+// the layer's ACI and skipped its true-colour entirely, landing on the ACI_RGB_EXACT grey fallback
+// for any index outside the 9 exact ones instead of the colour the file actually specified.
+function resolveColor(entPairs, layer, layerColors, layerTrueColors) {
   const trueColor = firstVal(entPairs, 420, null);
   if (trueColor != null) return trueColorToRgb(trueColor);
   const aci = parseInt(firstVal(entPairs, 62, "256"), 10);
   if (isFinite(aci) && aci !== 256 && aci !== 0) return aciToRgb(aci);
+  const layerTrue = layerTrueColors[layer];
+  if (layerTrue != null) return trueColorToRgb(layerTrue);
   const layerAci = layerColors[layer];
   if (layerAci != null) return aciToRgb(layerAci);
   return "#c8c8c8";
@@ -257,7 +269,7 @@ function polylineSegments(verts, closed) {
 //     point is the start position, its direction (first point -> second point) is the start heading.
 //     At most one is used; if several exist, the first one found wins.
 function extractEntities(pairs, layerTable, ltypeDashes) {
-  const { colors: layerColors, lineweights: layerLineweights, linetypes: layerLinetypes } = layerTable;
+  const { colors: layerColors, trueColors: layerTrueColors, lineweights: layerLineweights, linetypes: layerLinetypes } = layerTable;
   const entitiesStart = findSectionStart(pairs, "ENTITIES");
   if (entitiesStart < 0) return { shapes: [], markers: [], busStartRaw: null };
   const records = splitRecords(pairs, entitiesStart + 1, ["ENDSEC"]);
@@ -269,7 +281,7 @@ function extractEntities(pairs, layerTable, ltypeDashes) {
 
   for (const rec of records) {
     const layer = firstVal(rec.pairs, 8, "0");
-    const color = resolveColor(rec.pairs, layer, layerColors);
+    const color = resolveColor(rec.pairs, layer, layerColors, layerTrueColors);
     // widthMm/dashRaw are per-record (an entity has one lineweight/linetype, even a multi-segment
     // polyline), attached uniformly to whatever shape(s) this record produces below.
     const widthMm = resolveLineweight(rec.pairs, layer, layerLineweights);
