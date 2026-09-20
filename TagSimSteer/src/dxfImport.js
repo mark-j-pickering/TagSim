@@ -6,11 +6,11 @@
 // rendering mechanism.
 //
 // Supported entities: LINE, ARC, CIRCLE, LWPOLYLINE (straight and bulge/arc segments, open or
-// closed), and HATCH limited to solid fill with boundary loops that are either a single polyline-type
-// loop or an edge-type loop made only of line/arc edges (the common, simple "fill this closed shape"
-// case). Anything else (SPLINE edges/entities, multi-loop HATCH with islands, 3D entities, POLYLINE/
-// VERTEX's older pre-LWPOLYLINE form, blocks/inserts) is skipped with a console.warn rather than
-// mis-rendered — deliberately not a general CAD-file renderer, just enough for site-plan-style drawings.
+// closed), and HATCH limited to solid fill with boundary loops (however many — see extractEntities'
+// own comment) that are each either a polyline-type loop or an edge-type loop made only of line/arc
+// edges. Anything else (SPLINE edges/entities, ellipse edges, 3D entities, POLYLINE/VERTEX's older
+// pre-LWPOLYLINE form, blocks/inserts) is skipped with a console.warn rather than mis-rendered —
+// deliberately not a general CAD-file renderer, just enough for site-plan-style drawings.
 //
 // Two further, non-drawn entity kinds (see extractEntities' own comment for the exact rules):
 // POINT/TEXT/MTEXT become colour "markers" consumed by polygonizeFaces() to colour an enclosed region
@@ -321,54 +321,68 @@ function extractEntities(pairs, layerTable, ltypeDashes) {
       if (verts.length >= 2) shapes.push({ type: "polyline", segments: polylineSegments(verts, closed), closed, filled: closed, color, widthMm, dashRaw });
       else warnSkip("LWPOLYLINE (too few vertices)");
     } else if (rec.type === "HATCH") {
+      // Walks every boundary path (group 91 = how many), not just the first — each one is either a
+      // polyline-type loop (72/73/93 + a 10/20(/42) vertex stream) or an edge-type loop (93 + per-edge
+      // 72=type/1=line/2=arc, 3=ellipse/4=spline unsupported), terminated by 97. A HATCH with N>1
+      // loops isn't N separate shapes — it's one fill with island loops cut out of it (e.g. a paved
+      // area with an unpaved circle island inside), so all loops become one shape's `segments`
+      // (outer) + `extraLoops` (the rest), rendered as one <path> with several M...Z subpaths under
+      // fill-rule="evenodd" (see dxfShapePathD) — that's what correctly punches the holes, not
+      // anything explicit about which loop is an "island". Any parse failure anywhere (an unsupported
+      // edge type, a short/degenerate loop) skips the whole entity rather than rendering a partial,
+      // wrong-looking fill.
       const nLoops = parseInt(firstVal(rec.pairs, 91, "0"), 10);
-      if (nLoops !== 1) { warnSkip("HATCH (multi-loop/island)"); continue; }
-      // Walk the ordered pairs by hand to pull out the one boundary path's data (a HATCH's boundary
-      // section reuses codes 10/20/42/72/73/92/93 with meaning that depends on the surrounding
-      // context, unlike a flat entity, hence not just firstVal() lookups).
-      let i = rec.pairs.findIndex(([c]) => c === 92);
-      if (i < 0) { warnSkip("HATCH (no boundary path)"); continue; }
-      const pathTypeFlag = parseInt(rec.pairs[i][1], 10);
-      const isPolylineBoundary = (pathTypeFlag & 2) === 2;
-      if (isPolylineBoundary) {
-        // 93 = vertex count, 72 = has-bulge flag, then the 10/20(/42) vertex stream, 97 ends it.
-        const sub = rec.pairs.slice(i + 1);
-        const endAt = sub.findIndex(([c]) => c === 97);
-        const vertexPairs = endAt >= 0 ? sub.slice(0, endAt) : sub;
-        const verts = readVertices(vertexPairs);
-        if (verts.length >= 3) shapes.push({ type: "polyline", segments: polylineSegments(verts, true), closed: true, filled: true, color, widthMm, dashRaw });
-        else warnSkip("HATCH (degenerate polyline boundary)");
-      } else {
-        // Edge-type boundary: 93 = edge count, then per edge 72=edge type, 1=line, 2=arc (3=ellipse,
-        // 4=spline unsupported). Collect line/arc edges as polyline segments directly.
-        const sub = rec.pairs.slice(i + 1);
-        const segs = [];
-        let ok = true;
-        let j = 0;
-        while (j < sub.length && sub[j][0] !== 97) {
-          if (sub[j][0] === 72) {
-            const edgeType = parseInt(sub[j][1], 10);
+      const hp = rec.pairs;
+      let i = hp.findIndex(([c]) => c === 92);
+      const loops = [];
+      let ok = i >= 0 && nLoops >= 1;
+      for (let loopIdx = 0; ok && loopIdx < nLoops; loopIdx++) {
+        if (i >= hp.length || hp[i][0] !== 92) { ok = false; break; }
+        const isPolylineBoundary = (parseInt(hp[i][1], 10) & 2) === 2;
+        i++; // past the 92 itself
+        if (isPolylineBoundary) {
+          const vertPairs = [];
+          while (i < hp.length && hp[i][0] !== 97) { vertPairs.push(hp[i]); i++; }
+          i++; // past 97
+          const verts = readVertices(vertPairs);
+          if (verts.length < 3) { ok = false; break; }
+          loops.push(polylineSegments(verts, true));
+        } else {
+          const segs = [];
+          while (ok && i < hp.length && hp[i][0] !== 97) {
+            if (hp[i][0] !== 72) { i++; continue; }
+            const edgeType = parseInt(hp[i][1], 10);
             if (edgeType === 1) {
-              const x1 = parseFloat(sub[j + 1][1]), y1 = parseFloat(sub[j + 2][1]);
-              const x2 = parseFloat(sub[j + 3][1]), y2 = parseFloat(sub[j + 4][1]);
-              segs.push({ p0: { x: x1, y: y1 }, p1: { x: x2, y: y2 }, arc: null });
-              j += 5;
+              segs.push({ p0: { x: parseFloat(hp[i + 1][1]), y: parseFloat(hp[i + 2][1]) }, p1: { x: parseFloat(hp[i + 3][1]), y: parseFloat(hp[i + 4][1]) }, arc: null });
+              i += 5;
             } else if (edgeType === 2) {
-              const cx = parseFloat(sub[j + 1][1]), cy = parseFloat(sub[j + 2][1]);
-              const r = parseFloat(sub[j + 3][1]);
-              const a0 = parseFloat(sub[j + 4][1]) * Math.PI / 180, a1 = parseFloat(sub[j + 5][1]) * Math.PI / 180;
-              const ccw = sub[j + 6] && sub[j + 6][0] === 73 ? sub[j + 6][1] === "1" : true;
+              const cx = parseFloat(hp[i + 1][1]), cy = parseFloat(hp[i + 2][1]), r = parseFloat(hp[i + 3][1]);
+              const a0 = parseFloat(hp[i + 4][1]) * Math.PI / 180, a1 = parseFloat(hp[i + 5][1]) * Math.PI / 180;
+              const ccw = hp[i + 6] && hp[i + 6][0] === 73 ? hp[i + 6][1] === "1" : true;
               const sweep = ccw ? (((a1 - a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) || 2 * Math.PI) : -(((a0 - a1) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) || 2 * Math.PI);
               const p0 = { x: cx + r * Math.cos(a0), y: cy + r * Math.sin(a0) };
               const p1 = { x: cx + r * Math.cos(a0 + sweep), y: cy + r * Math.sin(a0 + sweep) };
               segs.push({ p0, p1, arc: { center: { x: cx, y: cy }, r, mid: { x: cx + r * Math.cos(a0 + sweep / 2), y: cy + r * Math.sin(a0 + sweep / 2) } } });
-              j += sub[j + 6] && sub[j + 6][0] === 73 ? 7 : 6;
-            } else { ok = false; break; }
-          } else j++;
+              i += (hp[i + 6] && hp[i + 6][0] === 73) ? 7 : 6;
+            } else { ok = false; }
+          }
+          if (!ok) break;
+          if (i < hp.length && hp[i][0] === 97) i++;
+          if (segs.length < 1) { ok = false; break; }
+          loops.push(segs);
         }
-        if (ok && segs.length >= 3) shapes.push({ type: "polyline", segments: segs, closed: true, filled: true, color, widthMm, dashRaw });
-        else warnSkip("HATCH (spline edge or too few edges)");
+        if (loopIdx + 1 < nLoops) {
+          const nextI = hp.findIndex(([c], idx) => idx >= i && c === 92);
+          if (nextI < 0) { ok = false; break; }
+          i = nextI;
+        }
       }
+      if (!ok || loops.length !== nLoops) {
+        warnSkip(nLoops > 1 ? "HATCH (unsupported multi-loop boundary)" : "HATCH (unsupported boundary)");
+        continue;
+      }
+      const [mainSegs, ...extraLoops] = loops;
+      shapes.push({ type: "polyline", segments: mainSegs, extraLoops: extraLoops.length ? extraLoops : undefined, closed: true, filled: true, color, widthMm, dashRaw });
     } else if (["POLYLINE", "VERTEX", "SPLINE", "INSERT", "3DFACE", "SOLID", "DIMENSION"].includes(rec.type)) {
       warnSkip(rec.type);
     }
@@ -385,7 +399,11 @@ function shapeBoundsPoints(shape) {
   if (shape.type === "line") return [shape.p0, shape.p1];
   if (shape.type === "circle") return [{ x: shape.center.x - shape.r, y: shape.center.y - shape.r }, { x: shape.center.x + shape.r, y: shape.center.y + shape.r }];
   if (shape.type === "arc") return [{ x: shape.center.x - shape.r, y: shape.center.y - shape.r }, { x: shape.center.x + shape.r, y: shape.center.y + shape.r }];
-  if (shape.type === "polyline") return shape.segments.flatMap((s) => [s.p0, s.p1]);
+  if (shape.type === "polyline") {
+    const pts = shape.segments.flatMap((s) => [s.p0, s.p1]);
+    if (shape.extraLoops) for (const loop of shape.extraLoops) pts.push(...loop.flatMap((s) => [s.p0, s.p1]));
+    return pts;
+  }
   return [];
 }
 
@@ -583,13 +601,15 @@ export function parseDxfToWorldShapes(text, unitToM) {
     if (shape.type === "circle") return { type: "circle", center: tf(shape.center), r: shape.r * unitToM, color: shape.color, widthM: widthM(shape.widthMm), dashM: dashM(shape.dashRaw) };
     if (shape.type === "arc") return { type: "arc", center: tf(shape.center), r: shape.r * unitToM, p0: tf(shape.p0), mid: tf(shape.mid), p1: tf(shape.p1), color: shape.color, widthM: widthM(shape.widthMm), dashM: dashM(shape.dashRaw) };
     // polyline
+    const tfSegs = (segs) => segs.map((s) => ({
+      p0: tf(s.p0), p1: tf(s.p1),
+      arc: s.arc ? { center: tf(s.arc.center), r: s.arc.r * unitToM, mid: tf(s.arc.mid) } : null,
+    }));
     return {
       type: "polyline", closed: shape.closed, filled: shape.filled, color: shape.color,
       widthM: widthM(shape.widthMm), dashM: dashM(shape.dashRaw),
-      segments: shape.segments.map((s) => ({
-        p0: tf(s.p0), p1: tf(s.p1),
-        arc: s.arc ? { center: tf(s.arc.center), r: s.arc.r * unitToM, mid: tf(s.arc.mid) } : null,
-      })),
+      segments: tfSegs(shape.segments),
+      extraLoops: shape.extraLoops ? shape.extraLoops.map(tfSegs) : undefined,
     };
   });
 
@@ -625,8 +645,28 @@ function arcFlags(c, p0, pm, p1) {
   return { large: totalSweep > Math.PI ? 1 : 0, sweep };
 }
 
+function segmentsToPathD(segments, toScreenFn, viewScale, close) {
+  let d = "";
+  segments.forEach((seg, i) => {
+    const a = toScreenFn(seg.p0), b = toScreenFn(seg.p1);
+    if (i === 0) d += `M ${a.x} ${a.y} `;
+    if (seg.arc) {
+      const c = toScreenFn(seg.arc.center), m = toScreenFn(seg.arc.mid);
+      const { large, sweep } = arcFlags(c, a, m, b);
+      d += `A ${seg.arc.r * viewScale} ${seg.arc.r * viewScale} 0 ${large} ${sweep} ${b.x} ${b.y} `;
+    } else {
+      d += `L ${b.x} ${b.y} `;
+    }
+  });
+  return close ? d + "Z " : d;
+}
+
 // Builds an SVG path `d` for anything except a plain circle (which the caller should render as a
-// <circle> directly — no arc-flag ambiguity there since it has no start/end point).
+// <circle> directly — no arc-flag ambiguity there since it has no start/end point). A polyline shape
+// with extraLoops (a multi-loop HATCH — see extractEntities) becomes several "M...Z" subpaths in one
+// `d`; the caller must render it with fill-rule="evenodd" so the extra loops correctly punch holes in
+// the main one (an island) rather than just overlapping it — evenodd needs no reasoning about which
+// loop is an island or which way it winds, unlike nonzero, which is why it's the right rule here.
 export function dxfShapePathD(shape, toScreenFn, viewScale) {
   if (shape.type === "line") {
     const a = toScreenFn(shape.p0), b = toScreenFn(shape.p1);
@@ -639,19 +679,8 @@ export function dxfShapePathD(shape, toScreenFn, viewScale) {
     return `M ${a.x} ${a.y} A ${r} ${r} 0 ${large} ${sweep} ${b.x} ${b.y}`;
   }
   if (shape.type === "polyline") {
-    let d = "";
-    shape.segments.forEach((seg, i) => {
-      const a = toScreenFn(seg.p0), b = toScreenFn(seg.p1);
-      if (i === 0) d += `M ${a.x} ${a.y} `;
-      if (seg.arc) {
-        const c = toScreenFn(seg.arc.center), m = toScreenFn(seg.arc.mid);
-        const { large, sweep } = arcFlags(c, a, m, b);
-        d += `A ${seg.arc.r * viewScale} ${seg.arc.r * viewScale} 0 ${large} ${sweep} ${b.x} ${b.y} `;
-      } else {
-        d += `L ${b.x} ${b.y} `;
-      }
-    });
-    if (shape.closed) d += "Z";
+    let d = segmentsToPathD(shape.segments, toScreenFn, viewScale, shape.closed);
+    if (shape.extraLoops) for (const loop of shape.extraLoops) d += segmentsToPathD(loop, toScreenFn, viewScale, true);
     return d.trim();
   }
   return null; // circle

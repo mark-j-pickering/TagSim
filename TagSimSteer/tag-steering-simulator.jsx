@@ -2993,7 +2993,7 @@ export default function BusSteeringSimulator() {
                 }
                 const d = dxfShapePathD(shape, toScr, displayedView.scale);
                 if (!d) return null;
-                return <path key={i} d={d} fill={shape.filled ? shape.color : "none"} fillOpacity={shape.filled ? 0.55 : 1} stroke={shape.color} strokeWidth={strokeWidth} strokeDasharray={strokeDasharray} />;
+                return <path key={i} d={d} fill={shape.filled ? shape.color : "none"} fillOpacity={shape.filled ? 0.55 : 1} fillRule="evenodd" stroke={shape.color} strokeWidth={strokeWidth} strokeDasharray={strokeDasharray} />;
               })}
             </g>
           )}
