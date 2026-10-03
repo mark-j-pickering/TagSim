@@ -2918,6 +2918,11 @@ export default function BusSteeringSimulator() {
             </button>
           )}
           <input ref={mapImageInputRef} type="file" accept="image/svg+xml,.svg,.dxf" onChange={handleLoadMapImage} style={{ display: "none" }} />
+          {/* Standalone wheel/pedal tester (public/input-tester.html). BASE_URL prefix for the same
+              GitHub Pages subpath reason as the sound files — see SOUND_HORN. */}
+          <a className="btn" href={import.meta.env.BASE_URL + "input-tester.html"} target="_blank" rel="noopener" title="Open the steering wheel / pedal input tester in a new tab" style={{ fontSize: 13, padding: "6px 10px", textDecoration: "none" }}>
+            Input Tester
+          </a>
         </div>
       </div>
 
