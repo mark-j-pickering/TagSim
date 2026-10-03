@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TagSim Input Tester</title>
+<!--
+  Standalone wheel/pedal tester for TagSim. No dependencies, no build step:
+  open this file directly in Chrome/Edge, or via the TagSimSteer dev server
+  at http://localhost:5183/input-tester.html.
+
+  Uses the browser Gamepad API. Browsers only expose a device after it has
+  sent some input, so move the wheel or press a pedal once it's plugged in.
+  Mappings and calibration are saved to localStorage per device id, and can
+  be copied out as JSON (the shape a future analog-input path in simCore /
+  the 3D project can consume).
+-->
+<style>
+  :root {
+    --bg: #12151a; --panel: #1b2027; --line: #2c333d; --text: #e3e7ec;
+    --muted: #8a94a1; --accent: #4aa3ff; --steer: #4aa3ff;
+    --throttle: #3ecf6e; --brake: #ff5a5a; --warn: #f0b429;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header { padding: 14px 20px; border-bottom: 1px solid var(--line); display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  header .status { color: var(--muted); font-size: 13px; }
+  select, button, input[type=number] {
+    background: #252b34; color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 9px; font: inherit; font-size: 13px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.active { background: var(--warn); color: #111; border-color: var(--warn); }
+  input[type=number] { width: 72px; }
+  main { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; padding: 16px 20px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .empty { color: var(--muted); padding: 30px 0; text-align: center; }
+
+  .viz { display: flex; gap: 28px; align-items: center; justify-content: center; flex-wrap: wrap; padding: 6px 0 10px; }
+  .wheel-wrap { text-align: center; }
+  .wheel-wrap .big { font-size: 22px; font-variant-numeric: tabular-nums; margin-top: 6px; }
+  .wheel-wrap .small, .pedal .small { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .pedal { text-align: center; width: 70px; }
+  .pedal .bar { height: 180px; width: 44px; margin: 0 auto 6px; background: #252b34; border-radius: 6px; position: relative; overflow: hidden; border: 1px solid var(--line); }
+  .pedal .fill { position: absolute; left: 0; right: 0; bottom: 0; height: 0; }
+  .pedal .big { font-size: 18px; font-variant-numeric: tabular-nums; }
+  canvas#trace { width: 100%; height: 120px; display: block; background: #151920; border-radius: 6px; border: 1px solid var(--line); }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 3px; vertical-align: middle; margin-right: 4px; }
+
+  .role { border-top: 1px solid var(--line); padding: 10px 0; }
+  .role:first-of-type { border-top: 0; padding-top: 0; }
+  .role-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .role-head strong { width: 72px; }
+  .role-body { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; color: var(--muted); font-size: 12px; align-items: center; }
+  .role-body label { display: flex; gap: 5px; align-items: center; }
+  .hint { color: var(--warn); font-size: 12px; margin-top: 6px; min-height: 1em; }
+
+  table.axes { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 12px; }
+  table.axes td { padding: 3px 4px; }
+  table.axes td:first-child { color: var(--muted); width: 54px; }
+  table.axes td.val { width: 64px; text-align: right; }
+  table.axes td.tag { width: 70px; font-size: 11px; }
+  .axbar { height: 10px; background: #252b34; border-radius: 3px; position: relative; }
+  .axbar .mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line); }
+  .axbar .dot { position: absolute; top: 0; bottom: 0; width: 4px; margin-left: -2px; background: var(--text); border-radius: 2px; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+  .buttons span { min-width: 30px; padding: 3px 0; text-align: center; font-size: 11px; border-radius: 4px; background: #252b34; color: var(--muted); border: 1px solid var(--line); }
+  .buttons span.on { background: var(--accent); color: #111; border-color: var(--accent); }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 10px; word-break: break-all; }
+  textarea { width: 100%; height: 130px; background: #151920; color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: 12px ui-monospace, Consolas, monospace; padding: 8px; resize: vertical; }
+  .row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TagSim Input Tester</h1>
+  <select id="padSelect"><option value="">No controllers detected</option></select>
+  <span class="status" id="status">Plug in the wheel, then turn it or press a pedal so the browser detects it.</span>
+</header>
+
+<main>
+  <div>
+    <section class="panel">
+      <h2>Output</h2>
+      <div class="viz">
+        <div class="wheel-wrap">
+          <svg id="wheel" width="190" height="190" viewBox="-100 -100 200 200">
+            <circle r="88" fill="none" stroke="#3a424e" stroke-width="16"/>
+            <g id="wheelRot">
+              <circle r="88" fill="none" stroke="var(--steer)" stroke-width="16" stroke-dasharray="40 513" stroke-dashoffset="20" transform="rotate(-90)"/>
+              <line x1="-80" y1="0" x2="-18" y2="0" stroke="#5a6472" stroke-width="12" stroke-linecap="round"/>
+              <line x1="80" y1="0" x2="18" y2="0" stroke="#5a6472" stroke-width="12" stroke-linecap="round"/>
+              <line x1="0" y1="18" x2="0" y2="80" stroke="#5a6472" stroke-width="12" stroke-linecap="round"/>
+              <circle r="22" fill="#2a313b" stroke="#5a6472" stroke-width="4"/>
+            </g>
+          </svg>
+          <div class="big" id="steerDeg">0°</div>
+          <div class="small" id="steerNorm">steer 0.000</div>
+        </div>
+        <div class="pedal">
+          <div class="bar"><div class="fill" id="throttleFill" style="background: var(--throttle)"></div></div>
+          <div class="big" id="throttlePct">0%</div>
+          <div class="small">Throttle</div>
+        </div>
+        <div class="pedal">
+          <div class="bar"><div class="fill" id="brakeFill" style="background: var(--brake)"></div></div>
+          <div class="big" id="brakePct">0%</div>
+          <div class="small">Brake</div>
+        </div>
+      </div>
+      <canvas id="trace"></canvas>
+      <div class="legend">
+        <span><i style="background: var(--steer)"></i>steer (−1…1)</span>
+        <span><i style="background: var(--throttle)"></i>throttle</span>
+        <span><i style="background: var(--brake)"></i>brake</span>
+        <span id="rate" style="margin-left: auto"></span>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 16px">
+      <h2>Mapping &amp; calibration</h2>
+      <div id="roles"></div>
+      <div class="row">
+        <button id="resetBtn">Reset this device</button>
+        <button id="copyBtn">Copy JSON</button>
+      </div>
+      <textarea id="json" readonly spellcheck="false"></textarea>
+    </section>
+  </div>
+
+  <section class="panel">
+    <h2>Raw device input</h2>
+    <div id="raw"><div class="empty">Waiting for a controller…</div></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  const ROLES = [
+    { key: 'steer', label: 'Steering', kind: 'bipolar' },
+    { key: 'throttle', label: 'Throttle', kind: 'pedal' },
+    { key: 'brake', label: 'Brake', kind: 'pedal' },
+  ];
+  const DETECT_THRESHOLD = 0.4;   // axis must move this far from its baseline to be picked
+  const TRACE_SECONDS = 6;
+  const STORE_PREFIX = 'tagsim.input.';
+
+  const $ = (id) => document.getElementById(id);
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+  let selectedIndex = null;
+  let config = null;          // mapping for the selected device
+  let detecting = null;       // { role, baseline: number[] }
+  let calibrating = null;     // role key
+  const trace = [];           // { t, steer, throttle, brake }
+  let lastTimestamp = 0, updates = 0, rateWindowStart = performance.now(), rateHz = 0;
+
+  function defaultConfig() {
+    return {
+      lockToLockDeg: 900,
+      steer: { axis: null, invert: false, center: 0, min: -1, max: 1, deadzone: 0.01 },
+      throttle: { axis: null, rest: -1, full: 1, deadzone: 0.03 },
+      brake: { axis: null, rest: -1, full: 1, deadzone: 0.03 },
+    };
+  }
+
+  function storeKey(pad) { return STORE_PREFIX + pad.id; }
+  function loadConfig(pad) {
+    try {
+      const raw = localStorage.getItem(storeKey(pad));
+      if (raw) return Object.assign(defaultConfig(), JSON.parse(raw));
+    } catch (e) { /* storage unavailable or bad JSON: fall back to defaults */ }
+    return defaultConfig();
+  }
+  function saveConfig() {
+    const pad = currentPad();
+    if (!pad) return;
+    try { localStorage.setItem(storeKey(pad), JSON.stringify(config)); } catch (e) { /* ignore */ }
+    renderJson();
+  }
+
+  function pads() { return Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(Boolean); }
+  function currentPad() {
+    if (selectedIndex == null) return null;
+    return (navigator.getGamepads()[selectedIndex]) || null;
+  }
+
+  // ---------- normalisation ----------
+  function applyDeadzone(v, dz) {
+    const a = Math.abs(v);
+    if (a <= dz) return 0;
+    return Math.sign(v) * (a - dz) / (1 - dz);
+  }
+  function steerValue(pad) {
+    const c = config.steer;
+    if (c.axis == null || pad.axes[c.axis] == null) return 0;
+    const v = pad.axes[c.axis];
+    let n = v >= c.center
+      ? (v - c.center) / Math.max(1e-6, c.max - c.center)
+      : (v - c.center) / Math.max(1e-6, c.center - c.min);
+    n = clamp(n, -1, 1);
+    if (c.invert) n = -n;
+    return applyDeadzone(n, c.deadzone);
+  }
+  function pedalValue(pad, key) {
+    const c = config[key];
+    if (c.axis == null || pad.axes[c.axis] == null) return 0;
+    const span = c.full - c.rest;
+    if (Math.abs(span) < 1e-6) return 0;
+    const n = clamp((pad.axes[c.axis] - c.rest) / span, 0, 1);
+    return n <= c.deadzone ? 0 : (n - c.deadzone) / (1 - c.deadzone);
+  }
+
+  // ---------- detect / calibrate ----------
+  function startDetect(role) {
+    const pad = currentPad();
+    if (!pad) return;
+    calibrating = null;
+    detecting = { role, baseline: pad.axes.slice() };
+    renderRoles();
+  }
+  function stepDetect(pad) {
+    if (!detecting) return;
+    let best = -1, bestDelta = DETECT_THRESHOLD;
+    pad.axes.forEach((v, i) => {
+      const d = Math.abs(v - (detecting.baseline[i] ?? 0));
+      if (d > bestDelta) { best = i; bestDelta = d; }
+    });
+    if (best < 0) return;
+    const role = detecting.role, base = detecting.baseline[best], now = pad.axes[best];
+    const c = config[role];
+    c.axis = best;
+    if (role === 'steer') {
+      // Wheel should be centred when Detect is pressed; turning RIGHT defines positive.
+      c.center = base; c.min = -1; c.max = 1;
+      c.invert = now < base;
+    } else {
+      c.rest = base;
+      c.full = now > base ? 1 : -1;
+    }
+    detecting = null;
+    saveConfig();
+    renderRoles();
+  }
+  function toggleCalibrate(role) {
+    const pad = currentPad();
+    if (!pad) return;
+    detecting = null;
+    if (calibrating === role) { calibrating = null; saveConfig(); renderRoles(); return; }
+    const c = config[role];
+    if (c.axis == null) return;
+    const v = pad.axes[c.axis];
+    calibrating = role;
+    if (role === 'steer') { c.center = v; c.min = v; c.max = v; }
+    else { c.rest = v; c.full = v; }
+    renderRoles();
+  }
+  function stepCalibrate(pad) {
+    if (!calibrating) return;
+    const c = config[calibrating];
+    const v = pad.axes[c.axis];
+    if (v == null) return;
+    if (calibrating === 'steer') {
+      c.min = Math.min(c.min, v); c.max = Math.max(c.max, v);
+    } else if (Math.abs(v - c.rest) > Math.abs(c.full - c.rest)) {
+      c.full = v;
+    }
+  }
+
+  // ---------- rendering ----------
+  function refreshPadList() {
+    const list = pads();
+    const sel = $('padSelect');
+    const prev = selectedIndex;
+    sel.innerHTML = list.length
+      ? list.map((p) => `<option value="${p.index}">#${p.index}: ${escapeHtml(p.id)}</option>`).join('')
+      : '<option value="">No controllers detected</option>';
+    if (!list.length) { selectedIndex = null; config = null; renderAll(); return; }
+    // Prefer keeping the current selection; otherwise pick the device with the most axes (likely the wheel).
+    const keep = list.find((p) => p.index === prev);
+    const pick = keep || list.slice().sort((a, b) => b.axes.length - a.axes.length)[0];
+    sel.value = String(pick.index);
+    if (pick.index !== prev) selectPad(pick.index);
+    $('status').textContent = `${list.length} controller${list.length > 1 ? 's' : ''} connected.`;
+  }
+  function selectPad(index) {
+    selectedIndex = index;
+    detecting = calibrating = null;
+    trace.length = 0;
+    const pad = currentPad();
+    config = pad ? loadConfig(pad) : null;
+    renderAll();
+  }
+
+  function renderAll() { renderRoles(); renderJson(); renderRawShell(); }
+
+  function renderRoles() {
+    const el = $('roles');
+    if (!config) { el.innerHTML = '<div class="empty">No controller selected.</div>'; return; }
+    el.innerHTML = ROLES.map(({ key, label, kind }) => {
+      const c = config[key];
+      const isDet = detecting && detecting.role === key;
+      const isCal = calibrating === key;
+      const axisTxt = c.axis == null ? '<span style="color:var(--warn)">unmapped</span>' : `axis ${c.axis}`;
+      let body;
+      if (kind === 'bipolar') {
+        body = `
+          <label>Lock-to-lock <input type="number" data-k="lockToLockDeg" min="90" max="1080" step="10" value="${config.lockToLockDeg}">°</label>
+          <label>Deadzone <input type="number" data-r="steer" data-k="deadzone" min="0" max="0.5" step="0.005" value="${c.deadzone}"></label>
+          <label><input type="checkbox" data-r="steer" data-k="invert" ${c.invert ? 'checked' : ''}> Invert</label>
+          <span>centre ${c.center.toFixed(3)} · range ${c.min.toFixed(3)} … ${c.max.toFixed(3)}</span>`;
+      } else {
+        body = `
+          <label>Deadzone <input type="number" data-r="${key}" data-k="deadzone" min="0" max="0.5" step="0.005" value="${c.deadzone}"></label>
+          <span>rest ${c.rest.toFixed(3)} → full ${c.full.toFixed(3)}</span>`;
+      }
+      const hint = isDet
+        ? (kind === 'bipolar' ? 'Centre the wheel, then turn it to the RIGHT…' : `Press the ${label.toLowerCase()} pedal…`)
+        : isCal
+          ? (kind === 'bipolar' ? 'Turn fully left and fully right (start centred), then click Done.' : 'Press the pedal all the way down and release, then click Done.')
+          : '';
+      return `
+        <div class="role">
+          <div class="role-head">
+            <strong>${label}</strong> ${axisTxt}
+            <button data-act="detect" data-r="${key}" class="${isDet ? 'active' : ''}">${isDet ? 'Listening…' : 'Detect'}</button>
+            <button data-act="cal" data-r="${key}" class="${isCal ? 'active' : ''}" ${c.axis == null ? 'disabled' : ''}>${isCal ? 'Done' : 'Calibrate'}</button>
+          </div>
+          <div class="role-body">${body}</div>
+          <div class="hint">${hint}</div>
+        </div>`;
+    }).join('');
+  }
+
+  function renderJson() {
+    const pad = currentPad();
+    $('json').value = pad && config ? JSON.stringify({ deviceId: pad.id, ...config }, null, 2) : '';
+  }
+
+  function renderRawShell() {
+    const pad = currentPad();
+    const el = $('raw');
+    if (!pad) { el.innerHTML = '<div class="empty">Waiting for a controller…</div>'; return; }
+    el.innerHTML = `
+      <table class="axes">${pad.axes.map((_, i) => `
+        <tr><td>axis ${i}</td>
+          <td><div class="axbar"><div class="mid"></div><div class="dot" id="ax${i}"></div></div></td>
+          <td class="val" id="axv${i}"></td><td class="tag" id="axt${i}"></td></tr>`).join('')}
+      </table>
+      <div class="buttons">${pad.buttons.map((_, i) => `<span id="bt${i}">${i}</span>`).join('')}</div>
+      <div class="meta">
+        ${escapeHtml(pad.id)}<br>
+        mapping: ${pad.mapping || '(none)'} · ${pad.axes.length} axes · ${pad.buttons.length} buttons
+      </div>`;
+  }
+
+  function renderFrame(pad, out) {
+    // Raw axes
+    pad.axes.forEach((v, i) => {
+      const dot = $('ax' + i);
+      if (!dot) return;
+      dot.style.left = ((clamp(v, -1, 1) + 1) * 50) + '%';
+      $('axv' + i).textContent = v.toFixed(3);
+      const tag = ROLES.find((r) => config[r.key].axis === i);
+      const t = $('axt' + i);
+      t.textContent = tag ? tag.label : '';
+      t.style.color = tag ? `var(--${tag.key})` : '';
+    });
+    pad.buttons.forEach((b, i) => {
+      const s = $('bt' + i);
+      if (s) s.classList.toggle('on', b.pressed || b.value > 0.5);
+    });
+
+    // Outputs
+    const deg = out.steer * config.lockToLockDeg / 2;
+    $('wheelRot').setAttribute('transform', `rotate(${deg})`);
+    $('steerDeg').textContent = `${deg >= 0 ? '' : '−'}${Math.abs(deg).toFixed(0)}°`;
+    $('steerNorm').textContent = `steer ${out.steer.toFixed(3)}`;
+    $('throttleFill').style.height = (out.throttle * 100) + '%';
+    $('brakeFill').style.height = (out.brake * 100) + '%';
+    $('throttlePct').textContent = Math.round(out.throttle * 100) + '%';
+    $('brakePct').textContent = Math.round(out.brake * 100) + '%';
+    $('rate').textContent = rateHz ? `device updates ≈ ${rateHz} Hz` : '';
+  }
+
+  function drawTrace() {
+    const cv = $('trace');
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, w, h);
+    g.strokeStyle = '#2c333d'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
+    if (trace.length < 2) return;
+    const now = trace[trace.length - 1].t;
+    const x = (t) => w - (now - t) / (TRACE_SECONDS * 1000) * w;
+    const css = getComputedStyle(document.documentElement);
+    const series = [
+      ['steer', css.getPropertyValue('--steer'), (v) => h / 2 - v * (h / 2 - 4)],
+      ['throttle', css.getPropertyValue('--throttle'), (v) => h - 2 - v * (h - 4)],
+      ['brake', css.getPropertyValue('--brake'), (v) => h - 2 - v * (h - 4)],
+    ];
+    for (const [k, col, y] of series) {
+      g.strokeStyle = col; g.lineWidth = 1.5; g.beginPath();
+      trace.forEach((p, i) => (i ? g.lineTo(x(p.t), y(p[k])) : g.moveTo(x(p.t), y(p[k]))));
+      g.stroke();
+    }
+  }
+
+  // ---------- main loop ----------
+  let knownAxes = -1;
+  function frame() {
+    const pad = currentPad();
+    if (pad && config) {
+      if (pad.axes.length !== knownAxes) { knownAxes = pad.axes.length; renderRawShell(); }
+      if (pad.timestamp !== lastTimestamp) { lastTimestamp = pad.timestamp; updates++; }
+      const nowMs = performance.now();
+      if (nowMs - rateWindowStart >= 1000) {
+        rateHz = Math.round(updates * 1000 / (nowMs - rateWindowStart));
+        updates = 0; rateWindowStart = nowMs;
+      }
+      stepDetect(pad);
+      stepCalibrate(pad);
+      const out = { steer: steerValue(pad), throttle: pedalValue(pad, 'throttle'), brake: pedalValue(pad, 'brake') };
+      trace.push({ t: nowMs, ...out });
+      while (trace.length && nowMs - trace[0].t > TRACE_SECONDS * 1000) trace.shift();
+      renderFrame(pad, out);
+      if (calibrating) renderCalibrationReadout();
+    }
+    drawTrace();
+    requestAnimationFrame(frame);
+  }
+  function renderCalibrationReadout() {
+    // Cheap live update of the range text while calibrating, without rebuilding inputs.
+    const spans = document.querySelectorAll('#roles .role-body > span');
+    const idx = ROLES.findIndex((r) => r.key === calibrating);
+    const c = config[calibrating], s = spans[idx];
+    if (!s) return;
+    s.textContent = calibrating === 'steer'
+      ? `centre ${c.center.toFixed(3)} · range ${c.min.toFixed(3)} … ${c.max.toFixed(3)}`
+      : `rest ${c.rest.toFixed(3)} → full ${c.full.toFixed(3)}`;
+  }
+
+  function escapeHtml(s) { return String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch])); }
+
+  // ---------- events ----------
+  $('padSelect').addEventListener('change', (e) => { if (e.target.value !== '') { knownAxes = -1; selectPad(Number(e.target.value)); } });
+  $('roles').addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    if (b.dataset.act === 'detect') startDetect(b.dataset.r);
+    if (b.dataset.act === 'cal') toggleCalibrate(b.dataset.r);
+  });
+  $('roles').addEventListener('change', (e) => {
+    const t = e.target, k = t.dataset.k;
+    if (!k || !config) return;
+    const target = t.dataset.r ? config[t.dataset.r] : config;
+    target[k] = t.type === 'checkbox' ? t.checked : Number(t.value);
+    saveConfig();
+  });
+  $('resetBtn').addEventListener('click', () => {
+    const pad = currentPad();
+    if (!pad) return;
+    try { localStorage.removeItem(storeKey(pad)); } catch (e) { /* ignore */ }
+    config = defaultConfig(); detecting = calibrating = null;
+    renderAll();
+  });
+  $('copyBtn').addEventListener('click', async () => {
+    const ta = $('json');
+    try { await navigator.clipboard.writeText(ta.value); }
+    catch (e) { ta.select(); document.execCommand('copy'); }
+    $('copyBtn').textContent = 'Copied';
+    setTimeout(() => { $('copyBtn').textContent = 'Copy JSON'; }, 1200);
+  });
+  window.addEventListener('gamepadconnected', refreshPadList);
+  window.addEventListener('gamepaddisconnected', refreshPadList);
+  // Some browsers don't fire gamepadconnected reliably (e.g. device already
+  // connected before page load), so poll the list as a backstop.
+  setInterval(() => {
+    const ids = pads().map((p) => p.index + p.id).join('|');
+    if (ids !== refreshPadList.last) { refreshPadList.last = ids; refreshPadList(); }
+  }, 1000);
+
+  if (!navigator.getGamepads) $('status').textContent = 'This browser does not support the Gamepad API — use Chrome or Edge.';
+  renderAll();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
