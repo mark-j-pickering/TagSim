@@ -296,9 +296,42 @@ directly in Chrome/Edge, or at `/input-tester.html` on the dev server / Pages
 deploy (Vite copies `public/` verbatim). Per role (steering, throttle, brake):
 "Detect" picks whichever axis moves, "Calibrate" records the real travel (pedal
 rest/full, wheel min/centre/max), plus invert, deadzone and lock-to-lock degrees.
-Mappings are saved to localStorage per device id and exportable as JSON. It's
-groundwork for analog input: the sim itself still only reads ↑/↓ as boolean
-throttle/brake (see "Driving controls" above); nothing consumes the JSON yet.
+Mappings are saved to localStorage per device id and exportable as JSON.
+
+**The sim consumes those mappings directly** (`src/wheelInput.js`): it reads
+the same `tagsim.input.<gamepad id>` localStorage keys, so the tester must be
+opened from the same origin as the sim (the header button does that), and it
+reloads them on the `storage` event so recalibrating needs no refresh. Each
+role is taken from the first connected device that maps it, so pedals that
+enumerate as their own USB device work too. `steerValue`/`pedalValue` there
+are copies of the tester's normalisation — keep the two in sync.
+
+- **Steering**: the wheel's calibrated full range maps onto the sim wheel's
+  full range (`SIM_WHEEL_HALF_RANGE_DEG`, 720°) through
+  `roadAngleForWheelRotation`, the exact inverse of `wheelRotationDeg`, so the
+  progressive rack applies and a device set to 1440° matches the on-screen
+  wheel 1:1. The tester's `lockToLockDeg` is informational only. Last input
+  wins: the wheel takes over only after moving `WHEEL_TAKEOVER_NORM` from
+  where it sat when it last lost control, and releases when a key/slider/
+  button writes a different `steerInput` or an autopilot engages. On takeover
+  it chases the wheel at `steerRampRate` (no snap), then tracks it directly —
+  no rate limit on top of real hands. While it owns steering the drive loop
+  writes `appliedSteerRef` and keeps `steerInput`/`steerTargetRef` synced; the
+  keyboard chase effect idles (not exits) meanwhile — see its comment for why.
+  Fence Autopilot's "turn" phase still can't be interrupted.
+- **Pedals**: throttle scales `throttleAccel` by pedal position; brake decel
+  is `pedal × BRAKE_DECEL_MAX` (the pedal replaces the key's hold-time ramp),
+  max'd with any key/auto-brake decel. Either pedal past
+  `PEDAL_INPUT_THRESHOLD` exits ML Autopilot; throttle cancels Page Down.
+- All analog input is ignored while the page is hidden/unfocused (frozen
+  gamepad values would otherwise keep the bus accelerating).
+- **Horn**: button 19 on the steering device (`DEFAULT_HORN_BUTTON`,
+  overridable per device by a `hornButton` key in its saved config — the
+  tester has no button-mapping UI yet). Space and the button are independent
+  holds (`setHornHeld`), so releasing one doesn't cut the other off. Chrome
+  doesn't count gamepad input as a user gesture, so the horn can't sound until
+  the page has had one click/keypress.
+- Not yet mapped: other wheel buttons, force feedback.
 
 ## Key metrics reported (all in `computeGeometry`'s return value)
 

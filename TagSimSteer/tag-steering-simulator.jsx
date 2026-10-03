@@ -4,6 +4,7 @@ import { createEnv, observe, DEFAULT_COURSE_OPTIONS, CRUISE_SPEED_KMH } from "./
 import { createPolicy, makePolicyFn } from "./src/policy.js";
 import trainedPolicyData from "./src/trained-policy.json";
 import { parseDxfToWorldShapes, dxfShapePathD, dxfShapeStrokeWidth, dxfShapeStrokeDasharray } from "./src/dxfImport.js";
+import { loadWheelConfigs, readWheelInput, describeWheelInput } from "./src/wheelInput.js";
 
 // ---------- constants ----------
 // VB is the height of the SVG's abstract coordinate space, always 1000 units — it's the reference
@@ -1175,6 +1176,37 @@ function wheelRotationDeg(roadAngleDeg) {
   return sign * STEER_HAND_SPEED * steerTimeToAngle(roadAngleDeg);
 }
 
+// Inverse of wheelRotationDeg: physical steering-wheel rotation -> road-wheel angle, through the
+// same progressive rack. Solves w = HAND·ln(rate(a)/MIN)/K for a, clamped to full lock.
+function roadAngleForWheelRotation(wheelDeg) {
+  const sign = wheelDeg < 0 ? -1 : 1;
+  const a = (STEER_MIN_RATE * (Math.exp((Math.abs(wheelDeg) * STEER_RATE_K) / STEER_HAND_SPEED) - 1)) / STEER_RATE_K;
+  return sign * Math.min(MAX_LOCK_DEG, a);
+}
+// The sim's own steering wheel turns ±this many degrees lock-to-lock-half (720° for the default
+// 14.4:1 average ratio, i.e. 4 turns lock-to-lock).
+const SIM_WHEEL_HALF_RANGE_DEG = wheelRotationDeg(MAX_LOCK_DEG);
+
+// ---------- analog wheel/pedal input (see src/wheelInput.js) ----------
+// A physical wheel's calibrated full range (its own lock stops, as set in the wheel's driver
+// software, e.g. Moza Pit House) is mapped onto the sim wheel's full range — so full physical lock
+// is always full road-wheel lock whatever rotation the device is set to, and setting the device to
+// 4 turns (1440°) makes the physical and on-screen wheels match 1:1.
+//
+// The wheel only takes over steering once it has actually moved WHEEL_TAKEOVER_NORM (of its half
+// range — ~7° of rotation at 1440°) from where it sat when it last lost control, so a resting wheel
+// doesn't fight the keyboard/slider/autopilots; last input wins. Taking over from a different
+// angle first chases the wheel at the normal steerRampRate (no snap), then tracks it directly —
+// with a real wheel the driver's hands are the rate limit, so the keyboard's ramp isn't applied
+// on top.
+const WHEEL_TAKEOVER_NORM = 0.01;
+// Frame-to-frame wheel movement (normalised) that counts as "hands actively on the wheel" — keeps
+// Fence Autopilot's manual-steer quiet period refreshed the same way repeated arrow-key nudges do.
+const WHEEL_ACTIVE_NORM = 0.002;
+// Pedal travel (0..1) past which a pedal counts as deliberate driver input — exits ML Autopilot and,
+// for the throttle, overrides a Page Down auto-brake, same as ↑/↓ do.
+const PEDAL_INPUT_THRESHOLD = 0.05;
+
 function SteeringWheel({ angleDeg, size = 132 }) {
   return (
     <div style={{ display: "flex", justifyContent: "center", marginBottom: 4 }}>
@@ -1544,6 +1576,18 @@ export default function BusSteeringSimulator() {
   // convenience rather than a second, separate speed control. Braking cancels it outright.
   const driveToTargetRef = useRef(null);
 
+  // Analog wheel/pedals (see src/wheelInput.js and WHEEL_TAKEOVER_NORM above). wheelConfigsRef holds
+  // the Input Tester's saved mappings; reloaded live when the tester tab saves (`storage` event) or
+  // a device connects, so recalibrating doesn't need a page refresh.
+  const wheelConfigsRef = useRef({});
+  const wheelOwnsSteerRef = useRef(false); // wheel currently drives the steering (last input wins)
+  const wheelRejoiningRef = useRef(false); // just took over from a different angle; still chasing the wheel at steerRampRate
+  const wheelAnchorRef = useRef(null); // normalised wheel position when it last lost (or never had) control — takeover needs movement away from here
+  const wheelLastNormRef = useRef(null);
+  const wheelLastWrittenTargetRef = useRef(null); // steerInput value the wheel itself last wrote — anything else means another control took over
+  const [wheelStatus, setWheelStatus] = useState({ key: "none", text: null, mapped: false });
+  const [wheelOwnsSteer, setWheelOwnsSteer] = useState(false);
+
   const geom = useMemo(
     () => computeGeometry({ Lfd, Ldt, Fo, Ro, Wb, Tw, deltaFdeg, tagRatio, lockoutOn, lockoutSpeed, speed }),
     [Lfd, Ldt, Fo, Ro, Wb, Tw, deltaFdeg, tagRatio, lockoutOn, lockoutSpeed, speed]
@@ -1764,6 +1808,37 @@ export default function BusSteeringSimulator() {
     if (audio) { audio.pause(); audio.currentTime = 0; }
     hornAudioRef.current = null;
   }
+  // Space and the wheel's horn button (see readWheelInput) are independent holds on the same horn —
+  // releasing one mustn't silence it while the other is still held.
+  const hornKeyHeldRef = useRef(false);
+  const hornButtonHeldRef = useRef(false);
+  function setHornHeld(source, held) {
+    (source === "key" ? hornKeyHeldRef : hornButtonHeldRef).current = held;
+    if (hornKeyHeldRef.current || hornButtonHeldRef.current) startHorn();
+    else stopHorn();
+  }
+
+  // Wheel/pedal mappings + the side-panel status line. Polled once a second as a backstop as well as
+  // on the connect/storage events: Chrome only exposes a gamepad after it has sent some input, and
+  // doesn't reliably fire gamepadconnected for a device already plugged in at page load.
+  useEffect(() => {
+    function refresh() {
+      wheelConfigsRef.current = loadWheelConfigs();
+      const status = describeWheelInput(wheelConfigsRef.current);
+      setWheelStatus((prev) => (prev.key === status.key ? prev : status));
+    }
+    refresh();
+    const interval = setInterval(refresh, 1000);
+    window.addEventListener("gamepadconnected", refresh);
+    window.addEventListener("gamepaddisconnected", refresh);
+    window.addEventListener("storage", refresh);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener("gamepadconnected", refresh);
+      window.removeEventListener("gamepaddisconnected", refresh);
+      window.removeEventListener("storage", refresh);
+    };
+  }, []);
 
   // The driver-operation keys: Left/Right nudge the steering lock (Shift+Left/Right jumps a
   // coarser quarter-turn instead, see QUARTER_TURN_STEER_DEG above), End centres it (same as the
@@ -1865,7 +1940,7 @@ export default function BusSteeringSimulator() {
         setZoom(0.7);
       } else if (e.code === "Space") {
         e.preventDefault();
-        if (!e.repeat) startHorn();
+        if (!e.repeat) setHornHeld("key", true);
       }
     }
     function onKeyUp(e) {
@@ -1876,7 +1951,7 @@ export default function BusSteeringSimulator() {
         // physical ↓ press/release pair owns resetting it, otherwise releasing ↓ mid-way through an
         // auto-brake would restart the progressive ramp from gentle again.
         if (!autoBrakeRef.current) brakeHeldSinceRef.current = null;
-      } else if (e.code === "Space") stopHorn();
+      } else if (e.code === "Space") setHornHeld("key", false);
     }
     function onBlur() {
       // Losing window focus mid-keypress (alt-tab, etc.) never delivers a keyup — release
@@ -1884,6 +1959,8 @@ export default function BusSteeringSimulator() {
       throttleHeldRef.current = false;
       brakeHeldRef.current = false;
       brakeHeldSinceRef.current = null;
+      hornKeyHeldRef.current = false;
+      hornButtonHeldRef.current = false;
       stopHorn();
     }
     window.addEventListener("keydown", onKeyDown);
@@ -1901,6 +1978,12 @@ export default function BusSteeringSimulator() {
   // of the drive loop below — turning the wheel takes time whether or not the bus is moving — and
   // restarts (cancelling any in-flight ramp) whenever the target changes, continuing smoothly from
   // wherever the applied angle currently is, same as the pose integration's dead-reckoning style.
+  //
+  // While the physical wheel owns steering (wheelOwnsSteerRef), the drive loop writes the applied
+  // angle itself and keeps steerInput synced to the wheel. This chase then idles rather than exiting:
+  // a key/slider input releases the wheel from the drive loop a frame or so *after* this effect has
+  // already been re-triggered by that same steerInput change, so exiting here would strand the new
+  // target with nothing chasing it.
   useEffect(() => {
     if (appliedSteerRef.current === steerInput) return;
     let raf;
@@ -1909,6 +1992,10 @@ export default function BusSteeringSimulator() {
       if (lastT == null) lastT = t;
       const dt = Math.min((t - lastT) / 1000, 0.05);
       lastT = t;
+      if (wheelOwnsSteerRef.current) {
+        raf = requestAnimationFrame(tick);
+        return;
+      }
       const target = steerTargetRef.current;
       const current = appliedSteerRef.current;
       const diff = target - current;
@@ -1989,19 +2076,94 @@ export default function BusSteeringSimulator() {
       const dt = Math.min((t - lastTRef.current) / 1000, 0.05);
       lastTRef.current = t;
 
+      // Analog wheel/pedals. Ignored while the page isn't focused: browsers stop delivering gamepad
+      // updates to a background tab, and a value frozen mid-press would otherwise keep the bus
+      // accelerating — the same reason the keyboard's blur handler releases every held key.
+      const pageActive = !document.hidden && document.hasFocus();
+      const wheel = pageActive ? readWheelInput(wheelConfigsRef.current) : { steer: null, throttle: null, brake: null, horn: false };
+      if (wheel.horn !== hornButtonHeldRef.current) setHornHeld("button", wheel.horn);
+      const pedalThrottle = wheel.throttle || 0;
+      const pedalBrake = wheel.brake || 0;
+      if (pedalThrottle > PEDAL_INPUT_THRESHOLD || pedalBrake > PEDAL_INPUT_THRESHOLD) exitMlAutopilot();
+      if (pedalThrottle > PEDAL_INPUT_THRESHOLD) autoBrakeRef.current = false; // same override as ↑
+
+      // Wheel steering — see WHEEL_TAKEOVER_NORM's comment for the ownership rules. Steering only;
+      // ML/Fence Autopilot further down still write appliedSteerRef themselves when engaged.
+      const setWheelOwns = (owns) => {
+        if (wheelOwnsSteerRef.current === owns) return;
+        wheelOwnsSteerRef.current = owns;
+        setWheelOwnsSteer(owns);
+      };
+      if (wheel.steer == null) {
+        setWheelOwns(false);
+        wheelAnchorRef.current = null;
+        wheelLastNormRef.current = null;
+      } else {
+        const norm = wheel.steer;
+        if (wheelOwnsSteerRef.current) {
+          // Another control took the wheel away: a key/slider/button wrote a different steerInput,
+          // or an autopilot engaged (both write appliedSteerRef directly while engaged).
+          const autopilotActive = controlModeRef.current === "ml" || fenceAutopilotPhaseRef.current != null;
+          if (autopilotActive || steerTargetRef.current !== wheelLastWrittenTargetRef.current) {
+            setWheelOwns(false);
+            wheelAnchorRef.current = norm;
+          }
+        } else if (wheelAnchorRef.current == null) {
+          wheelAnchorRef.current = norm; // first reading — a resting wheel doesn't grab control
+        } else if (Math.abs(norm - wheelAnchorRef.current) > WHEEL_TAKEOVER_NORM && fenceAutopilotPhaseRef.current !== "turn") {
+          // "Turn" is the one phase the driver can't interrupt (see cancelFenceAutopilot) — the
+          // wheel waits it out like the arrow keys do, then takes over on its next movement.
+          exitMlAutopilot();
+          cancelFenceAutopilot();
+          setWheelOwns(true);
+          wheelRejoiningRef.current = Math.abs(appliedSteerRef.current - roadAngleForWheelRotation(norm * SIM_WHEEL_HALF_RANGE_DEG)) > 0.25;
+        }
+        if (wheelOwnsSteerRef.current) {
+          if (wheelLastNormRef.current != null && Math.abs(norm - wheelLastNormRef.current) > WHEEL_ACTIVE_NORM) cancelFenceAutopilot();
+          const target = roadAngleForWheelRotation(norm * SIM_WHEEL_HALF_RANGE_DEG);
+          let next = target;
+          if (wheelRejoiningRef.current) {
+            const current = appliedSteerRef.current;
+            const diff = target - current;
+            const maxStep = steerRampRate(Math.abs(current)) * dt;
+            if (Math.abs(diff) <= maxStep) wheelRejoiningRef.current = false;
+            else next = current + Math.sign(diff) * maxStep;
+          }
+          appliedSteerRef.current = next;
+          setAppliedSteerInput(next);
+          // Keep steerInput (the slider, and the base a relative arrow-key nudge starts from) synced
+          // to the wheel. steerTargetRef is updated here too, not just on the next render, so the
+          // "another control wrote steerInput" check above doesn't misfire on the frames in between.
+          steerTargetRef.current = target;
+          wheelLastWrittenTargetRef.current = target;
+          setSteerInput(target);
+        }
+        wheelLastNormRef.current = norm;
+      }
+
       let nextSpeed = speedRef.current;
-      if (brakeHeldRef.current || autoBrakeRef.current) {
+      const braking = brakeHeldRef.current || autoBrakeRef.current || pedalBrake > 0;
+      if (braking) {
         driveToTargetRef.current = null; // braking always overrides/cancels a pending accelerate-to-target ramp
-        const heldS = brakeHeldSinceRef.current != null ? (t - brakeHeldSinceRef.current) / 1000 : 0;
-        nextSpeed = Math.max(0, nextSpeed - brakeDecel(heldS) * 3.6 * dt);
+        // Keys ramp up over BRAKE_RAMP_SECONDS as a stand-in for leaning harder on the pedal; a real
+        // pedal *is* that lean, so its decel is just pedal position × max. Whichever asks for more wins.
+        let decel = 0;
+        if (brakeHeldRef.current || autoBrakeRef.current) {
+          const heldS = brakeHeldSinceRef.current != null ? (t - brakeHeldSinceRef.current) / 1000 : 0;
+          decel = brakeDecel(heldS);
+        }
+        decel = Math.max(decel, pedalBrake * BRAKE_DECEL_MAX);
+        nextSpeed = Math.max(0, nextSpeed - decel * 3.6 * dt);
         if (nextSpeed === 0 && autoBrakeRef.current) {
           // Page Down's job is done — clear it so the next ↓ press starts a fresh ramp rather than
           // inheriting this one's (long-since-elapsed) start time.
           autoBrakeRef.current = false;
           if (!brakeHeldRef.current) brakeHeldSinceRef.current = null;
         }
-      } else if (throttleHeldRef.current || driveToTargetRef.current != null) {
-        nextSpeed = Math.min(MAX_SPEED_KMH, nextSpeed + throttleAccel(nextSpeed) * 3.6 * dt);
+      } else if (throttleHeldRef.current || driveToTargetRef.current != null || pedalThrottle > 0) {
+        // Full power for the ↑ key / auto-ramps; the pedal scales the same power-limited curve.
+        const throttle = throttleHeldRef.current || driveToTargetRef.current != null ? 1 : pedalThrottle;
+        nextSpeed = Math.min(MAX_SPEED_KMH, nextSpeed + throttle * throttleAccel(nextSpeed) * 3.6 * dt);
         if (driveToTargetRef.current != null && nextSpeed >= driveToTargetRef.current) {
           nextSpeed = driveToTargetRef.current; // clamp exactly to the target rather than overshoot it
           driveToTargetRef.current = null;
@@ -3521,7 +3683,8 @@ export default function BusSteeringSimulator() {
               <div>← / → — Nudge the steering lock 0.5° at a time (up to {LOCK_TO_LOCK_SECONDS}s lock-to-lock)</div>
               <div>Shift + ← / → — Quarter-turn of the wheel at a time ({QUARTER_TURN_STEER_DEG}°)</div>
               <div>End — Straight (centre the steering)</div>
-              <div>Space — Horn</div>
+              <div>Wheel &amp; pedals (USB, e.g. Moza R5) — map them once in the Input Tester (header); turning the wheel takes over steering from the keys/slider, pedals work alongside ↑ / ↓</div>
+              <div>Space (or wheel button 19) — Horn</div>
               <div>A — Smoothly zoom to fit the recorded trail</div>
               <div>M — Smoothly zoom to fit the mapped-area boundary (trail mode only)</div>
               <div>B — Close-up {CLOSE_RADIUS_M}m view, tracking the bus (biased toward what's ahead)</div>
@@ -3541,6 +3704,17 @@ export default function BusSteeringSimulator() {
                   <button key={lbl} title={title} className="btn" style={{ flex: "1 1 0", fontSize: 12, padding: "4px 4px", whiteSpace: "nowrap" }} onClick={() => { if (fenceAutopilotPhaseRef.current === "turn") return; exitMlAutopilot(); cancelFenceAutopilot(); setSteerInput(v); }}>{lbl}</button>
                 ))}
               </div>
+              {/* Analog wheel/pedal status — only shown once a controller is detected, so the panel's
+                  height (which also sizes the map) is unchanged for keyboard-only use. */}
+              {wheelStatus.text && (
+                <div
+                  title={wheelStatus.mapped ? "Wheel/pedal mapping from the Input Tester" : "Open the Input Tester (header) to map and calibrate this device"}
+                  style={{ marginTop: 6, fontSize: 12, color: wheelStatus.mapped ? COL.textDim : COL.amber, textAlign: "center", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                >
+                  {wheelStatus.text}
+                  {wheelStatus.mapped && <span style={{ color: wheelOwnsSteer ? COL.front : COL.textDim }}> · {wheelOwnsSteer ? "wheel steering" : "turn wheel to take over"}</span>}
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 130 }}>
               <SpeedGauge label="Speed" unit="km/h" value={speed} max={MAX_SPEED_KMH} step={10} accent={COL.amber} />
