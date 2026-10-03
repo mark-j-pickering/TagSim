@@ -288,6 +288,18 @@ real bug caught by testing the live deployment, not just local dev. `import.meta
 Vite's own always-correct-for-the-current-build answer to "what's the base path," and already ends
 in a trailing slash, hence no leading slash on the `"sounds/..."` half.
 
+## Input tester (`public/input-tester.html`)
+
+A standalone, dependency-free page for checking a USB wheel + pedal set via the
+browser Gamepad API — not part of the React app and not imported by it. Open it
+directly in Chrome/Edge, or at `/input-tester.html` on the dev server / Pages
+deploy (Vite copies `public/` verbatim). Per role (steering, throttle, brake):
+"Detect" picks whichever axis moves, "Calibrate" records the real travel (pedal
+rest/full, wheel min/centre/max), plus invert, deadzone and lock-to-lock degrees.
+Mappings are saved to localStorage per device id and exportable as JSON. It's
+groundwork for analog input: the sim itself still only reads ↑/↓ as boolean
+throttle/brake (see "Driving controls" above); nothing consumes the JSON yet.
+
 ## Key metrics reported (all in `computeGeometry`'s return value)
 
 - `R`, `turningDiameter`, `outerRadius` — basic turning-circle numbers.
