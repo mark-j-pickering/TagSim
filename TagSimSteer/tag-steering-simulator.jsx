@@ -1220,6 +1220,7 @@ const COL = {
   trail: "#4fd1c5",
   bodyTrail: "#8ef2b0",
   wheelTrail: "#3d434a", // swept wheel-pair bands (wheels 1-2 and 3-6), one colour for both — dark asphalt grey
+  headingArrow: "#c4cad0", // forward-heading arrow at the front of the body — very light grey
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
   alert: "#ff4d4d",
   newTarget: "#4ade80",
@@ -3437,9 +3438,9 @@ export default function BusSteeringSimulator() {
 
           {/* forward-heading arrow — front of the body, on the centreline. Open chevron head (two
               strokes), not a filled triangle. */}
-          <line x1={arrowScreen.base.x} y1={arrowScreen.base.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" />
-          <line x1={arrowScreen.headL.x} y1={arrowScreen.headL.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
-          <line x1={arrowScreen.headR.x} y1={arrowScreen.headR.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
+          <line x1={arrowScreen.base.x} y1={arrowScreen.base.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke={COL.headingArrow} strokeWidth="1.6" />
+          <line x1={arrowScreen.headL.x} y1={arrowScreen.headL.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke={COL.headingArrow} strokeWidth="1.6" strokeLinecap="round" />
+          <line x1={arrowScreen.headR.x} y1={arrowScreen.headR.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke={COL.headingArrow} strokeWidth="1.6" strokeLinecap="round" />
 
           {/* driver marker — offside/front, right-hand-drive. Supplied artwork (rasterized, see
               DRIVER_ICON_IMG above), sized from a fixed real-world width so it scales with the
