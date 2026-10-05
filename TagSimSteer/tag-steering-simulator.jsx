@@ -1214,7 +1214,7 @@ const COL = {
   w3: "#c9f24a", w6: "#b18aff",
   trail: "#4fd1c5",
   bodyTrail: "#8ef2b0",
-  wheelTrail: "#ffb937", // swept wheel-pair bands (wheels 1-2 and 3-6), one colour for both
+  wheelTrail: "#3d434a", // swept wheel-pair bands (wheels 1-2 and 3-6), one colour for both — dark asphalt grey
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
   alert: "#ff4d4d",
   newTarget: "#4ade80",
@@ -3380,7 +3380,7 @@ export default function BusSteeringSimulator() {
               lines. Opacity on the group, not each path, so overlapping hulls (and the two bands
               where they cross) union into one even shade instead of stacking darker. */}
           {trailCache && wheelTraces === "swept" && (
-            <g transform={trailWorldTransform} opacity="0.3">
+            <g transform={trailWorldTransform} opacity="0.85">
               {trailCache.sweptEls}
               {sweptCapD && <path d={sweptCapD} fill={COL.wheelTrail} />}
             </g>
