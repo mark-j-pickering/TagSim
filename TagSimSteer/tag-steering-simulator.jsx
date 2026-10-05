@@ -1220,7 +1220,7 @@ const COL = {
   trail: "#4fd1c5",
   bodyTrail: "#8ef2b0",
   wheelTrail: "#3d434a", // swept wheel-pair bands (wheels 1-2 and 3-6), one colour for both — dark asphalt grey
-  headingArrow: "#c4cad0", // forward-heading arrow at the front of the body — very light grey
+  headingArrow: "rgba(200,225,245,0.22)", // forward-heading arrow — the grid-line colour (gridMajor), a bit lighter
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
   alert: "#ff4d4d",
   newTarget: "#4ade80",
