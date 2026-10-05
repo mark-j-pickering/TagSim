@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="TagSimWheel.Console/TagSimWheel.Console.csproj" />
+  <Project Path="TagSimWheel.Core/TagSimWheel.Core.csproj" />
+  <Project Path="TagSimWheel.WinForms/TagSimWheel.WinForms.csproj" />
+</Solution>

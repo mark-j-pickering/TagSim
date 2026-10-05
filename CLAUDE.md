@@ -9,7 +9,7 @@ a front steer axle, a fixed drive axle, and a rear tag axle that
 counter-steers), modelled loosely on Brisbane City Council's Volvo/Scania 6x2
 tag-axle fleet.
 
-The repo holds two independent sub-projects, not a shared build/workspace:
+The repo holds three independent sub-projects, not a shared build/workspace:
 
 - **`TagSimSteer/`** — a working 2D plan-view (top-down) steering geometry
   simulator. Single self-contained React component
@@ -26,6 +26,12 @@ The repo holds two independent sub-projects, not a shared build/workspace:
   [TagSim3D/README.md](TagSim3D/README.md) for what's there and why, and
   [TagSimSteer/CLAUDE.md](TagSimSteer/CLAUDE.md)'s "Porting to 3D / C#"
   section for how the two projects' geometry stays in sync.
+
+- **`TagSimWheel/`** — C# proof of concept that drives the Moza R5's
+  force-feedback motor to commanded angles via DirectInput. A
+  netstandard2.0 library (`WheelController`, reusable from WinForms or
+  Unity), a console test front end and a WinForms control GUI. See
+  [TagSimWheel/README.md](TagSimWheel/README.md).
 
 There is no root-level package.json, build config, linter, or test suite —
 neither sub-project is a scaffolded app. `TagSimSteer/tag-steering-simulator.jsx`
