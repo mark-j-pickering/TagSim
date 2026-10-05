@@ -175,7 +175,11 @@ ribbon polygons at the boundary.
   (`COL.w6`), the front pair plus the outer drive duals — over a single
   translucent fill of the ground swept by the body (`COL.bodyTrail`, the
   convex hull of the four body corners at each pair of consecutive samples).
-  A **Wheels** button hides the lines (saved in Save files). This replaced an
+  A **Wheels** button cycles lines → swept → off (saved in Save files as
+  `wheelTraces`). "Swept" replaces the four lines with two filled bands, the
+  1–2 and 3–6 segments brushed along the trail (convex hull per sample pair,
+  like the body), both in `COL.wheelTrail`, so the lines become band edges.
+  Opacity sits on the group so overlaps union rather than darken. This replaced an
   earlier version with three filled axle-corridor ribbons (drive, front,
   tag), which read as cluttered. Samples store only the pose (`poseX`, `poseY`, `theta`,
   `newSegment`); wheel positions are derived at render time from the current
