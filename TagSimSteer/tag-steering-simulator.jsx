@@ -503,9 +503,14 @@ function trailWheelSweptPathD(wheels, poseA, poseB) {
     poseTransform(wheels[a].local, poseB), poseTransform(wheels[b].local, poseB),
   ]).map(worldPt).join("L")}Z`).join("");
 }
-// Trail wheel-track display styles, cycled by the map's Wheels button.
-const WHEEL_TRACE_STYLES = ["lines", "swept", "off"];
-const WHEEL_TRACE_LABELS = { lines: "Wheels: lines", swept: "Wheels: swept", off: "Wheels: off" };
+// Trail wheel-track display styles, in the order the map's None/Lines/Swept toggle shows them.
+const WHEEL_TRACE_STYLES = ["off", "lines", "swept"];
+const WHEEL_TRACE_LABELS = { off: "None", lines: "Lines", swept: "Swept" };
+const WHEEL_TRACE_TITLES = {
+  off: "No wheel trail (the body swept area stays)",
+  lines: "Wheel 1, 2, 3 and 6 track lines",
+  swept: "Filled bands between wheels 1-2 and 3-6",
+};
 function trailWheelPolyline(w, points, key) {
   return (
     <polyline key={key} points={points} fill="none" stroke={w.color} strokeWidth="1.6" strokeLinejoin="round" opacity="0.85" vectorEffect="non-scaling-stroke" />
@@ -3667,14 +3672,24 @@ export default function BusSteeringSimulator() {
             Trail
           </button>
           {trailMode && (
-            <button
-              className={"btn" + (wheelTraces !== "off" ? " btnOn" : "")}
-              onClick={() => setWheelTraces((v) => WHEEL_TRACE_STYLES[(WHEEL_TRACE_STYLES.indexOf(v) + 1) % WHEEL_TRACE_STYLES.length])}
-              title="Cycle the wheel trail: lines (wheel 1, 2, 3 and 6 tracks), swept (filled bands between wheels 1-2 and 3-6), off. The body swept area stays."
-              style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
-            >
-              {WHEEL_TRACE_LABELS[wheelTraces]}
-            </button>
+            <div style={{ display: "flex", boxShadow: "0 2px 8px rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden" }}>
+              {WHEEL_TRACE_STYLES.map((style) => (
+                <button
+                  key={style}
+                  onClick={() => setWheelTraces(style)}
+                  title={WHEEL_TRACE_TITLES[style]}
+                  style={{
+                    fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
+                    padding: "7px 10px", border: "none", cursor: "pointer",
+                    background: wheelTraces === style ? COL.amber : "rgba(200,225,245,0.08)",
+                    color: wheelTraces === style ? COL.bg : COL.text,
+                    fontWeight: wheelTraces === style ? 600 : 400,
+                  }}
+                >
+                  {WHEEL_TRACE_LABELS[style]}
+                </button>
+              ))}
+            </div>
           )}
           {trailMode && (
             <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
