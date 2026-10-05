@@ -1,7 +1,7 @@
 # Design note: Trail display mode
 
-Status: v1 landed in `tag-steering-simulator.jsx` — history buffer, three
-axle-track ribbons, and the forward 50m preview (the "Trail" toggle). The
+Status: v1 landed in `tag-steering-simulator.jsx` — history buffer, per-wheel
+track lines plus a body swept area, and the forward 50m preview (the "Trail" toggle). The
 tyre/overhang colour split described below is not implemented yet; see "What
 shipped" at the bottom.
 
@@ -170,26 +170,20 @@ ribbon polygons at the boundary.
 
 ## What shipped
 
-- **Three bands, all "tyre corridor" style — not yet the tyre/overhang
-  split** described above. Shipped: a drive-axle corridor (teal, sampled at
-  chassis x = 0, reusing the existing off-tracking band's local half-width
-  formula — `bandHalfWidth(Tw)`, matching the render's existing
-  `bandHalfY`), a front-axle track (amber/`COL.front`, sampled at chassis
-  x = Lfd), and a tag-axle track (coral/`COL.tag`, sampled at chassis
-  x = -Ldt) — front and tag both via `singleAxleBandHalfWidth(Tw)`, same
-  formula, neither axle being a dual pair. Same ribbon construction for all
-  three, each offset along the chassis to its own axle so it traces where
-  that axle itself has been, not just the drive axle. Front and drive
-  visibly diverge once the bus turns (the "mowing the grass" effect); tag
-  and drive stay close together for this vehicle's proportions (`Ldt` =
-  1.4m is small relative to `Lfd` = 7m) — correct, not a rendering bug,
-  verified by checking the underlying polygon point counts match across all
-  three bands even where the tag band is visually subtle. None of the three
-  account for that axle's own steer-angle widening (same accepted
-  simplification as the live off-track band). Still not implemented: a
-  differently-styled band for body-corner overhang (`mow1`/`mow2`/
-  `tailSwing7`/`tailSwing8`) — the "nothing touched here, but the bus
-  occupied this space" corridor described above.
+- **Wheel tracks + body swept area.** The trail is now one solid line per
+  wheel track — wheels 1 and 2 (`COL.front`), 3 (`COL.w3`) and 6
+  (`COL.w6`), the front pair plus the outer drive duals — over a single
+  translucent fill of the ground swept by the body (`COL.bodyTrail`, a convex
+  hull of the four body corners per 1m of travel, `TRAIL_BODY_HULL_STRIDE`).
+  Both are built once per `trailVersion` bump in world coordinates and placed
+  on screen by one SVG `transform` (`trailWorldTransform`, which is `toScreen`
+  as a matrix), so per-frame work no longer grows with trail length. This replaced an earlier
+  version with three filled axle-corridor ribbons (drive, front, tag), which
+  read as cluttered. Samples store only the pose (`poseX`, `poseY`, `theta`,
+  `newSegment`); wheel positions are derived at render time from the current
+  `geom.wheelCenters`, which is safe because any bus-dimension change clears
+  the trail. Older save files with extra per-sample fields still load — the
+  extras are just ignored.
 - **Forward 50m preview**: implemented as a closed-form projection
   (`projectPosesForward`), not an iterative step loop — it solves the same
   unicycle model the drive loop integrates (`theta' = v/R`, `x' = v

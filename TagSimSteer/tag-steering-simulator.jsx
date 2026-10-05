@@ -333,28 +333,18 @@ const DUAL_HALF_LEN = 0.42, DUAL_HALF_W = 0.085; // narrower single tyre within 
 const DUAL_GAP = 0.28; // centre-to-centre spacing of a dual (twin) tyre pair
 
 // ---------- trail display mode ----------
-// Local (chassis-frame) half-width of the swept corridor, same simplification the existing
-// straight-case off-tracking band already uses (see `bandHalfY` in the render body): the wider of
-// the hero-wheel offset and the front wheel's own footprint, applied symmetrically on both sides
-// regardless of which side actually reaches it. Depends only on track width, not steering angle,
-// so unlike the live turning-case band it doesn't widen further on tight lock — an accepted
-// simplification for a first pass (see docs/trail-display-mode.md).
-function bandHalfWidth(Tw) {
-  const halfT = Tw / 2;
-  return Math.max(halfT + DUAL_GAP / 2, halfT + WHEEL_HALF_W);
-}
-// Front/tag axle local half-width — same `halfT + WHEEL_HALF_W` term as above, without the dual
-// term since neither the front nor the tag axle is a dual pair. Sampled at that axle's own
-// along-chassis offset (x = Lfd or x = -Ldt), not x = 0, so each band traces where that axle
-// itself has actually been — distinct from the drive-axle band above, which is why they diverge
-// once the bus turns (the front axle cuts the corner ahead of where the drive axle tracks, the tag
-// axle tracks inboard of it — the same effect as the "mowing the grass" / tail-swing readouts).
+// Front axle local half-width (outer tyre edge) — neither the front nor the tag axle is a dual
+// pair. Used for the dotted front-wheel look-ahead preview lines.
 function singleAxleBandHalfWidth(Tw) {
   return Tw / 2 + WHEEL_HALF_W;
 }
 const TRAIL_MIN_SPACING = 0.2; // metres between recorded trail samples
 const TRAIL_MIN_SPACING_SQ = TRAIL_MIN_SPACING * TRAIL_MIN_SPACING;
 const TRAIL_RENDER_EVERY = 5; // force a re-render every N recorded samples, not every one
+// Body swept area: one convex hull per this many samples (1m at TRAIL_MIN_SPACING) rather than per
+// sample. The chord error of a hull spanning 1m is millimetres on ordinary turns and ~5cm at full
+// lock (R ≈ 5.9m) — invisible at trail zoom, for a fifth of the geometry.
+const TRAIL_BODY_HULL_STRIDE = 5;
 
 // Screen-space outline of the trail-recording bound — unlike longLineScreen/longBandPoints (which
 // are chassis-relative and follow the bus via poseTransform), this square is anchored at the world
@@ -438,7 +428,7 @@ function ptsToPath(pts) {
 // corridor traced by a single reference point. Returns hull vertices in one consistent winding
 // order (whichever the algorithm naturally produces), which is what matters here — every caller
 // needs the SAME order every time so that overlapping hulls add under the SVG nonzero fill rule
-// instead of cancelling (see bodyTrailPathD).
+// instead of cancelling (see curedBodyPathWorldD).
 function convexHull(points) {
   const pts = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
   const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
@@ -1315,6 +1305,7 @@ export default function BusSteeringSimulator() {
   const animating = speed > 0;
   const [showGeom, setShowGeom] = useState(false);
   const [showDims, setShowDims] = useState(false);
+  const [showWheelTraces, setShowWheelTraces] = useState(true); // trail-mode wheel 1/2/3/6 track lines; body swept area is always shown
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // Collapsed by default so the always-visible column (radius grid, steering/throttle, bus photo)
   // fits within a single laptop screen height without scrolling — the keyboard shortcut list isn't
@@ -1471,7 +1462,7 @@ export default function BusSteeringSimulator() {
   // showing the last computed target (dimmed) between engagements instead of "—", while still
   // reading "—" before the very first engagement, when fenceLineRef is still unset.
   const [autoSteerEverEngaged, setAutoSteerEverEngaged] = useState(false);
-  const trailRef = useRef([]); // [{ poseX, poseY, left:{x,y}, right:{x,y} }, ...] in world space
+  const trailRef = useRef([]); // [{ poseX, poseY, theta, newSegment }, ...] in world space
   const trailModeRef = useRef(trailMode);
   const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason LfdRef exists
   const trailPausedRef = useRef(false);
@@ -1632,18 +1623,10 @@ export default function BusSteeringSimulator() {
       const dx = nextPose.x - last.poseX, dy = nextPose.y - last.poseY;
       if (dx * dx + dy * dy < TRAIL_MIN_SPACING_SQ) return;
     }
-    const halfW = bandHalfWidth(g.Tw);
-    const axleHalfW = singleAxleBandHalfWidth(g.Tw); // same formula for front and tag — neither is a dual pair
-    samples.push({
-      poseX: nextPose.x, poseY: nextPose.y, theta: nextPose.theta,
-      newSegment: wasPaused,
-      left: poseTransform({ x: 0, y: halfW }, nextPose),
-      right: poseTransform({ x: 0, y: -halfW }, nextPose),
-      frontLeft: poseTransform({ x: g.Lfd, y: axleHalfW }, nextPose),
-      frontRight: poseTransform({ x: g.Lfd, y: -axleHalfW }, nextPose),
-      tagLeft: poseTransform({ x: -g.Ldt, y: axleHalfW }, nextPose),
-      tagRight: poseTransform({ x: -g.Ldt, y: -axleHalfW }, nextPose),
-    });
+    // Pose only — wheel tracks and the body swept area are both derived from it at render time
+    // (see trailWheelTracks/curedBody), since every bus dimension change already
+    // clears the trail, so the current geom is always the one that drove it.
+    samples.push({ poseX: nextPose.x, poseY: nextPose.y, theta: nextPose.theta, newSegment: wasPaused });
     if (samples.length % TRAIL_RENDER_EVERY === 0) setTrailVersion((v) => v + 1);
   }
 
@@ -1670,7 +1653,7 @@ export default function BusSteeringSimulator() {
       appCommit: __APP_COMMIT__, // build-time git commit (see vite.config.js) — traces a saved trail back to the code that produced it
       vehicle: { Lfd, Ldt, Fo, Ro, Wb, Tw },
       controls: { steerInput, tagRatio, lockoutOn, lockoutSpeed },
-      display: { showGeom, showDims, advancedOpen, viewMode, trailMode },
+      display: { showGeom, showDims, advancedOpen, viewMode, trailMode, showWheelTraces },
       pose,
       trail: trailRef.current,
     };
@@ -1714,6 +1697,7 @@ export default function BusSteeringSimulator() {
 
     setShowGeom(!!d.showGeom);
     setShowDims(!!d.showDims);
+    setShowWheelTraces(d.showWheelTraces !== false); // on unless explicitly saved off (older saves predate the toggle)
     setAdvancedOpen(!!d.advancedOpen);
     setViewMode(d.viewMode === "bus" ? "bus" : "circle");
     setTrailMode(!!d.trailMode);
@@ -2876,110 +2860,94 @@ export default function BusSteeringSimulator() {
   const frontWheelMaxY_s = halfT_s + WHEEL_HALF_W; // angle is 0 when straight, so no rotation widening
   const bandHalfY = Math.max(Math.abs(w3Y), Math.abs(w6Y), frontWheelMaxY_s);
 
-  // Trail: the ribbon of everywhere the swept corridor has actually been, built from accumulated
-  // world-space samples rather than derived from the current instantaneous circle. trailRef is a
-  // plain ref (mutated per-frame in the drive loop, see maybeSampleTrail) so it doesn't itself
-  // trigger a render — trailVersion state is bumped periodically instead, purely to force this
-  // component to re-run and pick up the latest trailRef.current.
+  // Trail: one solid line per wheel track (1, 2, 3, 6 — front pair plus the outer drive duals,
+  // the same "hero" wheels the live view highlights) plus the body swept area below, built from
+  // accumulated world-space pose samples. trailRef is a plain ref (mutated per-frame in the drive
+  // loop, see maybeSampleTrail) so it doesn't itself trigger a render — trailVersion state is
+  // bumped periodically instead, purely to force this component to re-run and pick up the latest
+  // trailRef.current.
   //
   // Perf note: `pose` (and therefore `displayedView`, which tracks the bus/turn-centre every
-  // frame) changes on every RAF tick while driving, not just when a new trail sample lands — so
-  // rebuilding these straight off `trailSamples` in the render body meant redoing an O(n) pass
-  // (or, for the body hull below, an O(n) convex-hull recompute) ~60 times/sec, with cost growing
-  // with trail length. The world-space vertex/hull lists below are memoized on `trailVersion`
-  // (bumped only every TRAIL_RENDER_EVERY samples) instead, since they don't depend on the view —
-  // only the cheap per-vertex `toScreen` projection still has to re-run every frame, which is
-  // unavoidable since the camera itself can move every frame.
+  // frame) changes on every RAF tick while driving, not just when a new trail sample lands. The
+  // world-space track/hull lists below are memoized on `trailVersion` (bumped only every
+  // TRAIL_RENDER_EVERY samples) since they don't depend on the view — only the cheap per-vertex
+  // `toScreen` projection re-runs every frame.
   const trailSamples = trailRef.current;
-  const trailWorldRibbons = useMemo(() => {
-    if (!trailMode || trailSamples.length < 2) return null;
-    // Split into contiguous segments wherever a sample is tagged newSegment (see maybeSampleTrail):
-    // trail recording pauses while the bus is outside the mapped area and picks up again wherever it
-    // re-enters, which can be anywhere — trail mode no longer clamps position to the boundary (see
-    // allBodyCornersOutside's own comment). A single flat ribbon across that gap has no way to know
-    // the two sides aren't actually adjacent, and draws one long spurious edge connecting them
-    // straight across the map. One ribbon per segment instead leaves a real, visible gap there.
+  // Everything below is built once per trailVersion bump in WORLD coordinates and placed on screen
+  // by a single SVG transform (trailWorldTransform) rather than re-projecting every vertex through
+  // toScreen each frame. `pose`/`displayedView` change on every RAF tick while driving, so the old
+  // per-frame projection meant rebuilding (and React re-diffing) path strings proportional to trail
+  // length ~60 times a second; now only the transform attribute changes per frame. The transform is
+  // exactly toScreen as a matrix: screenX = originX - y*scale, screenY = originY - x*scale.
+  const trailWorldTransform = `matrix(0 ${-displayedView.scale} ${-displayedView.scale} 0 ${displayedView.originX} ${displayedView.originY})`;
+  const worldPt = (p) => `${p.x.toFixed(3)},${p.y.toFixed(3)}`;
+  // Split into contiguous segments wherever a sample is tagged newSegment (see maybeSampleTrail):
+  // recording pauses while the bus is outside the mapped area and picks up again wherever it
+  // re-enters, which can be anywhere. Drawing per segment leaves a real gap there instead of a
+  // spurious straight line (or hull sliver) across the map.
+  const trailSegments = useMemo(() => {
+    if (!trailMode) return [];
     const segments = [[]];
     for (const s of trailSamples) {
       if (s.newSegment && segments[segments.length - 1].length > 0) segments.push([]);
       segments[segments.length - 1].push(s);
     }
-    const validSegments = segments.filter((seg) => seg.length >= 2);
-    const ribbon = (seg, leftKey, rightKey) => [
-      ...seg.map((s) => s[leftKey]),
-      ...seg.map((s) => s[rightKey]).reverse(),
-    ];
-    return {
-      drive: validSegments.map((seg) => ribbon(seg, "left", "right")),
-      front: validSegments.map((seg) => ribbon(seg, "frontLeft", "frontRight")),
-      tag: validSegments.map((seg) => ribbon(seg, "tagLeft", "tagRight")),
-    };
+    return segments.filter((seg) => seg.length >= 2);
   }, [trailMode, trailVersion]);
-  const trailPolygonPointsList = trailWorldRibbons && trailWorldRibbons.drive.map((ribbon) => ptsToPath(ribbon.map((p) => toScreen(displayedView, p))));
-  // Second and third bands: the front and tag axles' own tracks, each sampled at that axle's own
-  // along-chassis offset (see singleAxleBandHalfWidth) — separate ribbons since they follow
-  // different curves than the drive-axle band above once the bus is turning.
-  const frontTrailPolygonPointsList = trailWorldRibbons && trailWorldRibbons.front.map((ribbon) => ptsToPath(ribbon.map((p) => toScreen(displayedView, p))));
-  const tagTrailPolygonPointsList = trailWorldRibbons && trailWorldRibbons.tag.map((ribbon) => ptsToPath(ribbon.map((p) => toScreen(displayedView, p))));
+  const samplePose = (s) => ({ x: s.poseX, y: s.poseY, theta: s.theta });
 
-  // Body footprint band: the ground actually driven over by the whole body, including the front
-  // and rear overhang "mowing the grass" wider through a turn — not just the corridor traced by a
-  // single reference point at x=0. For each pair of consecutive samples, take all 4 body corners
-  // (FL/FR/RL/RR) at both poses (8 points) and fill their convex hull; consecutive samples are only
-  // TRAIL_MIN_SPACING apart, so the true swept region between them (a rotating rectangle sweeping a
-  // small angle) is well approximated by that hull. One extra hull is added from the last recorded
-  // sample to the *live* current pose, so the current nose/tail stay covered between recording
-  // ticks (and, right at the very start, the first sample's own corners already cover its rear
-  // extent — no separate cap needed there).
+  // Trail wheel tracks: one solid line per wheel (1, 2, 3, 6 — front pair plus the outer drive
+  // duals, the same "hero" wheels the live view highlights), as world-space polyline point strings.
+  const trailWheelTracks = useMemo(() => {
+    if (!showWheelTraces || trailSegments.length === 0) return null;
+    const { frontL, frontR, driveL, driveR } = geom.wheelCenters;
+    const wheels = [
+      { key: "w1", color: COL.front, local: frontL },
+      { key: "w2", color: COL.front, local: frontR },
+      { key: "w3", color: COL.w3, local: { x: driveL.x, y: driveL.y + DUAL_GAP / 2 } },
+      { key: "w6", color: COL.w6, local: { x: driveR.x, y: driveR.y - DUAL_GAP / 2 } },
+    ];
+    return wheels.map((w) => ({
+      key: w.key, color: w.color,
+      lines: trailSegments.map((seg) => seg.map((s) => worldPt(poseTransform(w.local, samplePose(s)))).join(" ")),
+    }));
+  }, [trailSegments, showWheelTraces, Lfd, Ldt, Tw]);
+
+  // Body swept area: the ground actually driven over by the whole body, including the front and
+  // rear overhang "mowing the grass" wider through a turn. Filled as the union of convex hulls of
+  // the 4 body corners at pairs of poses TRAIL_BODY_HULL_STRIDE samples apart (always ending on
+  // each segment's last sample), as one world-space path of many small "M...Z" subpaths. Small
+  // convex hulls rather than one big outline polygon: a trail driven over itself would make one big
+  // self-crossing polygon, which no fill rule paints correctly where laps overlap.
   //
-  // Built as one small hull per step (a single "d" path, many "M...Z" subpaths) rather than one big
-  // polygon spanning the whole trail: on a trail driven over itself more than once (repeated
-  // loops), one big self-crossing polygon has its fill cancelled out by SVG's nonzero fill rule
-  // wherever the crossings' winding directions oppose, fading or gapping the band exactly where
-  // laps overlap. Small per-step hulls don't have that failure mode — each is simple (never self-
-  // intersects) and convexHull always winds them the same direction, so overlapping hulls from
-  // different laps only ever *add* to the winding number (never cancel to zero).
-  //
-  // Each hull is computed once, in world space (poseTransform only, no toScreen), and cached below
-  // keyed on trailVersion — convexHull commutes with any invertible affine map, including
-  // toScreen's scale+reflect+translate, so hull(toScreen(pts)) and toScreen(hull(pts)) trace the
-  // identical polygon. Re-projecting a handful of cached hull vertices through toScreen every frame
-  // is far cheaper than re-sorting all 8 corner points and rebuilding the whole path string on
-  // every RAF tick, which is what made this the main cost of a long trail. The live "cap" hull
-  // (last recorded sample -> current pose) is also built in world space, for the same reason and so
-  // its winding matches the cached hulls exactly — a mismatched winding would locally cancel under
-  // the nonzero fill rule right behind the bus.
-  const curedBodyHullsWorld = useMemo(() => {
-    if (!trailMode || trailSamples.length < 2) return [];
-    const corners = [geom.bodyCorners.FL, geom.bodyCorners.FR, geom.bodyCorners.RL, geom.bodyCorners.RR];
-    const worldCornersAt = (s) => corners.map((c) => poseTransform(c, { x: s.poseX, y: s.poseY, theta: s.theta }));
-    const hulls = [];
-    for (let i = 1; i < trailSamples.length; i++) {
-      // Skip the step spanning a segment break (see maybeSampleTrail/trailWorldRibbons) — the two
-      // samples aren't actually adjacent (recording paused while the bus was outside the mapped
-      // area), so their hull would be one long sliver stretching across the gap instead of ground
-      // actually driven over.
-      if (trailSamples[i].newSegment) continue;
-      hulls.push(convexHull([...worldCornersAt(trailSamples[i - 1]), ...worldCornersAt(trailSamples[i])]));
+  // Rendered opaque inside a group carrying the opacity (see the JSX), so overlapping hulls don't
+  // stack into darker patches. lastIndex is the sample the cured path ends on — the live cap below
+  // runs from there to the current pose, so it also covers any samples recorded since this memo
+  // last ran (trailVersion only bumps every TRAIL_RENDER_EVERY samples).
+  const bodyCornersLocal = [geom.bodyCorners.FL, geom.bodyCorners.FR, geom.bodyCorners.RL, geom.bodyCorners.RR];
+  const hullPathD = (poseA, poseB) => `M${convexHull([
+    ...bodyCornersLocal.map((c) => poseTransform(c, poseA)),
+    ...bodyCornersLocal.map((c) => poseTransform(c, poseB)),
+  ]).map(worldPt).join("L")}Z`;
+  const curedBody = useMemo(() => {
+    if (trailSegments.length === 0) return null;
+    const parts = [];
+    for (const seg of trailSegments) {
+      for (let i = 0; i < seg.length - 1; i += TRAIL_BODY_HULL_STRIDE) {
+        const j = Math.min(i + TRAIL_BODY_HULL_STRIDE, seg.length - 1);
+        parts.push(hullPathD(samplePose(seg[i]), samplePose(seg[j])));
+      }
     }
-    return hulls;
-  }, [trailMode, trailVersion, Lfd, Fo, Ldt, Ro, Wb]);
-  const bodyTrailPathD = trailMode && trailSamples.length >= 1
-    ? (() => {
-        const hullToPathD = (hull) => `M ${hull.map((p) => { const s = toScreen(displayedView, p); return `${s.x} ${s.y}`; }).join(" L ")} Z`;
-        const corners = [geom.bodyCorners.FL, geom.bodyCorners.FR, geom.bodyCorners.RL, geom.bodyCorners.RR];
-        const worldCornersAt = (poseLike) => corners.map((c) => poseTransform(c, poseLike));
-        const lastSample = trailSamples[trailSamples.length - 1];
-        // Skipped while recording is paused (bus currently outside the mapped area, see
-        // maybeSampleTrail): `pose` is wherever it's actually driven off to, not adjacent to
-        // `lastSample`, so this cap would be the same stretched-sliver problem the segment-break
-        // skip above avoids for the recorded samples themselves.
-        const capHull = trailPaused ? null : convexHull([
-          ...worldCornersAt({ x: lastSample.poseX, y: lastSample.poseY, theta: lastSample.theta }),
-          ...worldCornersAt(pose),
-        ]);
-        return [...curedBodyHullsWorld, ...(capHull ? [capHull] : [])].map(hullToPathD).join(" ");
-      })()
+    const lastSeg = trailSegments[trailSegments.length - 1];
+    return { d: parts.join(""), last: lastSeg[lastSeg.length - 1] };
+  }, [trailSegments, Lfd, Fo, Ldt, Ro, Wb]);
+  // Live cap: last cured sample -> current pose, so the nose/tail stay covered between memo
+  // updates. Skipped while recording is paused (bus outside the mapped area, see maybeSampleTrail):
+  // `pose` is then nowhere near the last sample and the cap would be a long sliver across the gap.
+  // Also skipped if the latest sample starts a new segment (that segment has no cured hull yet).
+  const lastTrailSample = trailSamples[trailSamples.length - 1];
+  const bodyCapD = trailMode && curedBody && !trailPaused && lastTrailSample && !lastTrailSample.newSegment
+    ? hullPathD(samplePose(curedBody.last), pose)
     : null;
 
   // Preview: unfilled lines only, no shaded corridor — a dashed centreline (the drive axle's own
@@ -3263,8 +3231,11 @@ export default function BusSteeringSimulator() {
           {/* body footprint trail — the ground actually driven over by the body, bottom layer,
               under everything else including the off-track band and the vehicle itself, so it
               reads as ground shading rather than competing with what's painted on top later. */}
-          {bodyTrailPathD && (
-            <path d={bodyTrailPathD} fill={COL.bodyTrail} fillOpacity="0.1" />
+          {curedBody && (
+            <g transform={trailWorldTransform} opacity="0.1">
+              <path d={curedBody.d} fill={COL.bodyTrail} />
+              {bodyCapD && <path d={bodyCapD} fill={COL.bodyTrail} />}
+            </g>
           )}
 
           {/* straight road centreline, when steering ≈ 0 (radius infinite) — suppressed in trail
@@ -3297,26 +3268,16 @@ export default function BusSteeringSimulator() {
             />
           ))}
 
-          {/* trail: painted record of the corridor actually driven so far (see docs/trail-display-mode.md).
-              Fill only, no stroke — an outline on a band built from left-then-right-reversed edge
-              points draws a straight closing edge across the front and back of the band on every
-              polygon, which reads as a spurious solid line cutting across the axles. One polygon per
-              contiguous segment (see trailWorldRibbons) rather than one spanning the whole trail —
-              a gap from driving outside the mapped area and back (recording pauses out there) would
-              otherwise connect straight across as a single band. */}
-          {trailPolygonPointsList && trailPolygonPointsList.map((pts, i) => (
-            <polygon key={"trail" + i} points={pts} fill={COL.trail} fillOpacity="0.16" />
-          ))}
-          {/* second band: the front axle's own track, drawn in the same colour used for the front
-              axle everywhere else in this view (wheels 1–2, mowing-the-grass lines) */}
-          {frontTrailPolygonPointsList && frontTrailPolygonPointsList.map((pts, i) => (
-            <polygon key={"frontTrail" + i} points={pts} fill={COL.front} fillOpacity="0.16" />
-          ))}
-          {/* third band: the tag axle's own track, drawn in the same colour used for the tag axle
-              everywhere else in this view (wheels 7–8, tail-swing lines) */}
-          {tagTrailPolygonPointsList && tagTrailPolygonPointsList.map((pts, i) => (
-            <polygon key={"tagTrail" + i} points={pts} fill={COL.tag} fillOpacity="0.16" />
-          ))}
+          {/* trail: one solid line per wheel track (1, 2, 3, 6), each in that wheel's own colour —
+              one polyline per contiguous segment, world-space under trailWorldTransform, hence the
+              non-scaling stroke (otherwise a 1.6 "px" stroke would be 1.6 metres wide). */}
+          {trailWheelTracks && (
+            <g transform={trailWorldTransform}>
+              {trailWheelTracks.map((t) => t.lines.map((pts, i) => (
+                <polyline key={"trail" + t.key + i} points={pts} fill="none" stroke={t.color} strokeWidth="1.6" strokeLinejoin="round" opacity="0.85" vectorEffect="non-scaling-stroke" />
+              )))}
+            </g>
+          )}
 
           {/* optional geometry construction lines */}
           {showGeom && !geom.isStraight && wheelDefs.map((w) => {
@@ -3516,9 +3477,8 @@ export default function BusSteeringSimulator() {
           <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />
           <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />
           <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />
-          {trailMode && <LegendDot color={COL.trail} label="Trail — drive axle corridor" />}
-          {trailMode && <LegendDot color={COL.front} label="Trail — front axle track" />}
-          {trailMode && <LegendDot color={COL.tag} label="Trail — tag axle track" />}
+          {trailMode && showWheelTraces && <LegendDot color={COL.front} label="Trail — wheel 1/2 tracks" />}
+          {trailMode && <LegendDot color={COL.bodyTrail} label="Trail — body swept area" />}
           {trailMode && <LegendDot color={COL.trail} label={`Mapped area boundary (${boundaryAreaLabel(trailBoundHalf)})`} />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
         </div>
@@ -3598,6 +3558,16 @@ export default function BusSteeringSimulator() {
           >
             Trail
           </button>
+          {trailMode && (
+            <button
+              className={"btn" + (showWheelTraces ? " btnOn" : "")}
+              onClick={() => setShowWheelTraces((v) => !v)}
+              title="Show or hide the wheel 1, 2, 3 and 6 track lines (the body swept area stays)"
+              style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
+            >
+              Wheels
+            </button>
+          )}
           {trailMode && (
             <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
           )}
