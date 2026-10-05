@@ -173,17 +173,38 @@ ribbon polygons at the boundary.
 - **Wheel tracks + body swept area.** The trail is now one solid line per
   wheel track — wheels 1 and 2 (`COL.front`), 3 (`COL.w3`) and 6
   (`COL.w6`), the front pair plus the outer drive duals — over a single
-  translucent fill of the ground swept by the body (`COL.bodyTrail`, a convex
-  hull of the four body corners per 1m of travel, `TRAIL_BODY_HULL_STRIDE`).
-  Both are built once per `trailVersion` bump in world coordinates and placed
-  on screen by one SVG `transform` (`trailWorldTransform`, which is `toScreen`
-  as a matrix), so per-frame work no longer grows with trail length. This replaced an earlier
-  version with three filled axle-corridor ribbons (drive, front, tag), which
-  read as cluttered. Samples store only the pose (`poseX`, `poseY`, `theta`,
+  translucent fill of the ground swept by the body (`COL.bodyTrail`, the
+  convex hull of the four body corners at each pair of consecutive samples).
+  A **Wheels** button hides the lines (saved in Save files). This replaced an
+  earlier version with three filled axle-corridor ribbons (drive, front,
+  tag), which read as cluttered. Samples store only the pose (`poseX`, `poseY`, `theta`,
   `newSegment`); wheel positions are derived at render time from the current
   `geom.wheelCenters`, which is safe because any bus-dimension change clears
   the trail. Older save files with extra per-sample fields still load — the
   extras are just ignored.
+- **Trail performance** — three parts, so neither per-sample nor per-frame
+  cost grows with trail length:
+  - *Adaptive sampling* (`maybeSampleTrail`): a sample when the heading has
+    turned 2° (`TRAIL_MAX_HEADING_STEP`) or the bus has travelled 5m
+    (`TRAIL_MAX_SPACING`). Straight-line wheel segments and two-rectangle
+    body hulls are exact on a straight, so straights get a sample every 5m
+    while full lock still gets one every ~0.2m (~2mm chord error); worst
+    case is ~2cm on a gentle curve. Leaving the mapped area records one
+    last in-bounds sample so the trail still reaches the boundary. A live
+    "cap" (last sample to current pose) is drawn every frame for both
+    layers so the trail reaches the bus between samples.
+  - *Incremental build* (`syncTrailCache`, called from render, idempotent):
+    only samples not yet seen are processed; the cache resets when the
+    trail array is replaced (Clear, Load, DXF start pose) or the bus
+    dimensions change.
+  - *25m chunks* (`TRAIL_CHUNK_LENGTH`): finished chunks keep the same React
+    elements, so React bails out on them and the browser never re-parses
+    them (verified: zero DOM mutations on finished chunks while driving);
+    only the tail chunk is rebuilt. Short chunks also let the browser skip
+    painting off-screen trail in the close-in driving view.
+  Everything is in world coordinates under one SVG `transform`
+  (`trailWorldTransform`, `toScreen` as a matrix), with
+  `vector-effect="non-scaling-stroke"` on the wheel lines.
 - **Forward 50m preview**: implemented as a closed-form projection
   (`projectPosesForward`), not an iterative step loop — it solves the same
   unicycle model the drive loop integrates (`theta' = v/R`, `x' = v
@@ -208,13 +229,12 @@ ribbon polygons at the boundary.
   continuity every time the turn centre moves; this projection is disposable
   and recomputed from scratch each render, so it has nothing to stay
   continuous with.
-- **History buffer**: `trailRef` (a `useRef` array of `{poseX, poseY, left,
-  right, frontLeft, frontRight, tagLeft, tagRight}` world-space samples),
-  appended inside the existing drive-loop `requestAnimationFrame` callback
-  via `maybeSampleTrail()`, gated at 0.2m spacing (`TRAIL_MIN_SPACING`). A
-  `trailVersion` counter is bumped every 5 samples to force a periodic
-  re-render, since the ref itself doesn't trigger one — matches the
-  "Implementation approach" section above. Getting a synchronous
+- **History buffer**: `trailRef` (a `useRef` array of `{poseX, poseY,
+  theta, newSegment}` world-space samples), appended inside the existing
+  drive-loop `requestAnimationFrame` callback via `maybeSampleTrail()`,
+  adaptively spaced (see "Trail performance" above). A `trailVersion`
+  counter is bumped on every sample to force a re-render, since the ref
+  itself doesn't trigger one. Getting a synchronous
   just-integrated pose into that sampler required replacing the drive
   loop's `setPose(prev => ...)` functional update with an explicit
   `poseRef` driven forward each tick and passed to `setPose` as a plain
