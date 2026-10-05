@@ -511,7 +511,7 @@ function trailWheelPolyline(w, points, key) {
 function syncTrailCache(cache, samples, g) {
   const geomKey = [g.Lfd, g.Ldt, g.Fo, g.Ro, g.Wb, g.Tw].join();
   if (!cache || cache.samples !== samples || cache.geomKey !== geomKey || samples.length < cache.processed) {
-    cache = { samples, geomKey, processed: 0, chunks: [], bodyEls: [], wheelEls: [] };
+    cache = { samples, geomKey, processed: 0, chunks: [], bodyEls: [], wheelEls: [], bounds: { xMin: Infinity, xMax: -Infinity, yMin: Infinity, yMax: -Infinity } };
   }
   if (cache.processed === samples.length) return cache;
   const wheels = trailWheels(g);
@@ -523,8 +523,16 @@ function syncTrailCache(cache, samples, g) {
     return chunk;
   };
   const firstDirty = Math.max(0, cache.chunks.length - 1); // the old tail chunk may grow
+  const bounds = cache.bounds; // body-corner extent of every sample, for the 'trail' fit view
   for (let i = cache.processed; i < samples.length; i++) {
     const sample = samples[i], prev = samples[i - 1];
+    for (const c of corners) {
+      const p = poseTransform(c, samplePose(sample));
+      if (p.x < bounds.xMin) bounds.xMin = p.x;
+      if (p.x > bounds.xMax) bounds.xMax = p.x;
+      if (p.y < bounds.yMin) bounds.yMin = p.y;
+      if (p.y > bounds.yMax) bounds.yMax = p.y;
+    }
     let chunk = cache.chunks[cache.chunks.length - 1];
     if (!prev || sample.newSegment || !chunk) { startChunk(sample); continue; }
     if (chunk.length >= TRAIL_CHUNK_LENGTH) chunk = startChunk(prev);
@@ -1999,7 +2007,7 @@ export default function BusSteeringSimulator() {
         // trail's extents, then keeps tracking live as the trail grows and the bus drives, exactly
         // like Bus/Circle/'B' already do, rather than freezing a one-shot snapshot.
         e.preventDefault();
-        selectViewModeRef.current("trail");
+        selectViewModeRef.current("trail", 1);
       } else if (e.key.toLowerCase() === "c" && !e.repeat) {
         // Explicit "Cancel Autosteer" override. Distinct from cancelFenceAutopilot (called
         // automatically by ordinary steering input, see below): this is a dedicated kill switch, so
@@ -2022,15 +2030,14 @@ export default function BusSteeringSimulator() {
         // Switch to the "grid" view mode: frames the current S/M/L boundary square. Trail-mode only
         // — the boundary isn't a concept outside it (same gating the governor/auto-steer use).
         e.preventDefault();
-        if (trailModeRef.current) selectViewModeRef.current("grid");
+        if (trailModeRef.current) selectViewModeRef.current("grid", 1);
       } else if (e.key.toLowerCase() === "b" && !e.repeat) {
         // Switch to the "close" view mode (see computeView) — a tight, continuously-tracking 15m
         // radius biased toward the front of the bus. Also resets the manual scroll-wheel zoom to a
         // fixed 70% — CLOSE_RADIUS_M's raw fit already crops fairly tight, and a deliberate, repeatable
         // framing here matters more than whatever zoom was left over from previous driving.
         e.preventDefault();
-        selectViewModeRef.current("close");
-        setZoom(0.7);
+        selectViewModeRef.current("close", 0.7);
       } else if (e.code === "Space") {
         e.preventDefault();
         if (!e.repeat) setHornHeld("key", true);
@@ -2715,18 +2722,24 @@ export default function BusSteeringSimulator() {
   // itself even if the trail is short or off) and "grid" fits the current S/M/L boundary square —
   // both recomputed fresh on every call, so they track live exactly like "bus"/"close" do, rather
   // than freezing a snapshot at the moment the key was pressed.
+  // Synced here, ahead of the view computation, since the 'trail' fit view reads its bounds.
+  const trailCache = trailMode ? (trailCacheRef.current = syncTrailCache(trailCacheRef.current, trailRef.current, geom)) : null;
   function computeEffectiveView(mode) {
     if (mode === "close") return computeView(geom, pose, "close", vbSize); // 'B' key — its own fixed framing, no bus/circle blend
     if (mode === "trail") {
-      const trail = trailRef.current;
-      let xMin = pose.x, xMax = pose.x, yMin = pose.y, yMax = pose.y;
-      for (const s of trail) {
-        if (s.poseX < xMin) xMin = s.poseX;
-        if (s.poseX > xMax) xMax = s.poseX;
-        if (s.poseY < yMin) yMin = s.poseY;
-        if (s.poseY > yMax) yMax = s.poseY;
+      // Fits the whole body footprint — every recorded sample's body corners plus the bus where it
+      // is now — not just the drive-axle path, which left the nose/tail overhang at the trail's
+      // ends hanging off the map edge. Corner bounds are accumulated incrementally in the trail
+      // cache (see syncTrailCache) rather than recomputed from every sample each frame.
+      const corners = trailBodyCorners(geom).map((c) => poseTransform(c, pose));
+      const b = trailMode && trailCache ? { ...trailCache.bounds } : { xMin: Infinity, xMax: -Infinity, yMin: Infinity, yMax: -Infinity };
+      for (const p of corners) {
+        if (p.x < b.xMin) b.xMin = p.x;
+        if (p.x > b.xMax) b.xMax = p.x;
+        if (p.y < b.yMin) b.yMin = p.y;
+        if (p.y > b.yMax) b.yMax = p.y;
       }
-      return fitBoundsView({ xMin, xMax, yMin, yMax }, vbSize, MARGIN);
+      return fitBoundsView(b, vbSize, MARGIN);
     }
     if (mode === "grid") {
       const h = trailBoundHalf;
@@ -2746,7 +2759,7 @@ export default function BusSteeringSimulator() {
 
   const targetView = computeEffectiveView(viewMode);
 
-  const [transition, setTransition] = useState(null); // { fromMode, startTime } | null
+  const [transition, setTransition] = useState(null); // { fromMode, fromZoom, startTime } | null — fromZoom is null unless the switch also resets zoom
   const [transitionT, setTransitionT] = useState(1);
   const TRANSITION_MS = 450;
 
@@ -2758,15 +2771,22 @@ export default function BusSteeringSimulator() {
   const [recenterTransition, setRecenterTransition] = useState(null); // { fromView, startTime } | null
   const [recenterT, setRecenterT] = useState(1);
 
-  function selectViewMode(newMode) {
-    if (newMode === viewMode) return;
-    setTransition({ fromMode: viewMode, startTime: performance.now() });
+  // `newZoom`, when given, also resets the manual scroll-wheel zoom as part of the same eased
+  // transition (see zoomFactor below) instead of snapping it. The fit views ('A' trail, 'M' grid)
+  // pass 1: their framing is computed to fit exactly, and any leftover zoom (200% on load) would
+  // otherwise multiply it straight back out of frame. Re-pressing the key for the mode already
+  // showing still resets the zoom, so it doubles as "re-fit after wheel-zooming".
+  function selectViewMode(newMode, newZoom) {
+    const zoomChanges = newZoom != null && newZoom !== zoom;
+    if (newMode === viewMode && !zoomChanges) return;
+    setTransition({ fromMode: viewMode, fromZoom: zoomChanges ? zoom : null, startTime: performance.now() });
     setTransitionT(0);
     setViewMode(newMode);
+    if (zoomChanges) setZoom(newZoom);
   }
   // Redefined every render, so mirrored into a ref for the keydown effect below (mounted once) to
   // call the always-current version — same reason the drive loop reads refs instead of closed-over
-  // state. 'A'/'M'/'B' all just call this with "trail"/"grid"/"close".
+  // state. 'A'/'M'/'B' all just call this with "trail"/"grid"/"close" (plus their zoom reset).
   const selectViewModeRef = useRef(selectViewMode);
   selectViewModeRef.current = selectViewMode;
 
@@ -2814,10 +2834,15 @@ export default function BusSteeringSimulator() {
   // viewBox centre (not the cursor) — the camera is already tracking the point that matters (bus
   // position or turn centre) dead-centre every frame, so zooming around that same centre keeps it
   // there rather than fighting the auto-framing. Persists independently of steering/pose/mode.
+  // While a mode transition that also resets the zoom is running (see selectViewMode), the zoom
+  // eases from its old value in step with the framing, so the camera moves once, smoothly.
+  const zoomFactor = transition && transition.fromZoom != null
+    ? transition.fromZoom + (zoom - transition.fromZoom) * easeInOutCubic(transitionT)
+    : zoom;
   const zoomedView = {
-    scale: autoView.scale * zoom,
-    originX: vbSize.w / 2 + (autoView.originX - vbSize.w / 2) * zoom,
-    originY: vbSize.h / 2 + (autoView.originY - vbSize.h / 2) * zoom,
+    scale: autoView.scale * zoomFactor,
+    originX: vbSize.w / 2 + (autoView.originX - vbSize.w / 2) * zoomFactor,
+    originY: vbSize.h / 2 + (autoView.originY - vbSize.h / 2) * zoomFactor,
   };
 
   // Recenter blends in on top of everything else: pose/zoom have already reset by the time this
@@ -2989,7 +3014,6 @@ export default function BusSteeringSimulator() {
   // exactly toScreen as a matrix: screenX = originX - y*scale, screenY = originY - x*scale.
   const trailSamples = trailRef.current;
   const trailWorldTransform = `matrix(0 ${-displayedView.scale} ${-displayedView.scale} 0 ${displayedView.originX} ${displayedView.originY})`;
-  const trailCache = trailMode ? (trailCacheRef.current = syncTrailCache(trailCacheRef.current, trailSamples, geom)) : null;
   // Live caps: last recorded sample -> current pose, redrawn every frame so the trail reaches the
   // bus between samples (up to TRAIL_MAX_SPACING apart on a straight). Skipped while recording is
   // paused (bus outside the mapped area): `pose` is then nowhere near the last sample.
@@ -3708,8 +3732,8 @@ export default function BusSteeringSimulator() {
               <div>End — Straight (centre the steering)</div>
               <div>Wheel &amp; pedals (USB, e.g. Moza R5) — map them once in the Input Tester (header); turning the wheel takes over steering from the keys/slider, pedals work alongside ↑ / ↓</div>
               <div>Space (or wheel button 19) — Horn</div>
-              <div>A — Smoothly zoom to fit the recorded trail</div>
-              <div>M — Smoothly zoom to fit the mapped-area boundary (trail mode only)</div>
+              <div>A — Smoothly zoom to fit the recorded trail (resets zoom to 100%)</div>
+              <div>M — Smoothly zoom to fit the mapped-area boundary (trail mode only, resets zoom to 100%)</div>
               <div>B — Close-up {CLOSE_RADIUS_M}m view, tracking the bus (biased toward what's ahead)</div>
               <div>C — Cancel Autosteer (trail mode only) — turns Fence Autopilot off outright, even mid-turn</div>
               <div>R — Re-arm Autosteer after a 'C' cancel (on by default, so this only matters after 'C')</div>
