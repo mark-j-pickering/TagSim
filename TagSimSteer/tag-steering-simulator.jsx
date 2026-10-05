@@ -3071,10 +3071,10 @@ export default function BusSteeringSimulator() {
   const previewPoses = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_LENGTH, TRAIL_PREVIEW_STEPS) : null;
   const previewPosesFront = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_FRONT_LENGTH, TRAIL_PREVIEW_FRONT_STEPS) : null;
   const previewAxleHalfW = singleAxleBandHalfWidth(geom.Tw);
-  // Look-aheads (front 1/2 tracks, wheel 3/6, outer and tag-inner paths, tail swing, and the
-  // mow/tail-swing dimension lines) can be hidden in trail mode via the Look-ahead button. Outside
-  // trail mode they're the main swept-path reference circles, so always shown there. The
-  // centreline and turn centre stay.
+  // Look-aheads (centreline, front 1/2 tracks, wheel 3/6, outer and tag-inner paths, tail swing,
+  // and the mow/tail-swing dimension lines) can be hidden in trail mode via the Look-ahead button.
+  // Outside trail mode they're the main swept-path reference circles, so always shown there. The
+  // turn centre stays.
   const lookAheads = !trailMode || showLookAhead;
   function previewLinePoints(poses, offsetX, offsetY) {
     return poses.map((p) => toScreen(displayedView, poseTransform({ x: offsetX, y: offsetY }, p))).map((s) => `${s.x},${s.y}`).join(" ");
@@ -3498,7 +3498,7 @@ export default function BusSteeringSimulator() {
               the swept-path reference circles (outer envelope, pivot, tag-inner, tail-swing, w3/w6),
               drawn as matching 20m arcs in trail mode or full circles otherwise. Driving straight,
               these degenerate into parallel reference lines instead (a circle at infinite radius). */}
-          {previewCentrelinePoints && (
+          {lookAheads && previewCentrelinePoints && (
             <polyline points={previewCentrelinePoints} fill="none" stroke={COL.trail} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
           )}
           {lookAheads && previewFrontLeftPoints && (
@@ -3706,7 +3706,7 @@ export default function BusSteeringSimulator() {
             <button
               className={"btn" + (showLookAhead ? " btnOn" : "")}
               onClick={() => setShowLookAhead((v) => !v)}
-              title="Show or hide the look-aheads: wheel paths (1/2, 3/6, outer, tag-inner), tail swing and the mow/tail-swing dimension lines. The centreline stays."
+              title="Show or hide the look-aheads: wheel paths (1/2, 3/6, outer, tag-inner), tail swing, the centreline and the mow/tail-swing dimension lines."
               style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
             >
               Look-ahead

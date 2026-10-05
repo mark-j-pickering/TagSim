@@ -239,7 +239,7 @@ ribbon polygons at the boundary.
   A **Look-ahead** button (trail mode only, saved as `showLookAhead`) hides
   the look-aheads: the dotted wheel 1/2 tracks, wheel 3/6, the outer and
   tag-inner arcs, the tail-swing arc and the mow/tail-swing dimension lines,
-  plus their legend entries. The dashed centreline and turn centre stay. Outside trail mode the full
+  and the dashed centreline, plus their legend entries. The turn centre stays. Outside trail mode the full
   reference circles always show.
 - **History buffer**: `trailRef` (a `useRef` array of `{poseX, poseY,
   theta, newSegment}` world-space samples), appended inside the existing
