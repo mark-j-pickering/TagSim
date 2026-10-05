@@ -189,7 +189,10 @@ ribbon polygons at the boundary.
     (`TRAIL_MAX_SPACING`). Straight-line wheel segments and two-rectangle
     body hulls are exact on a straight, so straights get a sample every 5m
     while full lock still gets one every ~0.2m (~2mm chord error); worst
-    case is ~2cm on a gentle curve. Leaving the mapped area records one
+    case is ~2cm on a gentle curve. The drive loop offers every pose-integration
+    sub-step (at most 1° each) to the sampler, not just each frame's final
+    pose, so spacing holds at any speed or frame rate — before that, at
+    speed on full lock, one sample per frame gave 6-12° facets. Leaving the mapped area records one
     last in-bounds sample so the trail still reaches the boundary. A live
     "cap" (last sample to current pose) is drawn every frame for both
     layers so the trail reaches the bus between samples.

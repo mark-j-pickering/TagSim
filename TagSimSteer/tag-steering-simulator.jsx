@@ -348,6 +348,9 @@ function singleAxleBandHalfWidth(Tw) {
 const TRAIL_MAX_SPACING = 5; // metres
 const TRAIL_MAX_SPACING_SQ = TRAIL_MAX_SPACING * TRAIL_MAX_SPACING;
 const TRAIL_MAX_HEADING_STEP = (2 * Math.PI) / 180; // radians
+// The drive loop's pose integration splits each frame into sub-steps turning at most this much
+// (see its own comment) — half the trail's heading step, so trail samples land within ~1° of it.
+const POSE_SUBSTEP_MAX_HEADING = (1 * Math.PI) / 180; // radians
 // Trail geometry is cached in chunks of roughly this much travel (see syncTrailCache). Only the
 // last chunk changes as samples arrive; finished chunks keep the same React elements forever, so
 // React skips them and the browser never re-parses them, and short chunks let the browser skip
@@ -2634,12 +2637,22 @@ export default function BusSteeringSimulator() {
         const g = geomRef.current;
         const v = (speedRef.current * 1000) / 3600;
         const omega = g.isStraight ? 0 : v / g.R;
-        const prev = poseRef.current;
-        const next = {
-          x: prev.x + v * dt * Math.cos(prev.theta),
-          y: prev.y + v * dt * Math.sin(prev.theta),
-          theta: prev.theta + omega * dt,
-        };
+        // Euler-integrated in sub-steps of at most POSE_SUBSTEP_MAX_HEADING each, not one step per
+        // frame: at speed on full lock a single frame can turn the bus 6-12° (more if the frame
+        // rate drops), and one straight Euler step per frame made the bus's own path — and so the
+        // trail, which records it — a visibly faceted polygon. Every sub-step is offered to the
+        // trail sampler so it can place samples at its own heading spacing, not frame spacing.
+        const substeps = Math.max(1, Math.ceil(Math.abs(omega * dt) / POSE_SUBSTEP_MAX_HEADING));
+        const h = dt / substeps;
+        let next = poseRef.current;
+        for (let i = 0; i < substeps; i++) {
+          next = {
+            x: next.x + v * h * Math.cos(next.theta),
+            y: next.y + v * h * Math.sin(next.theta),
+            theta: next.theta + omega * h,
+          };
+          if (i < substeps - 1) maybeSampleTrail(next, g);
+        }
         realizedSpeedKmhRef.current = speedRef.current;
         // Trail mode no longer clamps position to the boundary square — the bus can actually drive
         // out (see allBodyCornersOutside's own comment). What replaces the hard clamp: the moment

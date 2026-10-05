@@ -615,6 +615,15 @@ has also been ported, to `TagSim3D/Geometry/PoseIntegrator.cs`
 Same rule applies: this JS effect stays the source of truth for the
 integration math.
 
+- **Sub-stepping (2026-10-05):** the drive loop now splits each frame's
+  `dt` into Euler sub-steps of at most `POSE_SUBSTEP_MAX_HEADING` (1°) of
+  heading change each, instead of one step per frame. At speed on full lock
+  a single 30fps frame turned the bus 6-12°, so its own path (and the trail
+  recording it) was a visible polygon. `PoseIntegrator.Step` is still one
+  Euler step and needs no change — a TagSim3D caller should loop it the same
+  way (or use a fixed small physics timestep) rather than one step per
+  rendered frame.
+
 Not ported: `innerDriveRadius` (already dead/unused here — see "Known rough
 edges" below).
 
