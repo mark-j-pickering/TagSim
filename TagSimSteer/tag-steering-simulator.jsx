@@ -476,10 +476,10 @@ function samplePose(s) {
 function trailWheels(g) {
   const { frontL, frontR, driveL, driveR } = g.wheelCenters;
   return [
-    { key: "w1", color: COL.front, local: frontL },
-    { key: "w2", color: COL.front, local: frontR },
-    { key: "w3", color: COL.w3, local: { x: driveL.x, y: driveL.y + DUAL_GAP / 2 } },
-    { key: "w6", color: COL.w6, local: { x: driveR.x, y: driveR.y - DUAL_GAP / 2 } },
+    { key: "w1", color: COL.wheelTrailFront, local: frontL },
+    { key: "w2", color: COL.wheelTrailFront, local: frontR },
+    { key: "w3", color: COL.wheelTrailRear, local: { x: driveL.x, y: driveL.y + DUAL_GAP / 2 } },
+    { key: "w6", color: COL.wheelTrailRear, local: { x: driveR.x, y: driveR.y - DUAL_GAP / 2 } },
   ];
 }
 function trailBodyCorners(g) {
@@ -1223,6 +1223,9 @@ const COL = {
   trail: "#4fd1c5",
   bodyTrail: "#8ef2b0",
   wheelTrail: "#3d434a", // swept wheel-pair bands (wheels 1-2 and 3-6), one colour for both — dark asphalt grey
+  // Trail wheel lines: one grey per axle, lighter and darker shades of the swept-band grey above.
+  wheelTrailFront: "#aab3bd", // wheels 1-2
+  wheelTrailRear: "#6f7984", // wheels 3 and 6
   headingArrow: "rgba(200,225,245,0.22)", // forward-heading arrow — the grid-line colour (gridMajor), a bit lighter
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
   alert: "#ff4d4d",
@@ -3386,7 +3389,7 @@ export default function BusSteeringSimulator() {
             />
           ))}
 
-          {/* trail: one solid line per wheel track (1, 2, 3, 6), each in that wheel's own colour —
+          {/* trail: one solid line per wheel track (1, 2, 3, 6), one grey for the front pair and a darker one for 3/6 —
               world-space under trailWorldTransform, hence the non-scaling stroke (otherwise a
               1.6 "px" stroke would be 1.6 metres wide). */}
           {trailCache && wheelTraces === "lines" && (
@@ -3607,7 +3610,8 @@ export default function BusSteeringSimulator() {
           {lookAheads && <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />}
           {lookAheads && <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />}
           {lookAheads && <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />}
-          {trailMode && wheelTraces === "lines" && <LegendDot color={COL.front} label="Trail — wheel 1/2 tracks" />}
+          {trailMode && wheelTraces === "lines" && <LegendDot color={COL.wheelTrailFront} label="Trail — wheel 1/2 tracks" />}
+          {trailMode && wheelTraces === "lines" && <LegendDot color={COL.wheelTrailRear} label="Trail — wheel 3/6 tracks" />}
           {trailMode && wheelTraces === "swept" && <LegendDot color={COL.wheelTrail} label="Trail — wheel 1-2 / 3-6 swept" />}
           {trailMode && <LegendDot color={COL.bodyTrail} label="Trail — body swept area" />}
           {trailMode && <LegendDot color={COL.trail} label={`Mapped area boundary (${boundaryAreaLabel(trailBoundHalf)})`} />}

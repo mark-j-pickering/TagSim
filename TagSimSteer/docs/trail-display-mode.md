@@ -171,8 +171,9 @@ ribbon polygons at the boundary.
 ## What shipped
 
 - **Wheel tracks + body swept area.** The trail is now one solid line per
-  wheel track — wheels 1 and 2 (`COL.front`), 3 (`COL.w3`) and 6
-  (`COL.w6`), the front pair plus the outer drive duals — over a single
+  wheel track — wheels 1 and 2 (`COL.wheelTrailFront`, light grey) and 3
+  and 6 (`COL.wheelTrailRear`, darker grey), the front pair plus the outer
+  drive duals, shades of the swept-band grey — over a single
   translucent fill of the ground swept by the body (`COL.bodyTrail`, the
   convex hull of the four body corners at each pair of consecutive samples).
   A None / Lines / Swept toggle picks the wheel trail (saved in Save files as
