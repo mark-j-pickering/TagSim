@@ -171,14 +171,17 @@ ribbon polygons at the boundary.
 ## What shipped
 
 - **Wheel tracks + body swept area.** The trail is now one solid line per
-  wheel track — wheels 1 and 2 (`COL.front`), 3 (`COL.w3`) and 6
-  (`COL.w6`), the front pair plus the outer drive duals — over a single
+  wheel track — wheels 1 and 2 (`COL.wheelTrailFront`, light grey) and 3
+  and 6 (`COL.wheelTrailRear`, darker grey), the front pair plus the outer
+  drive duals, shades of the swept-band grey — over a single
   translucent fill of the ground swept by the body (`COL.bodyTrail`, the
   convex hull of the four body corners at each pair of consecutive samples).
-  A None / Lines / Swept toggle picks the wheel trail (saved in Save files as
-  `wheelTraces`). "Swept" replaces the four lines with two filled bands, the
-  1–2 and 3–6 segments brushed along the trail (convex hull per sample pair,
-  like the body), both in `COL.wheelTrail`, so the lines become band edges.
+  Independent **Lines** and **Swept** buttons show each layer (saved as
+  `showWheelLines`/`showWheelSwept`; older `wheelTraces`/`showWheelTraces`
+  saves still load). "Swept" is two filled bands, the 1–2 and 3–6 segments
+  brushed along the trail (convex hull per sample pair, like the body), both
+  in `COL.wheelTrail`, drawn under the lines so with both on the lines edge
+  the bands.
   Opacity sits on the group so overlaps union rather than darken. This replaced an
   earlier version with three filled axle-corridor ribbons (drive, front,
   tag), which read as cluttered. Samples store only the pose (`poseX`, `poseY`, `theta`,
