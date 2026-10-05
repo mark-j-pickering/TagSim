@@ -182,15 +182,18 @@ ribbon polygons at the boundary.
   Opacity sits on the group so overlaps union rather than darken. This replaced an
   earlier version with three filled axle-corridor ribbons (drive, front,
   tag), which read as cluttered. Samples store only the pose (`poseX`, `poseY`, `theta`,
-  `newSegment`); wheel positions are derived at render time from the current
+  `newSegment`) plus the front steer angle (`steer`, for sampling only); wheel positions are derived at render time from the current
   `geom.wheelCenters`, which is safe because any bus-dimension change clears
   the trail. Older save files with extra per-sample fields still load — the
   extras are just ignored.
 - **Trail performance** — three parts, so neither per-sample nor per-frame
   cost grows with trail length:
   - *Adaptive sampling* (`maybeSampleTrail`): a sample when the heading has
-    turned 2° (`TRAIL_MAX_HEADING_STEP`) or the bus has travelled 5m
-    (`TRAIL_MAX_SPACING`). Straight-line wheel segments and two-rectangle
+    turned 2° (`TRAIL_MAX_HEADING_STEP`), the front wheels' direction
+    (heading + steer angle) has turned 2°, or the bus has travelled 5m
+    (`TRAIL_MAX_SPACING`). The front-wheel rule covers winding lock to lock
+    through straight-ahead: the heading barely moves there, so heading alone
+    left 5m chords cutting ~30cm across the front wheel tracks' bend. Straight-line wheel segments and two-rectangle
     body hulls are exact on a straight, so straights get a sample every 5m
     while full lock still gets one every ~0.2m (~2mm chord error); worst
     case is ~2cm on a gentle curve. The drive loop offers every pose-integration

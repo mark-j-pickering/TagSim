@@ -338,9 +338,12 @@ const DUAL_GAP = 0.28; // centre-to-centre spacing of a dual (twin) tyre pair
 function singleAxleBandHalfWidth(Tw) {
   return Tw / 2 + WHEEL_HALF_W;
 }
-// Adaptive trail sampling: a new sample is recorded once the heading has turned
-// TRAIL_MAX_HEADING_STEP since the last one, or the bus has travelled TRAIL_MAX_SPACING, whichever
-// comes first. Between two samples every trail layer is drawn straight (wheel lines) or as the
+// Adaptive trail sampling: a new sample is recorded once the heading — or the front wheels'
+// direction of travel (heading + front steer angle) — has turned TRAIL_MAX_HEADING_STEP since the
+// last one, or the bus has travelled TRAIL_MAX_SPACING, whichever comes first. The front-wheel
+// rule matters when winding from lock to lock through straight-ahead: the heading barely moves
+// there (huge radius), so heading alone left samples 5m apart while the front wheel tracks bent
+// through tens of degrees, and their straight chords cut visibly across the bend. Between two samples every trail layer is drawn straight (wheel lines) or as the
 // convex hull of the two body rectangles, both exact on a straight — so straights need only sparse
 // samples, and curves get them as densely as their curvature needs: at full lock (R ≈ 5.9m) 2° is
 // every ~0.2m, with ~2mm chord error at the outer body corner. Worst case is a gentle curve that
@@ -1592,7 +1595,7 @@ export default function BusSteeringSimulator() {
   // showing the last computed target (dimmed) between engagements instead of "—", while still
   // reading "—" before the very first engagement, when fenceLineRef is still unset.
   const [autoSteerEverEngaged, setAutoSteerEverEngaged] = useState(false);
-  const trailRef = useRef([]); // [{ poseX, poseY, theta, newSegment }, ...] in world space
+  const trailRef = useRef([]); // [{ poseX, poseY, theta, steer, newSegment }, ...] in world space
   const trailModeRef = useRef(trailMode);
   const trailBoundHalfRef = useRef(TRAIL_BOUND_HALF_DEFAULT); // live trailBoundHalf, for the drive loop — same reason LfdRef exists
   const trailPausedRef = useRef(false);
@@ -1747,7 +1750,7 @@ export default function BusSteeringSimulator() {
       const lastIn = trailLastInBoundsPoseRef.current;
       const lastSample = samples[samples.length - 1];
       if (outOfBounds && lastIn && lastSample && !wasPaused && (lastIn.x !== lastSample.poseX || lastIn.y !== lastSample.poseY)) {
-        samples.push({ poseX: lastIn.x, poseY: lastIn.y, theta: lastIn.theta, newSegment: false });
+        samples.push({ poseX: lastIn.x, poseY: lastIn.y, theta: lastIn.theta, steer: g.deltaF, newSegment: false });
         setTrailVersion((v) => v + 1);
       }
     }
@@ -1763,13 +1766,16 @@ export default function BusSteeringSimulator() {
     if (last && !wasPaused) {
       const dx = nextPose.x - last.poseX, dy = nextPose.y - last.poseY;
       const dTheta = Math.atan2(Math.sin(nextPose.theta - last.theta), Math.cos(nextPose.theta - last.theta));
-      if (dx * dx + dy * dy < TRAIL_MAX_SPACING_SQ && Math.abs(dTheta) < TRAIL_MAX_HEADING_STEP) return;
+      // Front wheels' direction change: heading change plus steer change. Samples from older saves
+      // have no `steer`, so they only get the heading/distance rules.
+      const dFront = dTheta + (typeof last.steer === "number" ? g.deltaF - last.steer : 0);
+      if (dx * dx + dy * dy < TRAIL_MAX_SPACING_SQ && Math.abs(dTheta) < TRAIL_MAX_HEADING_STEP && Math.abs(dFront) < TRAIL_MAX_HEADING_STEP) return;
     }
     // Pose only — wheel tracks and the body swept area are both derived from it at render time
     // (see syncTrailCache), since every bus dimension change already clears the trail, so the
     // current geom is always the one that drove it. Bumping trailVersion every sample is cheap now
     // that the render side only processes new samples.
-    samples.push({ poseX: nextPose.x, poseY: nextPose.y, theta: nextPose.theta, newSegment: wasPaused });
+    samples.push({ poseX: nextPose.x, poseY: nextPose.y, theta: nextPose.theta, steer: g.deltaF, newSegment: wasPaused });
     setTrailVersion((v) => v + 1);
   }
 
