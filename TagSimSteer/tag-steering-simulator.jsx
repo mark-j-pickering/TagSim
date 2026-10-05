@@ -1433,7 +1433,7 @@ export default function BusSteeringSimulator() {
   const animating = speed > 0;
   const [showGeom, setShowGeom] = useState(false);
   const [showDims, setShowDims] = useState(false);
-  const [showLookAhead, setShowLookAhead] = useState(true); // trail-mode look-ahead wheel paths (see lookAheadWheels)
+  const [showLookAhead, setShowLookAhead] = useState(true); // trail-mode look-ahead wheel paths (see lookAheads)
   const [wheelTraces, setWheelTraces] = useState("lines"); // trail-mode wheel 1/2/3/6 tracks, one of WHEEL_TRACE_STYLES; body swept area is always shown
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // Collapsed by default so the always-visible column (radius grid, steering/throttle, bus photo)
@@ -3071,10 +3071,11 @@ export default function BusSteeringSimulator() {
   const previewPoses = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_LENGTH, TRAIL_PREVIEW_STEPS) : null;
   const previewPosesFront = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_FRONT_LENGTH, TRAIL_PREVIEW_FRONT_STEPS) : null;
   const previewAxleHalfW = singleAxleBandHalfWidth(geom.Tw);
-  // Look-ahead wheel paths (front 1/2 tracks, wheel 3/6, outer and tag-inner paths) can be hidden
-  // in trail mode via the Look-ahead button. Outside trail mode they're the main swept-path
-  // reference circles, so always shown there. The centreline, tail swing and turn centre stay.
-  const lookAheadWheels = !trailMode || showLookAhead;
+  // Look-aheads (front 1/2 tracks, wheel 3/6, outer and tag-inner paths, tail swing, and the
+  // mow/tail-swing dimension lines) can be hidden in trail mode via the Look-ahead button. Outside
+  // trail mode they're the main swept-path reference circles, so always shown there. The
+  // centreline and turn centre stay.
+  const lookAheads = !trailMode || showLookAhead;
   function previewLinePoints(poses, offsetX, offsetY) {
     return poses.map((p) => toScreen(displayedView, poseTransform({ x: offsetX, y: offsetY }, p))).map((s) => `${s.x},${s.y}`).join(" ");
   }
@@ -3406,7 +3407,7 @@ export default function BusSteeringSimulator() {
 
           {/* mowing-the-grass (#1/#2) and tail-swing (#7/#8) dimension lines — radial, so
               perpendicular to each wheel's own arc, from the body corner to that wheel's path */}
-          {showDims && !geom.isStraight && (() => {
+          {showDims && lookAheads && !geom.isStraight && (() => {
             const dims = [
               { corner: geom.bodyCorners.FL, radius: geom.radii.frontL, color: COL.front, value: geom.mow1 },
               { corner: geom.bodyCorners.FR, radius: geom.radii.frontR, color: COL.front, value: geom.mow2 },
@@ -3500,10 +3501,10 @@ export default function BusSteeringSimulator() {
           {previewCentrelinePoints && (
             <polyline points={previewCentrelinePoints} fill="none" stroke={COL.trail} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
           )}
-          {lookAheadWheels && previewFrontLeftPoints && (
+          {lookAheads && previewFrontLeftPoints && (
             <polyline points={previewFrontLeftPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
           )}
-          {lookAheadWheels && previewFrontRightPoints && (
+          {lookAheads && previewFrontRightPoints && (
             <polyline points={previewFrontRightPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
           )}
           {geom.isStraight ? (
@@ -3529,7 +3530,7 @@ export default function BusSteeringSimulator() {
               {/* wheel 3 & 6 — the important ones. In trail mode these become short look-ahead
                   lines (same TRAIL_PREVIEW_FRONT_LENGTH window as the arcs while turning), rather
                   than the full-width reference line used outside trail mode. */}
-              {trailMode ? lookAheadWheels && (
+              {trailMode ? lookAheads && (
                 <>
                   <polyline points={previewLinePoints(previewPosesFront, 0, w3Y)} fill="none" stroke={COL.w3} strokeWidth="5" opacity="0.08" />
                   <polyline points={previewLinePoints(previewPosesFront, 0, w3Y)} fill="none" stroke={COL.w3} strokeWidth="2.4" opacity="0.35" />
@@ -3561,14 +3562,14 @@ export default function BusSteeringSimulator() {
             </>
           ) : (
             <>
-              {lookAheadWheels && sweptRing(R_outer_px, geom.outerRadius, geom.wheelCenters["front" + outerSide], { stroke: COL.pathOuter, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
+              {lookAheads && sweptRing(R_outer_px, geom.outerRadius, geom.wheelCenters["front" + outerSide], { stroke: COL.pathOuter, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
               {/* pivot ring skipped in trail mode — it's the drive axle's own path, already drawn
                   as the dedicated dashed centreline preview above; drawing both is a duplicate. */}
               {!trailMode && sweptRing(R_pivot_px, Math.abs(geom.R), null, { stroke: COL.dim, strokeWidth: "1.6", strokeDasharray: "10 8", opacity: "0.45" })}
-              {lookAheadWheels && sweptRing(R_tagInner_px, geom.radii["tag" + innerSide], geom.wheelCenters["tag" + innerSide], { stroke: COL.pathInner, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
-              {sweptRing(R_tailSwing_px, geom.radii[tailCorner], geom.bodyCorners[tailCorner], { stroke: COL.tailSwing, strokeWidth: "1.3", strokeDasharray: "3 5", opacity: "0.75" })}
+              {lookAheads && sweptRing(R_tagInner_px, geom.radii["tag" + innerSide], geom.wheelCenters["tag" + innerSide], { stroke: COL.pathInner, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
+              {lookAheads && sweptRing(R_tailSwing_px, geom.radii[tailCorner], geom.bodyCorners[tailCorner], { stroke: COL.tailSwing, strokeWidth: "1.3", strokeDasharray: "3 5", opacity: "0.75" })}
               {/* wheel 3 & 6 — the important ones */}
-              {lookAheadWheels && (
+              {lookAheads && (
                 <>
                   {sweptRing(geom.radii.w3 * displayedView.scale, geom.radii.w3, { x: 0, y: geom.Tw / 2 + DUAL_GAP / 2 }, { stroke: COL.w3, strokeWidth: "5", opacity: "0.18" }, 0.08)}
                   {sweptRing(geom.radii.w3 * displayedView.scale, geom.radii.w3, { x: 0, y: geom.Tw / 2 + DUAL_GAP / 2 }, { stroke: COL.w3, strokeWidth: "2.4", opacity: "1" }, 0.35)}
@@ -3591,14 +3592,14 @@ export default function BusSteeringSimulator() {
           <LegendDot color={COL.front} label="Front · steers (1–2)" />
           <LegendDot color={COL.drive} label="Drive · fixed, dual (3–6)" />
           <LegendDot color={COL.tag} label="Tag · counter-steers (7–8)" />
-          {lookAheadWheels && <LegendDot color={COL.w3} label="Wheel 3 path — nearside" />}
+          {lookAheads && <LegendDot color={COL.w3} label="Wheel 3 path — nearside" />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Nearside = left (1, 3, 4, 7)</div>
         </div>
         <div style={{ position: "absolute", right: 10, top: 10, display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end", background: "rgba(10,26,44,0.72)", borderRadius: 4, padding: "6px 8px", fontSize: 14, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.4, textAlign: "right" }}>
-          {lookAheadWheels && <LegendDot color={COL.w6} label="Wheel 6 path — offside" />}
-          {lookAheadWheels && <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />}
-          {lookAheadWheels && <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />}
-          <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />
+          {lookAheads && <LegendDot color={COL.w6} label="Wheel 6 path — offside" />}
+          {lookAheads && <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />}
+          {lookAheads && <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />}
+          {lookAheads && <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />}
           {trailMode && wheelTraces === "lines" && <LegendDot color={COL.front} label="Trail — wheel 1/2 tracks" />}
           {trailMode && wheelTraces === "swept" && <LegendDot color={COL.wheelTrail} label="Trail — wheel 1-2 / 3-6 swept" />}
           {trailMode && <LegendDot color={COL.bodyTrail} label="Trail — body swept area" />}
@@ -3705,7 +3706,7 @@ export default function BusSteeringSimulator() {
             <button
               className={"btn" + (showLookAhead ? " btnOn" : "")}
               onClick={() => setShowLookAhead((v) => !v)}
-              title="Show or hide the look-ahead wheel paths (wheels 1/2, 3/6, outer and tag-inner). The centreline and tail swing stay."
+              title="Show or hide the look-aheads: wheel paths (1/2, 3/6, outer, tag-inner), tail swing and the mow/tail-swing dimension lines. The centreline stays."
               style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
             >
               Look-ahead
