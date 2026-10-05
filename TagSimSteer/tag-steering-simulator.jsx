@@ -492,6 +492,25 @@ function trailHullPathD(corners, poseA, poseB) {
     ...corners.map((c) => poseTransform(c, poseB)),
   ]).map(worldPt).join("L")}Z`;
 }
+// Wheel-pair "brush strokes" for the swept wheel-trail style: the segment between wheels 1 and 2,
+// and between 3 and 6, swept along the trail and filled — so the four wheel lines become the
+// edges of filled bands instead. Indices into trailWheels().
+const TRAIL_WHEEL_PAIRS = [[0, 1], [2, 3]];
+// Same idea as trailHullPathD, once per pair: the convex hull of the pair's segment at two poses.
+function trailWheelSweptPathD(wheels, poseA, poseB) {
+  return TRAIL_WHEEL_PAIRS.map(([a, b]) => `M${convexHull([
+    poseTransform(wheels[a].local, poseA), poseTransform(wheels[b].local, poseA),
+    poseTransform(wheels[a].local, poseB), poseTransform(wheels[b].local, poseB),
+  ]).map(worldPt).join("L")}Z`).join("");
+}
+// Trail wheel-track display styles, in the order the map's None/Lines/Swept toggle shows them.
+const WHEEL_TRACE_STYLES = ["off", "lines", "swept"];
+const WHEEL_TRACE_LABELS = { off: "None", lines: "Lines", swept: "Swept" };
+const WHEEL_TRACE_TITLES = {
+  off: "No wheel trail (the body swept area stays)",
+  lines: "Wheel 1, 2, 3 and 6 track lines",
+  swept: "Filled bands between wheels 1-2 and 3-6",
+};
 function trailWheelPolyline(w, points, key) {
   return (
     <polyline key={key} points={points} fill="none" stroke={w.color} strokeWidth="1.6" strokeLinejoin="round" opacity="0.85" vectorEffect="non-scaling-stroke" />
@@ -500,7 +519,8 @@ function trailWheelPolyline(w, points, key) {
 // Brings `cache` up to date with `samples`, processing only samples it hasn't seen yet, and returns
 // it (or a fresh cache, if the trail array was replaced — clear/Load/DXF start pose — or the bus
 // dimensions changed). Samples are grouped into chunks of ~TRAIL_CHUNK_LENGTH metres; each chunk
-// holds its wheel-line point strings, body hull subpaths, and the React elements built from them.
+// holds its wheel-line point strings, body and wheel-pair hull subpaths, and the React elements
+// built from them.
 // Consecutive chunks share their boundary sample so the lines join up; a newSegment sample (the
 // trail re-entering the mapped area, see maybeSampleTrail) starts a chunk without that overlap, so
 // the gap stays a gap. Only chunks touched by this call get new elements — every other chunk's
@@ -511,14 +531,14 @@ function trailWheelPolyline(w, points, key) {
 function syncTrailCache(cache, samples, g) {
   const geomKey = [g.Lfd, g.Ldt, g.Fo, g.Ro, g.Wb, g.Tw].join();
   if (!cache || cache.samples !== samples || cache.geomKey !== geomKey || samples.length < cache.processed) {
-    cache = { samples, geomKey, processed: 0, chunks: [], bodyEls: [], wheelEls: [], bounds: { xMin: Infinity, xMax: -Infinity, yMin: Infinity, yMax: -Infinity } };
+    cache = { samples, geomKey, processed: 0, chunks: [], bodyEls: [], wheelEls: [], sweptEls: [], bounds: { xMin: Infinity, xMax: -Infinity, yMin: Infinity, yMax: -Infinity } };
   }
   if (cache.processed === samples.length) return cache;
   const wheels = trailWheels(g);
   const corners = trailBodyCorners(g);
   const wheelPt = (w, sample) => worldPt(poseTransform(w.local, samplePose(sample)));
   const startChunk = (seed) => {
-    const chunk = { pts: wheels.map((w) => [wheelPt(w, seed)]), body: [], length: 0, bodyEl: null, wheelEl: null };
+    const chunk = { pts: wheels.map((w) => [wheelPt(w, seed)]), body: [], swept: [], length: 0, bodyEl: null, wheelEl: null, sweptEl: null };
     cache.chunks.push(chunk);
     return chunk;
   };
@@ -538,6 +558,7 @@ function syncTrailCache(cache, samples, g) {
     if (chunk.length >= TRAIL_CHUNK_LENGTH) chunk = startChunk(prev);
     chunk.pts.forEach((pts, k) => pts.push(wheelPt(wheels[k], sample)));
     chunk.body.push(trailHullPathD(corners, samplePose(prev), samplePose(sample)));
+    chunk.swept.push(trailWheelSweptPathD(wheels, samplePose(prev), samplePose(sample)));
     chunk.length += Math.hypot(sample.poseX - prev.poseX, sample.poseY - prev.poseY);
   }
   cache.processed = samples.length;
@@ -546,9 +567,11 @@ function syncTrailCache(cache, samples, g) {
     if (chunk.body.length === 0) continue; // a lone sample (segment start) has nothing to draw yet
     chunk.bodyEl = <path key={"tb" + j} d={chunk.body.join("")} fill={COL.bodyTrail} />;
     chunk.wheelEl = <g key={"tw" + j}>{wheels.map((w, k) => trailWheelPolyline(w, chunk.pts[k].join(" "), w.key))}</g>;
+    chunk.sweptEl = <path key={"ts" + j} d={chunk.swept.join("")} fill={COL.wheelTrail} />;
   }
   cache.bodyEls = cache.chunks.map((c) => c.bodyEl).filter(Boolean);
   cache.wheelEls = cache.chunks.map((c) => c.wheelEl).filter(Boolean);
+  cache.sweptEls = cache.chunks.map((c) => c.sweptEl).filter(Boolean);
   return cache;
 }
 
@@ -1196,6 +1219,8 @@ const COL = {
   w3: "#c9f24a", w6: "#b18aff",
   trail: "#4fd1c5",
   bodyTrail: "#8ef2b0",
+  wheelTrail: "#3d434a", // swept wheel-pair bands (wheels 1-2 and 3-6), one colour for both — dark asphalt grey
+  headingArrow: "rgba(200,225,245,0.22)", // forward-heading arrow — the grid-line colour (gridMajor), a bit lighter
   text: "#eaf2f8", textDim: "#7d99b0", amber: "#ffb937",
   alert: "#ff4d4d",
   newTarget: "#4ade80",
@@ -1409,7 +1434,8 @@ export default function BusSteeringSimulator() {
   const animating = speed > 0;
   const [showGeom, setShowGeom] = useState(false);
   const [showDims, setShowDims] = useState(false);
-  const [showWheelTraces, setShowWheelTraces] = useState(true); // trail-mode wheel 1/2/3/6 track lines; body swept area is always shown
+  const [showLookAhead, setShowLookAhead] = useState(true); // trail-mode look-ahead wheel paths (see lookAheads)
+  const [wheelTraces, setWheelTraces] = useState("lines"); // trail-mode wheel 1/2/3/6 tracks, one of WHEEL_TRACE_STYLES; body swept area is always shown
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // Collapsed by default so the always-visible column (radius grid, steering/throttle, bus photo)
   // fits within a single laptop screen height without scrolling — the keyboard shortcut list isn't
@@ -1770,7 +1796,7 @@ export default function BusSteeringSimulator() {
       appCommit: __APP_COMMIT__, // build-time git commit (see vite.config.js) — traces a saved trail back to the code that produced it
       vehicle: { Lfd, Ldt, Fo, Ro, Wb, Tw },
       controls: { steerInput, tagRatio, lockoutOn, lockoutSpeed },
-      display: { showGeom, showDims, advancedOpen, viewMode, trailMode, showWheelTraces },
+      display: { showGeom, showDims, advancedOpen, viewMode, trailMode, wheelTraces, showLookAhead },
       pose,
       trail: trailRef.current,
     };
@@ -1814,7 +1840,9 @@ export default function BusSteeringSimulator() {
 
     setShowGeom(!!d.showGeom);
     setShowDims(!!d.showDims);
-    setShowWheelTraces(d.showWheelTraces !== false); // on unless explicitly saved off (older saves predate the toggle)
+    // Older saves have a showWheelTraces boolean (lines on/off) instead, or predate both.
+    setShowLookAhead(d.showLookAhead !== false); // on unless explicitly saved off (older saves predate the toggle)
+    setWheelTraces(WHEEL_TRACE_STYLES.includes(d.wheelTraces) ? d.wheelTraces : d.showWheelTraces === false ? "off" : "lines");
     setAdvancedOpen(!!d.advancedOpen);
     setViewMode(d.viewMode === "bus" ? "bus" : "circle");
     setTrailMode(!!d.trailMode);
@@ -3020,13 +3048,14 @@ export default function BusSteeringSimulator() {
   const lastTrailSample = trailSamples[trailSamples.length - 1];
   const showTrailCap = trailMode && lastTrailSample && !trailPaused;
   const bodyCapD = showTrailCap ? trailHullPathD(trailBodyCorners(geom), samplePose(lastTrailSample), pose) : null;
-  const wheelCapEls = showTrailCap && showWheelTraces
+  const wheelCapEls = showTrailCap && wheelTraces === "lines"
     ? trailWheels(geom).map((w) => trailWheelPolyline(
         w,
         `${worldPt(poseTransform(w.local, samplePose(lastTrailSample)))} ${worldPt(poseTransform(w.local, pose))}`,
         "cap" + w.key,
       ))
     : null;
+  const sweptCapD = showTrailCap && wheelTraces === "swept" ? trailWheelSweptPathD(trailWheels(geom), samplePose(lastTrailSample), pose) : null;
 
   // Preview: unfilled lines only, no shaded corridor — a dashed centreline (the drive axle's own
   // path, TRAIL_PREVIEW_LENGTH ahead) plus dotted front wheel tracks (shorter,
@@ -3043,6 +3072,11 @@ export default function BusSteeringSimulator() {
   const previewPoses = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_LENGTH, TRAIL_PREVIEW_STEPS) : null;
   const previewPosesFront = trailMode ? projectPosesForward(pose, geom, TRAIL_PREVIEW_FRONT_LENGTH, TRAIL_PREVIEW_FRONT_STEPS) : null;
   const previewAxleHalfW = singleAxleBandHalfWidth(geom.Tw);
+  // Look-aheads (centreline, front 1/2 tracks, wheel 3/6, outer and tag-inner paths, tail swing,
+  // and the mow/tail-swing dimension lines) can be hidden in trail mode via the Look-ahead button.
+  // Outside trail mode they're the main swept-path reference circles, so always shown there. The
+  // turn centre stays.
+  const lookAheads = !trailMode || showLookAhead;
   function previewLinePoints(poses, offsetX, offsetY) {
     return poses.map((p) => toScreen(displayedView, poseTransform({ x: offsetX, y: offsetY }, p))).map((s) => `${s.x},${s.y}`).join(" ");
   }
@@ -3349,10 +3383,19 @@ export default function BusSteeringSimulator() {
           {/* trail: one solid line per wheel track (1, 2, 3, 6), each in that wheel's own colour —
               world-space under trailWorldTransform, hence the non-scaling stroke (otherwise a
               1.6 "px" stroke would be 1.6 metres wide). */}
-          {trailCache && showWheelTraces && (
+          {trailCache && wheelTraces === "lines" && (
             <g transform={trailWorldTransform}>
               {trailCache.wheelEls}
               {wheelCapEls}
+            </g>
+          )}
+          {/* swept wheel-trail style: filled bands between wheels 1-2 and 3-6 in place of the
+              lines. Opacity on the group, not each path, so overlapping hulls (and the two bands
+              where they cross) union into one even shade instead of stacking darker. */}
+          {trailCache && wheelTraces === "swept" && (
+            <g transform={trailWorldTransform} opacity="0.85">
+              {trailCache.sweptEls}
+              {sweptCapD && <path d={sweptCapD} fill={COL.wheelTrail} />}
             </g>
           )}
 
@@ -3365,7 +3408,7 @@ export default function BusSteeringSimulator() {
 
           {/* mowing-the-grass (#1/#2) and tail-swing (#7/#8) dimension lines — radial, so
               perpendicular to each wheel's own arc, from the body corner to that wheel's path */}
-          {showDims && !geom.isStraight && (() => {
+          {showDims && lookAheads && !geom.isStraight && (() => {
             const dims = [
               { corner: geom.bodyCorners.FL, radius: geom.radii.frontL, color: COL.front, value: geom.mow1 },
               { corner: geom.bodyCorners.FR, radius: geom.radii.frontR, color: COL.front, value: geom.mow2 },
@@ -3395,9 +3438,9 @@ export default function BusSteeringSimulator() {
 
           {/* forward-heading arrow — front of the body, on the centreline. Open chevron head (two
               strokes), not a filled triangle. */}
-          <line x1={arrowScreen.base.x} y1={arrowScreen.base.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" />
-          <line x1={arrowScreen.headL.x} y1={arrowScreen.headL.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
-          <line x1={arrowScreen.headR.x} y1={arrowScreen.headR.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke="#ffffff" strokeWidth="1.6" strokeLinecap="round" />
+          <line x1={arrowScreen.base.x} y1={arrowScreen.base.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke={COL.headingArrow} strokeWidth="1.6" />
+          <line x1={arrowScreen.headL.x} y1={arrowScreen.headL.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke={COL.headingArrow} strokeWidth="1.6" strokeLinecap="round" />
+          <line x1={arrowScreen.headR.x} y1={arrowScreen.headR.y} x2={arrowScreen.tip.x} y2={arrowScreen.tip.y} stroke={COL.headingArrow} strokeWidth="1.6" strokeLinecap="round" />
 
           {/* driver marker — offside/front, right-hand-drive. Supplied artwork (rasterized, see
               DRIVER_ICON_IMG above), sized from a fixed real-world width so it scales with the
@@ -3456,13 +3499,13 @@ export default function BusSteeringSimulator() {
               the swept-path reference circles (outer envelope, pivot, tag-inner, tail-swing, w3/w6),
               drawn as matching 20m arcs in trail mode or full circles otherwise. Driving straight,
               these degenerate into parallel reference lines instead (a circle at infinite radius). */}
-          {previewCentrelinePoints && (
+          {lookAheads && previewCentrelinePoints && (
             <polyline points={previewCentrelinePoints} fill="none" stroke={COL.trail} strokeOpacity="0.55" strokeWidth="1" strokeDasharray="5 5" />
           )}
-          {previewFrontLeftPoints && (
+          {lookAheads && previewFrontLeftPoints && (
             <polyline points={previewFrontLeftPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
           )}
-          {previewFrontRightPoints && (
+          {lookAheads && previewFrontRightPoints && (
             <polyline points={previewFrontRightPoints} fill="none" stroke={COL.front} strokeOpacity="0.3" strokeWidth="1" strokeDasharray="1 4" />
           )}
           {geom.isStraight ? (
@@ -3488,7 +3531,7 @@ export default function BusSteeringSimulator() {
               {/* wheel 3 & 6 — the important ones. In trail mode these become short look-ahead
                   lines (same TRAIL_PREVIEW_FRONT_LENGTH window as the arcs while turning), rather
                   than the full-width reference line used outside trail mode. */}
-              {trailMode ? (
+              {trailMode ? lookAheads && (
                 <>
                   <polyline points={previewLinePoints(previewPosesFront, 0, w3Y)} fill="none" stroke={COL.w3} strokeWidth="5" opacity="0.08" />
                   <polyline points={previewLinePoints(previewPosesFront, 0, w3Y)} fill="none" stroke={COL.w3} strokeWidth="2.4" opacity="0.35" />
@@ -3520,17 +3563,21 @@ export default function BusSteeringSimulator() {
             </>
           ) : (
             <>
-              {sweptRing(R_outer_px, geom.outerRadius, geom.wheelCenters["front" + outerSide], { stroke: COL.pathOuter, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
+              {lookAheads && sweptRing(R_outer_px, geom.outerRadius, geom.wheelCenters["front" + outerSide], { stroke: COL.pathOuter, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
               {/* pivot ring skipped in trail mode — it's the drive axle's own path, already drawn
                   as the dedicated dashed centreline preview above; drawing both is a duplicate. */}
               {!trailMode && sweptRing(R_pivot_px, Math.abs(geom.R), null, { stroke: COL.dim, strokeWidth: "1.6", strokeDasharray: "10 8", opacity: "0.45" })}
-              {sweptRing(R_tagInner_px, geom.radii["tag" + innerSide], geom.wheelCenters["tag" + innerSide], { stroke: COL.pathInner, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
-              {sweptRing(R_tailSwing_px, geom.radii[tailCorner], geom.bodyCorners[tailCorner], { stroke: COL.tailSwing, strokeWidth: "1.3", strokeDasharray: "3 5", opacity: "0.75" })}
+              {lookAheads && sweptRing(R_tagInner_px, geom.radii["tag" + innerSide], geom.wheelCenters["tag" + innerSide], { stroke: COL.pathInner, strokeWidth: "1", strokeDasharray: "4 6", opacity: "0.35" })}
+              {lookAheads && sweptRing(R_tailSwing_px, geom.radii[tailCorner], geom.bodyCorners[tailCorner], { stroke: COL.tailSwing, strokeWidth: "1.3", strokeDasharray: "3 5", opacity: "0.75" })}
               {/* wheel 3 & 6 — the important ones */}
-              {sweptRing(geom.radii.w3 * displayedView.scale, geom.radii.w3, { x: 0, y: geom.Tw / 2 + DUAL_GAP / 2 }, { stroke: COL.w3, strokeWidth: "5", opacity: "0.18" }, 0.08)}
-              {sweptRing(geom.radii.w3 * displayedView.scale, geom.radii.w3, { x: 0, y: geom.Tw / 2 + DUAL_GAP / 2 }, { stroke: COL.w3, strokeWidth: "2.4", opacity: "1" }, 0.35)}
-              {sweptRing(geom.radii.w6 * displayedView.scale, geom.radii.w6, { x: 0, y: -(geom.Tw / 2 + DUAL_GAP / 2) }, { stroke: COL.w6, strokeWidth: "5", opacity: "0.18" }, 0.08)}
-              {sweptRing(geom.radii.w6 * displayedView.scale, geom.radii.w6, { x: 0, y: -(geom.Tw / 2 + DUAL_GAP / 2) }, { stroke: COL.w6, strokeWidth: "2.4", opacity: "1" }, 0.35)}
+              {lookAheads && (
+                <>
+                  {sweptRing(geom.radii.w3 * displayedView.scale, geom.radii.w3, { x: 0, y: geom.Tw / 2 + DUAL_GAP / 2 }, { stroke: COL.w3, strokeWidth: "5", opacity: "0.18" }, 0.08)}
+                  {sweptRing(geom.radii.w3 * displayedView.scale, geom.radii.w3, { x: 0, y: geom.Tw / 2 + DUAL_GAP / 2 }, { stroke: COL.w3, strokeWidth: "2.4", opacity: "1" }, 0.35)}
+                  {sweptRing(geom.radii.w6 * displayedView.scale, geom.radii.w6, { x: 0, y: -(geom.Tw / 2 + DUAL_GAP / 2) }, { stroke: COL.w6, strokeWidth: "5", opacity: "0.18" }, 0.08)}
+                  {sweptRing(geom.radii.w6 * displayedView.scale, geom.radii.w6, { x: 0, y: -(geom.Tw / 2 + DUAL_GAP / 2) }, { stroke: COL.w6, strokeWidth: "2.4", opacity: "1" }, 0.35)}
+                </>
+              )}
               {/* center marker */}
               <line x1={Cscreen.x - 9} y1={Cscreen.y} x2={Cscreen.x + 9} y2={Cscreen.y} stroke={COL.dim} strokeWidth="1.4" />
               <line x1={Cscreen.x} y1={Cscreen.y - 9} x2={Cscreen.x} y2={Cscreen.y + 9} stroke={COL.dim} strokeWidth="1.4" />
@@ -3546,15 +3593,16 @@ export default function BusSteeringSimulator() {
           <LegendDot color={COL.front} label="Front · steers (1–2)" />
           <LegendDot color={COL.drive} label="Drive · fixed, dual (3–6)" />
           <LegendDot color={COL.tag} label="Tag · counter-steers (7–8)" />
-          <LegendDot color={COL.w3} label="Wheel 3 path — nearside" />
+          {lookAheads && <LegendDot color={COL.w3} label="Wheel 3 path — nearside" />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Nearside = left (1, 3, 4, 7)</div>
         </div>
         <div style={{ position: "absolute", right: 10, top: 10, display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end", background: "rgba(10,26,44,0.72)", borderRadius: 4, padding: "6px 8px", fontSize: 14, color: COL.textDim, textTransform: "uppercase", letterSpacing: 0.4, textAlign: "right" }}>
-          <LegendDot color={COL.w6} label="Wheel 6 path — offside" />
-          <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />
-          <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />
-          <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />
-          {trailMode && showWheelTraces && <LegendDot color={COL.front} label="Trail — wheel 1/2 tracks" />}
+          {lookAheads && <LegendDot color={COL.w6} label="Wheel 6 path — offside" />}
+          {lookAheads && <LegendDot color={COL.pathOuter} label="Outer swept path (ref.)" />}
+          {lookAheads && <LegendDot color={COL.pathInner} label="Tag inner path (ref.)" />}
+          {lookAheads && <LegendDot color={COL.tailSwing} label="Tail swing (rear outer corner)" />}
+          {trailMode && wheelTraces === "lines" && <LegendDot color={COL.front} label="Trail — wheel 1/2 tracks" />}
+          {trailMode && wheelTraces === "swept" && <LegendDot color={COL.wheelTrail} label="Trail — wheel 1-2 / 3-6 swept" />}
           {trailMode && <LegendDot color={COL.bodyTrail} label="Trail — body swept area" />}
           {trailMode && <LegendDot color={COL.trail} label={`Mapped area boundary (${boundaryAreaLabel(trailBoundHalf)})`} />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
@@ -3636,13 +3684,33 @@ export default function BusSteeringSimulator() {
             Trail
           </button>
           {trailMode && (
+            <div style={{ display: "flex", boxShadow: "0 2px 8px rgba(0,0,0,0.45)", borderRadius: 3, overflow: "hidden" }}>
+              {WHEEL_TRACE_STYLES.map((style) => (
+                <button
+                  key={style}
+                  onClick={() => setWheelTraces(style)}
+                  title={WHEEL_TRACE_TITLES[style]}
+                  style={{
+                    fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
+                    padding: "7px 10px", border: "none", cursor: "pointer",
+                    background: wheelTraces === style ? COL.amber : "rgba(200,225,245,0.08)",
+                    color: wheelTraces === style ? COL.bg : COL.text,
+                    fontWeight: wheelTraces === style ? 600 : 400,
+                  }}
+                >
+                  {WHEEL_TRACE_LABELS[style]}
+                </button>
+              ))}
+            </div>
+          )}
+          {trailMode && (
             <button
-              className={"btn" + (showWheelTraces ? " btnOn" : "")}
-              onClick={() => setShowWheelTraces((v) => !v)}
-              title="Show or hide the wheel 1, 2, 3 and 6 track lines (the body swept area stays)"
+              className={"btn" + (showLookAhead ? " btnOn" : "")}
+              onClick={() => setShowLookAhead((v) => !v)}
+              title="Show or hide the look-aheads: wheel paths (1/2, 3/6, outer, tag-inner), tail swing, the centreline and the mow/tail-swing dimension lines."
               style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
             >
-              Wheels
+              Look-ahead
             </button>
           )}
           {trailMode && (

@@ -175,7 +175,11 @@ ribbon polygons at the boundary.
   (`COL.w6`), the front pair plus the outer drive duals — over a single
   translucent fill of the ground swept by the body (`COL.bodyTrail`, the
   convex hull of the four body corners at each pair of consecutive samples).
-  A **Wheels** button hides the lines (saved in Save files). This replaced an
+  A None / Lines / Swept toggle picks the wheel trail (saved in Save files as
+  `wheelTraces`). "Swept" replaces the four lines with two filled bands, the
+  1–2 and 3–6 segments brushed along the trail (convex hull per sample pair,
+  like the body), both in `COL.wheelTrail`, so the lines become band edges.
+  Opacity sits on the group so overlaps union rather than darken. This replaced an
   earlier version with three filled axle-corridor ribbons (drive, front,
   tag), which read as cluttered. Samples store only the pose (`poseX`, `poseY`, `theta`,
   `newSegment`); wheel positions are derived at render time from the current
@@ -232,6 +236,11 @@ ribbon polygons at the boundary.
   continuity every time the turn centre moves; this projection is disposable
   and recomputed from scratch each render, so it has nothing to stay
   continuous with.
+  A **Look-ahead** button (trail mode only, saved as `showLookAhead`) hides
+  the look-aheads: the dotted wheel 1/2 tracks, wheel 3/6, the outer and
+  tag-inner arcs, the tail-swing arc and the mow/tail-swing dimension lines,
+  and the dashed centreline, plus their legend entries. The turn centre stays. Outside trail mode the full
+  reference circles always show.
 - **History buffer**: `trailRef` (a `useRef` array of `{poseX, poseY,
   theta, newSegment}` world-space samples), appended inside the existing
   drive-loop `requestAnimationFrame` callback via `maybeSampleTrail()`,
