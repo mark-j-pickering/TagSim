@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- Only for a hidden Form whose handle DirectInput's exclusive force-feedback mode needs. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>TagSimWheel</AssemblyName>
+    <RootNamespace>TagSimWheel.ConsoleApp</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TagSimWheel.Core\TagSimWheel.Core.csproj" />
+  </ItemGroup>
+
+</Project>
