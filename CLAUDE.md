@@ -12,10 +12,11 @@ tag-axle fleet.
 The repo holds three independent sub-projects, not a shared build/workspace:
 
 - **`TagSimSteer/`** — a working 2D plan-view (top-down) steering geometry
-  simulator. Single self-contained React component
-  (`tag-steering-simulator.jsx`), originally built as a claude.ai artifact and
-  moved here for further development. **Read
-  [TagSimSteer/CLAUDE.md](TagSimSteer/CLAUDE.md) before touching this file** —
+  simulator: a Vite + React app built around one large component
+  (`tag-steering-simulator.jsx`, originally a claude.ai artifact) plus
+  supporting modules in `src/` (headless physics, DXF import, wheel/pedal
+  input, and a small ML training sandbox). **Read
+  [TagSimSteer/CLAUDE.md](TagSimSteer/CLAUDE.md) before touching it** —
   it documents the coordinate pipeline, wheel-numbering convention, steering
   input resolution, and several deliberate design decisions (and their
   previously-tried-and-reverted alternatives) in detail.
@@ -33,9 +34,15 @@ The repo holds three independent sub-projects, not a shared build/workspace:
   Unity), a console test front end and a WinForms control GUI. See
   [TagSimWheel/README.md](TagSimWheel/README.md).
 
-There is no root-level package.json, build config, linter, or test suite —
-neither sub-project is a scaffolded app. `TagSimSteer/tag-steering-simulator.jsx`
-is meant to be dropped into a host React app (Vite/CRA/Next) rather than run
-standalone; see that sub-project's CLAUDE.md for exact instructions and
-constraints. Do not add root-level tooling (package.json, CI, etc.) speculatively
-— set it up when a sub-project actually needs it.
+Each sub-project carries its own tooling; there is no root-level
+package.json, build config, linter, or test suite:
+
+- `TagSimSteer/` has its own `package.json` + `vite.config.js` (`npm run dev`
+  on port 5183, `npm run train` for the ML sandbox) and is deployed to GitHub
+  Pages by `.github/workflows/deploy-tagsimsteer.yml` (the one root-level
+  file, triggered only by changes under `TagSimSteer/`).
+- `TagSimWheel/` is a .NET solution (`TagSimWheel.slnx`).
+- `TagSim3D/` has no build yet (loose `.cs` files awaiting a Unity project).
+
+Do not add shared root-level tooling (package.json, workspaces, etc.)
+speculatively — set it up when more than one sub-project actually needs it.

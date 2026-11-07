@@ -8,16 +8,25 @@ visualises Ackermann-style steering geometry, swept turning paths, off-tracking,
 tail swing, and front-overhang "mowing the grass" for a tag-axle bus — modelled
 loosely on Brisbane City Council's Volvo/Scania 6x2 tag-axle fleet.
 
-Mainly one file: `tag-steering-simulator.jsx` — a React component (default
+The core is `tag-steering-simulator.jsx` — a React component (default
 export, no required props), originally built and iterated as a Claude.ai
-artifact. It was published from claude.ai and is being transferred here for
-further development in Claude Code. It also imports one asset,
-`bcc-tag-bus-5054.png` (see "Running it" below) — no longer a fully
-self-contained single file.
+artifact, now ~4,000 lines and the bulk of the app. Around it:
 
-**Read the whole file before making changes.** It's ~830 lines but it's one
-component with a handful of module-level helper functions — there's no other
-project structure to discover.
+- `src/main.jsx` — the Vite entry point; just renders the component.
+- `src/simCore.js` — headless vehicle physics (`stepSim`), a deliberate fork
+  of the component's drive-loop math for training/replay. Keep the two
+  numerically identical (see its header comment).
+- `src/dxfImport.js` — DXF site-plan parser (see "Imported site drawings").
+- `src/wheelInput.js` — Gamepad API wheel/pedal input (see "Input tester").
+- `src/course.js`, `src/env.js`, `src/policy.js`, `src/train.js`,
+  `src/trainRun.js`, `src/trained-policy.json` — the single-corner ML
+  training sandbox (`npm run train`); the component imports `env.js`,
+  `policy.js` and the trained JSON for its ML Autopilot.
+- `bcc-tag-bus-5054.png` — bus reference photo imported by the component.
+
+**Read the relevant parts of the component before making changes** — it's
+too big to skim, so grep for the feature you're touching and read its whole
+state/effect/render path, plus the section of this file that covers it.
 
 ## Running it
 
@@ -29,15 +38,17 @@ setup, add localStorage persistence for the geometry sliders) if that's useful,
 but be aware the current code deliberately avoids all of the above, so don't
 assume it needs to stay that way.
 
-To run standalone: drop the component into any Vite/CRA/Next React app,
-`import BusSteeringSimulator from './tag-steering-simulator'`, render it. It
-imports `react` (useState/useEffect/useRef/useMemo) plus one local asset,
+This directory is its own Vite app: `npm install`, then `npm run dev` (or
+`launch-dev.bat`, which also opens Chrome) serves it on port 5183
+(`strictPort` — 5173 collides with other projects on this machine). Claude's
+preview server uses 5184 (`--port 5184` in the repo's `.claude/launch.json`),
+running against the same working tree. Pushes touching `TagSimSteer/` deploy to
+GitHub Pages via `.github/workflows/deploy-tagsimsteer.yml`. It's no longer a
+single-file drop-in: the component imports `./src/*` modules and
 `bcc-tag-bus-5054.png` (a reference photo of the real bus, fleet #5054, with
 its confirmed axle dimensions annotated — shown in the side panel below the
-steering/throttle controls) — that PNG (~900KB) must be copied alongside the
-`.jsx` file for the import to resolve; it's the one thing keeping this from
-being a true single-file drop-in. The Google Fonts `@import` (Barlow
-Condensed, Space Mono) is inlined via a `<style>` tag inside the component.
+steering/throttle controls). The Google Fonts `@import` (Barlow Condensed,
+Space Mono) is inlined via a `<style>` tag inside the component.
 
 ## Domain model — the physics
 
