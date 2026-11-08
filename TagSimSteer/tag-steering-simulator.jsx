@@ -3,7 +3,6 @@ import busDimensionsPhoto from "./bcc-tag-bus-5054.png";
 import { createEnv, observe, DEFAULT_COURSE_OPTIONS, CRUISE_SPEED_KMH } from "./src/env.js";
 import { createPolicy, makePolicyFn } from "./src/policy.js";
 import trainedPolicyData from "./src/trained-policy.json";
-import { parseDxfToWorldShapes, dxfShapePathD, dxfShapeStrokeWidth, dxfShapeStrokeDasharray } from "./src/dxfImport.js";
 import { loadWheelConfigs, readWheelInput, describeWheelInput } from "./src/wheelInput.js";
 
 // ---------- constants ----------
@@ -19,13 +18,113 @@ const CLOSE_RADIUS_M = 15; // 'B' key: close-up view radius around the bus, see 
 const CLOSE_FORWARD_BIAS = 1 / 3; // how far back from the front bumper (as a fraction of overall length) the close-up centres on
 const MIN_ZOOM = 0.02; // low enough to zoom out to roughly the full 1km² trail-recording area (S/M presets — see TRAIL_SIZE_PRESETS)
 const MAX_ZOOM = 6;
-// Imported site-drawing convention (see handleLoadMapImage): an SVG or DXF file's own coordinate
-// units are always millimetres — so a drawing's real-world scale is fully determined by its own
-// numbers (viewBox/width for SVG, raw entity coordinates for DXF), no click-and-measure calibration
-// UI. (An earlier version also offered a mil/1000in convention, for sign-cutting/vinyl/CNC software
-// that sometimes emits raw coordinates in that unit — dropped again since it wasn't needed in
-// practice; re-add SVG_UNIT_TO_M's alternate entry from git history if that changes.)
-const SVG_MM_TO_M = 0.001;
+// Imported site plans (see handleLoadMapImage) are plain raster images (PNG/JPEG/WebP). A raster
+// has no units of its own, so its scale comes from, in order of precedence:
+//   1. Two hand-placed magenta marker pixels (see SITE_MARKERS) on features a known distance
+//      apart — the user is prompted for that distance.
+//   2. A tag in the filename — "depot-exit@25mm.png" = 25mm of real ground per image pixel (mm, cm
+//      or m; "px" suffix optional).
+//   3. A one-off prompt for the image's real width in metres.
+const MAP_SCALE_TAG_RE = /@(\d+(?:\.\d+)?)\s*(mm|cm|m)(?:\s*\/?\s*px)?(?=[^a-z]|$)/i;
+const MAP_SCALE_UNIT_TO_M = { mm: 0.001, cm: 0.01, m: 1 };
+
+// Metres per image pixel from a filename's "@25mm"-style tag, or null if it has none.
+function parseMapScaleTag(fileName) {
+  const m = MAP_SCALE_TAG_RE.exec(fileName);
+  if (!m) return null;
+  const metresPerPx = parseFloat(m[1]) * MAP_SCALE_UNIT_TO_M[m[2].toLowerCase()];
+  return metresPerPx > 0 ? metresPerPx : null;
+}
+
+// Marker pixels a user paints into a site plan by hand (pencil tool, saved as PNG — JPEG's lossy
+// compression shifts the colours so they won't be found). Each marker may be a single pixel or any
+// small mark — dot, cross, ring, fiducial. Marker-coloured pixels close together (including a ring
+// and the dot inside it) count as one marker, located at the centre of its bounding box — not the
+// pixel average, which a lopsided mark like a half-filled fiducial would pull off-centre.
+//   scale   (magenta) — exactly 2: two points a known real distance apart (prompted on import).
+//   start   (cyan)    — optional, 1: where the bus starts. Becomes world (0,0).
+//   heading (yellow)  — optional, 1, needed with start: the bus starts facing from cyan toward it.
+// Pure primaries were picked because they essentially never occur in real drawings or photos.
+const SITE_MARKERS = {
+  scale: [255, 0, 255],
+  start: [0, 255, 255],
+  heading: [255, 255, 0],
+};
+// Per-channel tolerance: a hand-placed pixel is normally exact, but some editors embed a colour
+// profile/gamma that nudges values slightly on decode. Kept tight so antialiased fringes and real
+// image content don't match.
+const SITE_MARKER_TOLERANCE = 8;
+// Marker pixels within this many pixels of an existing cluster's bounding box join it — so a dot,
+// cross or small ring reads as one marker.
+const SITE_MARKER_JOIN_PX = 3;
+const SITE_SCALE_DISTANCE_KEY = "tagsim.sitePlan.lastScaleDistanceM";
+
+// Scans decoded image pixels for SITE_MARKERS. Returns { scale: [{u,v}], start: [...], heading:
+// [...] } — marker centres in image pixel coordinates (u right, v down; a lone pixel at column x
+// has its centre at u = x + 0.5).
+function findSiteMarkers(imageData) {
+  const { data, width } = imageData;
+  const T = SITE_MARKER_TOLERANCE;
+  const roles = Object.keys(SITE_MARKERS);
+  const clusters = Object.fromEntries(roles.map((r) => [r, []]));
+  const near = (c, x, y, pad) => x >= c.minX - pad && x <= c.maxX + pad && y >= c.minY - pad && y <= c.maxY + pad;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    // Fast reject: every marker colour is made only of fully-on/fully-off channels.
+    if (data[i + 3] < 250 || (r > T && r < 255 - T) || (g > T && g < 255 - T) || (b > T && b < 255 - T)) continue;
+    const role = roles.find((k) => {
+      const [mr, mg, mb] = SITE_MARKERS[k];
+      return Math.abs(r - mr) <= T && Math.abs(g - mg) <= T && Math.abs(b - mb) <= T;
+    });
+    if (!role) continue;
+    const p = i / 4, x = p % width, y = (p - x) / width;
+    const list = clusters[role];
+    let c = list.find((cl) => near(cl, x, y, SITE_MARKER_JOIN_PX));
+    if (!c) { c = { minX: x, maxX: x, minY: y, maxY: y }; list.push(c); }
+    c.minX = Math.min(c.minX, x); c.maxX = Math.max(c.maxX, x);
+    c.minY = Math.min(c.minY, y); c.maxY = Math.max(c.maxY, y);
+  }
+  // Row-by-row scanning can start two clusters for one shape (e.g. the two arms of a "V", or a
+  // ring and its centre dot) — merge any whose padded bounding boxes overlap or nest.
+  const result = {};
+  for (const role of roles) {
+    const list = clusters[role];
+    for (let merged = true; merged; ) {
+      merged = false;
+      outer: for (let a = 0; a < list.length; a++) {
+        for (let b = a + 1; b < list.length; b++) {
+          const A = list[a], B = list[b], pad = SITE_MARKER_JOIN_PX;
+          if (A.minX - pad <= B.maxX && B.minX - pad <= A.maxX && A.minY - pad <= B.maxY && B.minY - pad <= A.maxY) {
+            A.minX = Math.min(A.minX, B.minX); A.maxX = Math.max(A.maxX, B.maxX);
+            A.minY = Math.min(A.minY, B.minY); A.maxY = Math.max(A.maxY, B.maxY);
+            list.splice(b, 1);
+            merged = true;
+            break outer;
+          }
+        }
+      }
+    }
+    result[role] = list.map((c) => ({ u: (c.minX + c.maxX + 1) / 2, v: (c.minY + c.maxY + 1) / 2 }));
+  }
+  return result;
+}
+
+// Decodes an image file without colour-space conversion (so hand-placed marker pixels keep their
+// exact values) and returns { width, height, markers }.
+async function readSitePlanFile(file) {
+  const bmp = await createImageBitmap(file, { colorSpaceConversion: "none", premultiplyAlpha: "none" });
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    ctx.drawImage(bmp, 0, 0);
+    const markers = findSiteMarkers(ctx.getImageData(0, 0, bmp.width, bmp.height));
+    return { width: bmp.width, height: bmp.height, markers };
+  } finally {
+    bmp.close();
+  }
+}
 
 // Trail-recording/boundary square half-extent presets (metres) — S/M/L, selectable in Advanced
 // settings. "half" is the same quantity the rest of the file already calls TRAIL_BOUND_HALF; M (500)
@@ -205,24 +304,6 @@ function fitBoundsView(bounds, vb, margin) {
 
 function toScreen(view, p) {
   return { x: view.originX - p.y * view.scale, y: view.originY - p.x * view.scale };
-}
-
-// Reads an imported site drawing's <svg viewBox="minX minY w h"> (falling back to its width/height
-// attributes, origin at 0,0, if it has no viewBox — width/height are parsed as plain numbers, any
-// unit suffix like "mm"/"px" is stripped since SVG_MM_TO_M's millimetre convention already fixes
-// the unit). Returns null if neither is present/usable.
-function parseSvgViewBox(svgEl) {
-  const raw = svgEl.getAttribute("viewBox");
-  if (raw) {
-    const parts = raw.trim().split(/[\s,]+/).map(Number);
-    if (parts.length === 4 && parts.every((n) => isFinite(n)) && parts[2] > 0 && parts[3] > 0) {
-      return { x: parts[0], y: parts[1], w: parts[2], h: parts[3] };
-    }
-  }
-  const w = parseFloat(svgEl.getAttribute("width"));
-  const h = parseFloat(svgEl.getAttribute("height"));
-  if (isFinite(w) && isFinite(h) && w > 0 && h > 0) return { x: 0, y: 0, w, h };
-  return null;
 }
 
 function longLineScreen(yOffset, pose, view) {
@@ -560,7 +641,7 @@ function syncTrailCache(cache, samples, g) {
   for (let j = firstDirty; j < cache.chunks.length; j++) {
     const chunk = cache.chunks[j];
     if (chunk.body.length === 0) continue; // a lone sample (segment start) has nothing to draw yet
-    chunk.bodyEl = <path key={"tb" + j} d={chunk.body.join("")} fill={COL.bodyTrail} />;
+    chunk.bodyEl = <path key={"tb" + j} d={chunk.body.join("")} />; // fill inherited from the render group (dark grid vs site plan)
     chunk.wheelEl = <g key={"tw" + j}>{wheels.map((w, k) => trailWheelPolyline(w, chunk.pts[k].join(" "), w.key))}</g>;
     chunk.sweptEl = <path key={"ts" + j} d={chunk.swept.join("")} fill={COL.wheelTrail} />;
   }
@@ -1214,6 +1295,11 @@ const COL = {
   w3: "#c9f24a", w6: "#b18aff",
   trail: "#4fd1c5",
   bodyTrail: "#8ef2b0",
+  // Over a site plan (light aerial/drawing background) the near-transparent body and pale green
+  // trail above vanish, so the bus goes near-solid navy and the body swept area an amber tint —
+  // a hue nothing in an aerial uses (grey asphalt, white markings, green grass/trees).
+  mapBusFill: "rgba(22,50,79,0.9)",
+  mapBodyTrail: "#ff9a3c", // drawn at 0.35 group opacity
   wheelTrail: "#3d434a", // swept wheel-pair bands (wheels 1-2 and 3-6), one colour for both — dark asphalt grey
   // Trail wheel lines: one grey per axle, lighter and darker shades of the swept-band grey above.
   wheelTrailFront: "#aab3bd", // wheels 1-2
@@ -1671,16 +1757,16 @@ export default function BusSteeringSimulator() {
   const skipResetRef = useRef(false);
   const fileInputRef = useRef(null);
   const mapImageInputRef = useRef(null);
-  // Imported site drawing (see handleLoadMapImage), one of two shapes depending on source format:
-  //   SVG: { kind: "svg", markup, viewBox: {x,y,w,h} } — the file's own markup, inlined untouched and
-  //        placed live each render (see the SVG_MM_TO_M comment further down).
-  //   DXF: { kind: "dxf", shapes } — parsed into plain world-space shape objects by dxfImport.js at
-  //        import time (SVG_MM_TO_M already baked into their coordinates), rendered as ordinary
-  //        <path>/<circle> elements through the same toScreen() pipeline as everything else on the
-  //        map — DXF has no native web rendering to lean on the way SVG's own markup does.
-  // null when none is loaded. Not part of the Save/Load JSON — it's re-imported from its own file
-  // each session, same as the bus reference photo isn't re-saved.
+  // Imported site plan (see handleLoadMapImage): { url, widthM, heightM, centerX, centerY,
+  // startTheta } — a blob: URL for the image, its real-world size in metres, the world position of
+  // the image's centre (0,0 unless a start marker moved it), and the heading the bus starts at (and
+  // Recenter returns to). null when none is loaded. Not part of the Save/Load JSON — it's
+  // re-imported from its own file each session, same as the bus reference photo isn't re-saved.
   const [mapImage, setMapImage] = useState(null);
+  const mapImageUrlRef = useRef(null); // current blob: URL, revoked when replaced/cleared
+  // Where Recenter and the vehicle-dimension reset put the bus: the origin, facing the site plan's
+  // start heading if it has one.
+  const homePose = () => ({ x: 0, y: 0, theta: mapImage ? mapImage.startTheta : 0 });
 
   // Driver controls: up/down arrow key state read imperatively by the drive loop each frame (see
   // below), rather than React state — these change many times a second while held and never need
@@ -1783,8 +1869,8 @@ export default function BusSteeringSimulator() {
   // change invalidates any existing trail the same way — it was painted by a different-size bus.
   useEffect(() => {
     if (skipResetRef.current) { skipResetRef.current = false; return; }
-    poseRef.current = { x: 0, y: 0, theta: 0 }; // drive loop runs continuously now, so this must be resynced directly, not just the state
-    setPose({ x: 0, y: 0, theta: 0 });
+    poseRef.current = homePose(); // drive loop runs continuously now, so this must be resynced directly, not just the state
+    setPose(homePose());
     clearTrail();
   }, [Lfd, Ldt, Fo, Ro, Wb, Tw]);
 
@@ -1893,51 +1979,102 @@ export default function BusSteeringSimulator() {
     reader.readAsText(file);
   }
 
-  // ---------- imported site drawing (map background) ----------
-  // Loads an SVG or DXF file as a scaled background layer under the vehicle/trail — see SVG_MM_TO_M
-  // for the fixed millimetre convention this relies on (no click-and-measure calibration step, no
-  // rotation). Format is told apart by file extension, not sniffed content — both are plain text and
-  // a DXF has no reliable magic header.
-  //
-  // A DXF can also carry a starting pose for the bus (a LINE on a layer named BUS_START — see
-  // dxfImport.js's own comment) — when present, this repositions the bus there and clears the trail,
-  // the same "new context" pose+trail reset applySaveData does for a Load, not just a background swap.
-  function handleLoadMapImage(e) {
+  // ---------- imported site plan (map background) ----------
+  // Loads a raster image as a scaled background layer under the vehicle/trail, image-up =
+  // screen-up, no rotation. Scale from marker pixels, the filename tag, or a width prompt (see
+  // MAP_SCALE_TAG_RE / SITE_MARKERS). Without start markers the image is centred on world (0,0);
+  // with them, the cyan marker is placed at world (0,0) and the bus is moved there facing the
+  // yellow marker — a new starting context (pose + trail reset), like a Load. The image is held as
+  // a blob: URL (no base64 copy of a multi-MB file in state), revoked when replaced or cleared.
+  function replaceMapImage(next) {
+    if (mapImageUrlRef.current) URL.revokeObjectURL(mapImageUrlRef.current);
+    mapImageUrlRef.current = next ? next.url : null;
+    setMapImage(next);
+  }
+  async function handleLoadMapImage(e) {
     const file = e.target.files && e.target.files[0];
     e.target.value = ""; // allow re-selecting the same file next time
     if (!file) return;
-    const isDxf = /\.dxf$/i.test(file.name);
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        if (isDxf) {
-          const { shapes, startPose } = parseDxfToWorldShapes(String(reader.result), SVG_MM_TO_M);
-          setMapImage({ kind: "dxf", shapes });
-          if (startPose) {
-            poseRef.current = startPose;
-            setPose(startPose);
-            setSpeed(0);
-            trailRef.current = [];
-            trailPausedRef.current = false;
-            setTrailPaused(false);
-            setTrailVersion((n) => n + 1);
-          }
-          return;
-        }
-        const doc = new DOMParser().parseFromString(String(reader.result), "image/svg+xml");
-        const svgEl = doc.documentElement;
-        if (!svgEl || svgEl.nodeName !== "svg" || doc.querySelector("parsererror")) {
-          throw new Error("Not a valid SVG file");
-        }
-        const viewBox = parseSvgViewBox(svgEl);
-        if (!viewBox) throw new Error("SVG has no usable viewBox or width/height");
-        setMapImage({ kind: "svg", markup: svgEl.innerHTML, viewBox, unitToM: SVG_MM_TO_M });
-      } catch (err) {
-        alert("Couldn't load that drawing: " + err.message);
+    let plan;
+    try {
+      plan = await readSitePlanFile(file);
+    } catch {
+      alert("Couldn't load that image — use a PNG, JPEG or WebP.");
+      return;
+    }
+    const { width: wPx, height: hPx, markers } = plan;
+    const at = (m) => `(${Math.round(m.u)}, ${Math.round(m.v)})`;
+
+    // ----- scale -----
+    let metresPerPx;
+    if (markers.scale.length > 0) {
+      if (markers.scale.length !== 2) {
+        alert(
+          `Found ${markers.scale.length} magenta scale markers in "${file.name}" — need exactly 2 ` +
+          `(at ${markers.scale.slice(0, 6).map(at).join(", ")}). Fix the image and import it again.`
+        );
+        return;
       }
-    };
-    reader.onerror = () => alert("Couldn't read that file.");
-    reader.readAsText(file);
+      const [a, b] = markers.scale;
+      const gapPx = Math.hypot(b.u - a.u, b.v - a.v);
+      if (gapPx < 2) { alert("The two magenta scale markers are on top of each other."); return; }
+      let lastDistance = "";
+      try { lastDistance = localStorage.getItem(SITE_SCALE_DISTANCE_KEY) || ""; } catch {}
+      const answer = window.prompt(
+        `Scale markers found at ${at(a)} and ${at(b)}, ${gapPx.toFixed(1)} px apart.\n` +
+        "What is the real distance between them, in metres?",
+        lastDistance
+      );
+      const distanceM = parseFloat(answer);
+      if (!(distanceM > 0)) return;
+      try { localStorage.setItem(SITE_SCALE_DISTANCE_KEY, String(distanceM)); } catch {}
+      metresPerPx = distanceM / gapPx;
+    } else {
+      metresPerPx = parseMapScaleTag(file.name);
+      if (metresPerPx == null) {
+        const answer = window.prompt(
+          `"${file.name}" is ${wPx} × ${hPx} px with no scale markers or filename tag (e.g. name@25mm.png).\n` +
+          "How wide is it in real life, in metres?"
+        );
+        const widthM = parseFloat(answer);
+        if (!(widthM > 0)) return;
+        metresPerPx = widthM / wPx;
+      }
+    }
+
+    // ----- start position/heading -----
+    // Image pixel (u right, v down) -> world, relative to the image centre: image-up is world +x
+    // (forward at zero heading), image-right is world -y (y is left-positive) — see toScreen.
+    const toWorld = (m) => ({ x: (hPx / 2 - m.v) * metresPerPx, y: (wPx / 2 - m.u) * metresPerPx });
+    let start = null;
+    const nStart = markers.start.length, nHeading = markers.heading.length;
+    if (nStart === 1 && nHeading === 1) {
+      const s = toWorld(markers.start[0]), h = toWorld(markers.heading[0]);
+      if (Math.hypot(h.x - s.x, h.y - s.y) > 0) start = { pos: s, theta: Math.atan2(h.y - s.y, h.x - s.x) };
+    }
+    if (!start && (nStart > 0 || nHeading > 0)) {
+      alert(
+        `Start markers need exactly 1 cyan (start) and 1 yellow (heading) pixel, apart from each other — ` +
+        `found ${nStart} cyan and ${nHeading} yellow. Loading the plan without a start position.`
+      );
+    }
+
+    replaceMapImage({
+      url: URL.createObjectURL(file),
+      widthM: wPx * metresPerPx,
+      heightM: hPx * metresPerPx,
+      // World position of the image centre: the origin, or shifted so the start marker sits there.
+      centerX: start ? -start.pos.x : 0,
+      centerY: start ? -start.pos.y : 0,
+      startTheta: start ? start.theta : 0,
+    });
+    if (start) {
+      const p = { x: 0, y: 0, theta: start.theta };
+      poseRef.current = p; // drive loop runs continuously — resync it directly, not just the state
+      setPose(p);
+      setSpeed(0);
+      clearTrail();
+    }
   }
 
   function startHorn() {
@@ -3166,15 +3303,15 @@ export default function BusSteeringSimulator() {
             Load
           </button>
           <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleLoadFile} style={{ display: "none" }} />
-          <button className="btn" onClick={() => mapImageInputRef.current && mapImageInputRef.current.click()} title="Import a site drawing (SVG or DXF, 1 unit = 1mm) to drive over, scaled automatically" style={{ fontSize: 13, padding: "6px 10px" }}>
-            Import Drawing
+          <button className="btn" onClick={() => mapImageInputRef.current && mapImageInputRef.current.click()} title="Import a site plan image (PNG/JPEG/WebP) to drive over. Scale: two magenta (#FF00FF) marks a known distance apart, else a filename tag like name@25mm.png, else you're asked for its width. Optional start: a cyan (#00FFFF) mark where the bus starts and a yellow (#FFFF00) mark in the direction it faces" style={{ fontSize: 13, padding: "6px 10px" }}>
+            Import Site Plan
           </button>
           {mapImage && (
-            <button className="btn" onClick={() => setMapImage(null)} title="Remove the imported drawing" style={{ fontSize: 13, padding: "6px 10px" }}>
-              Clear Drawing
+            <button className="btn" onClick={() => replaceMapImage(null)} title="Remove the imported site plan" style={{ fontSize: 13, padding: "6px 10px" }}>
+              Clear Site Plan
             </button>
           )}
-          <input ref={mapImageInputRef} type="file" accept="image/svg+xml,.svg,.dxf" onChange={handleLoadMapImage} style={{ display: "none" }} />
+          <input ref={mapImageInputRef} type="file" accept="image/png,image/jpeg,image/webp" onChange={handleLoadMapImage} style={{ display: "none" }} />
           {/* Standalone wheel/pedal tester (public/input-tester.html). BASE_URL prefix for the same
               GitHub Pages subpath reason as the sound files — see SOUND_HORN. */}
           <a className="btn" href={import.meta.env.BASE_URL + "input-tester.html"} target="_blank" rel="noopener" title="Open the steering wheel / pedal input tester in a new tab" style={{ fontSize: 13, padding: "6px 10px", textDecoration: "none" }}>
@@ -3214,51 +3351,25 @@ export default function BusSteeringSimulator() {
               otherwise visually fight each other. */}
           {!mapImage && <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />}
 
-          {/* Imported site drawing (see handleLoadMapImage/SVG_MM_TO_M) — two render paths for the
-              two source formats mapImage.kind can be:
-              SVG: the file's own markup, inlined untouched and placed with a plain translate+
-              uniform-scale — no rotation, no click-and-measure calibration. Its viewBox centre is
-              anchored at world (0,0) (the screen point (originX,originY) — same anchor the grid
-              pattern above uses), and its own "up"/"right" land as screen up/right, scaled to
-              real-world size and panning/zooming with everything else on the map. */}
-          {mapImage && mapImage.kind === "svg" && (() => {
-            const k = displayedView.scale * SVG_MM_TO_M;
-            const anchorU = mapImage.viewBox.x + mapImage.viewBox.w / 2;
-            const anchorV = mapImage.viewBox.y + mapImage.viewBox.h / 2;
-            const tx = displayedView.originX - k * anchorU;
-            const ty = displayedView.originY - k * anchorV;
+          {/* Imported site plan (see handleLoadMapImage): one raster <image>, its centre at world
+              (centerX, centerY) and sized to its real-world width/height, so it pans/zooms with
+              everything else on the map. Image-up is world forward (+x), matching toScreen's
+              screen-up. */}
+          {mapImage && (() => {
+            const w = mapImage.widthM * displayedView.scale;
+            const h = mapImage.heightM * displayedView.scale;
+            const c = toScreen(displayedView, { x: mapImage.centerX, y: mapImage.centerY });
             return (
-              <g
-                transform={`translate(${tx} ${ty}) scale(${k})`}
-                dangerouslySetInnerHTML={{ __html: mapImage.markup }}
+              <image
+                href={mapImage.url}
+                x={c.x - w / 2}
+                y={c.y - h / 2}
+                width={w}
+                height={h}
+                preserveAspectRatio="none"
               />
             );
           })()}
-
-          {/* DXF: already-parsed world-space shapes (dxfImport.js) — rendered as ordinary <path>/
-              <circle> elements through the same toScreen() every other map element uses, since DXF
-              (unlike SVG) has no native markup this app can just inline. A filled polyline (a closed
-              LWPOLYLINE or simple HATCH boundary — see dxfImport.js) is a distinct coloured region;
-              everything else is stroke-only line art, same as raw LINE/ARC entities always are.
-              Stroke width/dash come from the entity's own DXF lineweight/linetype — see
-              dxfShapeStrokeWidth's own comment for why lineweight isn't a literal real-world-mm-to-px
-              conversion (it'd be sub-pixel-invisible at this app's usual site-plan-scale zoom). */}
-          {mapImage && mapImage.kind === "dxf" && (
-            <g>
-              {mapImage.shapes.map((shape, i) => {
-                const toScr = (p) => toScreen(displayedView, p);
-                const strokeWidth = dxfShapeStrokeWidth(shape, displayedView.scale);
-                const strokeDasharray = dxfShapeStrokeDasharray(shape, displayedView.scale);
-                if (shape.type === "circle") {
-                  const c = toScr(shape.center);
-                  return <circle key={i} cx={c.x} cy={c.y} r={shape.r * displayedView.scale} fill="none" stroke={shape.color} strokeWidth={strokeWidth} strokeDasharray={strokeDasharray} />;
-                }
-                const d = dxfShapePathD(shape, toScr, displayedView.scale);
-                if (!d) return null;
-                return <path key={i} d={d} fill={shape.filled ? shape.color : "none"} fillOpacity={shape.filled ? 0.55 : 1} fillRule="evenodd" stroke={shape.color} strokeWidth={strokeWidth} strokeDasharray={strokeDasharray} />;
-              })}
-            </g>
-          )}
 
           {/* trail-recording bound: the square (trailBoundHalf, S/M/L in Advanced settings) trail
               sampling is capped to, drawn so the limit is visible before it's hit rather than only discovered via the
@@ -3359,9 +3470,9 @@ export default function BusSteeringSimulator() {
               under everything else including the off-track band and the vehicle itself, so it
               reads as ground shading rather than competing with what's painted on top later. */}
           {trailCache && (
-            <g transform={trailWorldTransform} opacity="0.1">
+            <g transform={trailWorldTransform} fill={mapImage ? COL.mapBodyTrail : COL.bodyTrail} opacity={mapImage ? 0.35 : 0.1}>
               {trailCache.bodyEls}
-              {bodyCapD && <path d={bodyCapD} fill={COL.bodyTrail} />}
+              {bodyCapD && <path d={bodyCapD} />}
             </g>
           )}
 
@@ -3440,7 +3551,7 @@ export default function BusSteeringSimulator() {
           })()}
 
           {/* vehicle body */}
-          <polygon points={ptsToPath(bodyScreen)} fill={COL.outlineFill} stroke={COL.outline} strokeWidth="2.2" strokeLinejoin="round" />
+          <polygon points={ptsToPath(bodyScreen)} fill={mapImage ? COL.mapBusFill : COL.outlineFill} stroke={COL.outline} strokeWidth="2.2" strokeLinejoin="round" />
           {/* front cap accent line */}
           <line x1={bodyScreen[0].x} y1={bodyScreen[0].y} x2={bodyScreen[1].x} y2={bodyScreen[1].y} stroke={COL.front} strokeWidth="3" />
 
@@ -3620,7 +3731,7 @@ export default function BusSteeringSimulator() {
           {trailMode && showWheelLines && <LegendDot color={COL.wheelTrailFront} label="Trail — wheel 1/2 tracks" />}
           {trailMode && showWheelLines && <LegendDot color={COL.wheelTrailRear} label="Trail — wheel 3/6 tracks" />}
           {trailMode && showWheelSwept && <LegendDot color={COL.wheelTrail} label="Trail — wheel 1-2 / 3-6 swept" />}
-          {trailMode && <LegendDot color={COL.bodyTrail} label="Trail — body swept area" />}
+          {trailMode && <LegendDot color={mapImage ? COL.mapBodyTrail : COL.bodyTrail} label="Trail — body swept area" />}
           {trailMode && <LegendDot color={COL.trail} label={`Mapped area boundary (${boundaryAreaLabel(trailBoundHalf)})`} />}
           <div style={{ fontSize: 14, opacity: 0.7, marginTop: 2 }}>Offside = right (2, 5, 6, 8)</div>
         </div>
@@ -3654,11 +3765,11 @@ export default function BusSteeringSimulator() {
               onClick={() => {
                 setRecenterTransition({ fromView: displayedView, startTime: performance.now() });
                 setRecenterT(0);
-                poseRef.current = { x: 0, y: 0, theta: 0 }; // drive loop runs continuously — resync it directly, not just the state
-                setPose({ x: 0, y: 0, theta: 0 });
+                poseRef.current = homePose(); // drive loop runs continuously — resync it directly, not just the state
+                setPose(homePose());
                 setZoom(1);
               }}
-              title="Reset the vehicle back to the centre, facing straight ahead, and reset zoom"
+              title="Reset the vehicle back to its start point (the centre, or the site plan's start marker) and start heading, and reset zoom"
               style={{
                 fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
                 padding: "8px 12px", border: "none", cursor: "pointer",

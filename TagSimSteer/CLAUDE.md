@@ -16,7 +16,6 @@ artifact, now ~4,000 lines and the bulk of the app. Around it:
 - `src/simCore.js` — headless vehicle physics (`stepSim`), a deliberate fork
   of the component's drive-loop math for training/replay. Keep the two
   numerically identical (see its header comment).
-- `src/dxfImport.js` — DXF site-plan parser (see "Imported site drawings").
 - `src/wheelInput.js` — Gamepad API wheel/pedal input (see "Input tester").
 - `src/course.js`, `src/env.js`, `src/policy.js`, `src/train.js`,
   `src/trainRun.js`, `src/trained-policy.json` — the single-corner ML
@@ -417,185 +416,85 @@ branches (circular vs straight-line versions).
   visible area. If you add more far-extending geometry, make sure it stays
   inside the `<g clipPath="url(#mapClip)">` group.
 
-## Imported site drawings (map background)
+## Imported site plans (map background)
 
-"Import Drawing" (header toolbar, beside Save/Load) loads an SVG **or DXF**
-file as a scaled background layer under the vehicle/trail, so a driver can
-rehearse against a real site layout (depot lanes, a specific junction, etc.)
-instead of the abstract grid. Deliberately narrow scope, arrived at after
-discussion ruled out several bigger options, and extended once with real
-external files (a SignMaster export, then its source DXF) that exposed real
-gaps in the first pass:
+"Import Site Plan" (header toolbar, beside Save/Load) loads a **raster
+image** (PNG/JPEG/WebP) as a scaled background layer under the
+vehicle/trail, so a driver can rehearse against a real site layout (depot
+lanes, a specific junction, etc.) instead of the abstract grid.
 
-`docs/example-site-plans/depot-exit.svg` is a worked example to load and
-drive against — a depot driveway meeting a public road (kerbs, footpaths, a
-give-way line, a labelled shed), drawn at the 1-unit-=-1mm convention below.
-The sim's world origin (where the bus starts) lands at the drawing's
-viewBox centre, a few metres inside the driveway from the road. Verified by
-importing it and driving out through a right turn onto the road in a real
-browser session — not just a scale/orientation sanity check.
+**This replaced an SVG + DXF vector importer** (inlined SVG markup, plus a
+~720-line `src/dxfImport.js` handling LINE/ARC/LWPOLYLINE/HATCH, layer
+colours, line weights/types, face polygonization, and a `BUS_START` layer
+for the starting pose). That was dropped (2026-11) for simplicity: any
+drawing tool, screenshot or aerial photo can export a PNG, and a high-ish
+resolution raster looks fine at this app's zoom range. Recover it from git
+history if vector import is ever needed again.
 
-- **No parameterised scenario library** (tabs for "slip lane"/"roundabout"/
-  etc., each generating its own road geometry) — considered and rejected in
-  favour of importing pre-drawn site plans instead of modelling road shapes
-  parametrically. `src/course.js`'s single-corner course generator (used by
-  the ML training pipeline, see "Porting to 3D / C#" below and
-  `src/env.js`) is unrelated to this and untouched.
-- **No real-world geo-referenced basemap** (map tiles, lat/lon projection) —
-  the world frame stays plain metres with no geographic anchor; "real-world"
-  here just means "drawn to scale," not "at a real location."
-- **No click-and-measure calibration UI** — no click-two-points-and-enter-
-  a-distance step, no rotation, no manual origin placement. Every import
-  uses one fixed convention: **an SVG or DXF file's own coordinate units are
-  always millimetres** (`SVG_MM_TO_M`) — a drawing's real-world size is read
-  directly from its own numbers, no per-file input needed. (An earlier
-  version offered a second mil/1000in convention too, for sign-cutting/
-  vinyl/CNC software that sometimes emits coordinates in that unit — found
-  via a real SignMaster export, but dropped again once it turned out not to
-  be needed in practice; its `SVG_UNIT_TO_M` entry is recoverable from git
-  history if that changes.)
-- Both formats place their content with a plain translate + uniform scale,
-  not a general affine transform — content is centred on world (0,0), and
-  its own "up"/"right" render as screen up/right (same axes the grid/trail
-  already use — see `toScreen`), matching how the file looks opened in any
-  normal viewer, just correctly proportioned and drivable over.
-- **SVG**: the file's own markup is inlined via `dangerouslySetInnerHTML`
-  into a `<g>` in the map's own coordinate space (see `handleLoadMapImage`),
-  not rendered as a rasterised `<image>` — keeps it crisp at any zoom level.
-  Its scale is re-derived live every render from `SVG_MM_TO_M` and the
-  current view, since the untouched foreign markup can't be pre-transformed.
-- **DXF**: has no native web rendering to lean on the way SVG's markup does,
-  so `src/dxfImport.js` parses it into plain world-space shape objects once
-  at import time (unit conversion already baked into their coordinates), and
-  the component renders those as ordinary `<path>`/`<circle>` elements
-  through the very same `toScreen()` pipeline as every other piece of map
-  geometry — not a second rendering mechanism. Supported entities: `LINE`,
-  `ARC`, `CIRCLE`, `LWPOLYLINE` (straight and bulge/arc segments, open or
-  closed), and `HATCH` limited to solid fill, with any number of boundary
-  loops (group `91`), each either a polyline-type loop or an edge-type loop
-  made only of line/arc edges — a HATCH's loops beyond the first aren't
-  separate shapes, they're island holes cut out of the same fill (e.g. a
-  paved area with an unpaved circle cut out of it), so they become one
-  shape's `segments` (outer loop) + `extraLoops` (the rest), rendered as
-  one `<path>` with several `M...Z` subpaths under `fill-rule="evenodd"`
-  (`dxfShapePathD`/`segmentsToPathD`) — evenodd is what actually punches
-  the holes, correctly, without the importer ever having to work out which
-  loop is an island or which way any of them wind. Any parse failure in any
-  loop (an unsupported edge type, a degenerate loop) skips the whole HATCH
-  rather than rendering a partial, wrong-looking fill. Colour resolved from
-  the entity's own true-colour (group 420) or ACI colour (group 62), falling
-  back to its **layer's** true-colour or ACI colour from `TABLES`/`LAYER`
-  (in that order — a layer can carry both, same as an entity can;
-  `ACI_RGB_EXACT` only has exact RGB for the 9 standard low indices everyone
-  actually draws with, index 10-255 gets a deterministic grey fallback
-  rather than a guessed-from-memory "exact" value, since the full AutoCAD
-  palette isn't safe to reproduce without risking silently-wrong colours —
-  reading the layer's true-colour too, not just entity-level, matters a lot
-  here: a real DXF with every `HATCH` fill `BYLAYER` and each layer's real
-  colour only in group 420 rendered every region an arbitrary unrelated
-  grey until this was fixed, found by comparing a real import against the
-  drawing's own reference screenshot). `SPLINE`/ellipse edges, 3D entities,
-  and the older `POLYLINE`/`VERTEX` pre-LWPOLYLINE form are skipped with a
-  `console.warn` rather than mis-rendered — not a general CAD-file
-  renderer, just enough for site-plan-style drawings.
-  - **Colouring adjacent regions without retracing shared edges —
-    polygonization**: a raw `LINE` is only an edge with no "inside," so two
-    ways to get a coloured region: (1) draw it as its own closed
-    `LWPOLYLINE`/`HATCH` (simplest, but means retracing any edge shared with
-    a neighbour), or (2) draw the shared edge network **once** — e.g. a road
-    outline plus lane dividers, each line drawn only once — and drop a
-    `POINT` or `TEXT`/`MTEXT` entity inside each region, coloured however
-    that region should be filled. `polygonizeFaces()` treats the LINE/ARC
-    network as a planar graph and traces every enclosed loop (the same core
-    technique as PostGIS's `ST_Polygonize`/Shapely's `polygonize`: at each
-    vertex, always continue along whichever edge is immediately clockwise
-    from the direction just arrived from), keeping only loops with positive
-    signed area (the bounded interior faces; the one unbounded "outer" face
-    per connected network comes out negative) that have a marker inside
-    them — an unmarked face contributes nothing, since its edges already
-    render individually as plain line/arc shapes, so files with no markers
-    pay no cost here. **Requires real shared vertices at junctions** — e.g.
-    a lane divider's endpoint must land exactly on a vertex of the boundary
-    it meets (split the boundary there, using your CAD tool's endpoint
-    snap), not partway along an unsplit line (a "T" against an edge's
-    interior isn't detected; this deliberately doesn't do general
-    segment-intersection splitting, only vertex-snapped adjacency,
-    `SNAP_TOL_M` = 1mm). `POINT`/`TEXT`/`MTEXT` are never drawn as their own
-    visible shape — they're markers only.
-  - **A `TEXT`/`MTEXT` marker's own text, if it looks like a colour (a hex
-    code, or a plain word passed straight through as a CSS colour keyword —
-    `colorFromLabelText`), overrides its resolved DXF colour.** Exists
-    because whether a CAD tool makes assigning an arbitrary colour to one
-    entity easy varies a lot — Onshape's own DXF layers, in testing, looked
-    like its fixed internal categories (sketch geometry, dimension lines,
-    etc.), not anything hand-picked — but typing a label always works,
-    everywhere. A label that doesn't look like a colour (e.g. "LANE3") just
-    falls back to the entity's/layer's own resolved colour as normal, so
-    plain documentation labels are harmless.
-  - **Starting the bus somewhere specific**: a `LINE` on a layer named
-    `BUS_START` (case-insensitive; first one found wins if there are
-    several) sets the vehicle's starting pose instead of being drawn — its
-    first point is the position, its direction (first point -> second
-    point) is the heading. `handleLoadMapImage` applies it the same way
-    `applySaveData` applies a Load: reset `pose`/`poseRef`, stop (`speed`
-    0), and clear the trail — a new starting context, not just a background
-    swap.
-  - Arc/bulge sweep and large-arc-flag (for rendering) are derived from 3
-    already-known points on the arc (start/mid/end — sampled once in
-    DXF-space at parse time, carried through the DXF→world transform as
-    plain points, not re-derived as an angle in some other frame) rather
-    than hand-tracking signs through the DXF→world→screen transform chain —
-    see `toWorld`'s and `arcFlags`'s own comments for why that's the robust
-    way to do it. `polygonizeFaces`' own angle math (departure/arrival
-    tangents at a vertex, for choosing the next edge around a face) is a
-    separate, independent piece of code from `arcFlags`/`dxfShapePathD` even
-    though the underlying sweep-normalisation trick is the same idea —
-    kept apart deliberately so changes to one can't risk regressing the
-    other's already browser-verified behaviour.
-  - **Line weight and line type** (DXF groups `370`/`6`) are read and
-    rendered, not just colour — same BYLAYER-fallback shape as colour
-    (`resolveLineweight`/`resolveLinetypeDashes`: entity's own value > its
-    layer's (`TABLES`/`LAYER` groups `370`/`6`) > a default). Line type uses
-    the drawing's own real dash pattern from `TABLES`/`LTYPE` (group `49`'s
-    segment lengths), not a guessed generic dashed look. **Line weight is
-    deliberately not a literal real-world-mm-to-px conversion** — this
-    app's usual zoom (a site plan spanning tens-to-hundreds of metres) makes
-    even a "heavy" 2mm DXF lineweight sub-pixel (≈0.04px at a typical view
-    scale), so a literal conversion would render every weight identically
-    at 0px and the whole feature would be invisible in normal use. Instead
-    `dxfShapeStrokeWidth` takes the larger of (a) a minimum on-screen width
-    by weight *category* (`LINEWEIGHT_BASELINE_PX` — thin/normal/heavy stay
-    visually distinct at the zoom this app is actually used at) and (b) the
-    true real-world-scaled width — a floor, not a fixed value, so a heavy
-    line still gets genuinely thicker than a thin one once zoomed in close
-    enough for the real size to exceed that floor (inspecting a kerb line
-    from a few metres away), while thin lines never vanish and heavy ones
-    aren't fake-thick at normal zoom.
-  - Verified against a real DXF (an Onshape export whose SVG conversion via
-    SignMaster was the original scale-mismatch bug report), a synthetic
-    rectangle split into two closed, differently-coloured `LWPOLYLINE`s, a
-    4-lane shared-edge-network + `POINT`/`TEXT` markers + `BUS_START` file
-    (`docs/example-site-plans/multi-lane-shared.dxf`,
-    `multi-lane-textcolor.dxf`), a `LAYER`+`LTYPE` file exercising BYLAYER
-    inheritance, explicit per-entity overrides, a real dash-dot pattern, and
-    a visibly-heavier line side by side
-    (`docs/example-site-plans/lineweight-linetype.dxf`), a richer,
-    properly-layered real-world export of the same site exercising
-    layer-true-colour BYLAYER resolution and a genuine multi-loop `HATCH`
-    (`docs/example-site-plans/Sherwood_Base_layered.dxf`), and a synthetic
-    single-colour square with an island hole cut out of it
-    (`docs/example-site-plans/multiloop-hole.dxf`), to confirm
-    `fill-rule="evenodd"` actually punches the hole rather than being
-    coincidentally invisible against the dark map background — in a real
-    browser session each time, not just unit tests.
-- The grid pattern hides while a drawing is loaded (`!mapImage` gate on the
-  grid `<rect>`) — the two visually fight otherwise.
+- **Scale**, in order of precedence (see `handleLoadMapImage`):
+  1. **Marker pixels** painted by hand in an image editor (`SITE_MARKERS`,
+     `findSiteMarkers`): exactly two **magenta** `#FF00FF` marks on
+     features a known distance apart (kerb-gap ends, a bay length...) —
+     the user is prompted for that distance (last answer remembered in
+     localStorage). One or 3+ magenta marks is an error and the import
+     stops, rather than guessing.
+  2. A **filename tag** — `depot-exit@25mm.png` = 25 mm of real ground per
+     image pixel (`mm`, `cm` or `m`, optional `px`; `MAP_SCALE_TAG_RE`).
+  3. A prompt for the image's real width in metres. Cancelling any prompt
+     leaves the previous plan in place.
+- **Start position (optional markers)**: one **cyan** `#00FFFF` mark = where
+  the bus starts, one **yellow** `#FFFF00` mark = the direction it faces
+  from there. The image is shifted so cyan lands at world (0,0)
+  (`mapImage.centerX/centerY`), the bus is put there facing yellow, speed
+  zeroed and the trail cleared (a new context, like a Load); Recenter and
+  the vehicle-dimension reset return to that heading via `homePose()`. A
+  mismatched pair (cyan without yellow, two cyans...) warns and loads the
+  plan without a start position.
+- **Marker detection**: a mark can be a single pixel or any small shape —
+  dot, cross, ring, fiducial. Marker-coloured pixels within
+  `SITE_MARKER_JOIN_PX` of each other (including a ring and its centre dot)
+  form one mark, located at the **centre of its bounding box**, not the
+  pixel average (a half-filled fiducial would bias that). Colour match is
+  per-channel within `SITE_MARKER_TOLERANCE` (8), with pixels decoded via
+  `createImageBitmap(..., {colorSpaceConversion: "none"})` so an embedded
+  colour profile can't shift them. **Marked images must be PNG** — JPEG
+  shifts the colours and the marks won't be found. Marks are left visible
+  in the rendered plan (small enough not to matter).
+- **Resolution guidance**: around 2–3 cm/px looks crisp at the default
+  bus-view zoom (~3 cm per screen pixel) and goes soft, not jagged, at
+  `MAX_ZOOM` (~1 cm per screen pixel). Keep the long side to roughly 8k px —
+  a 200 × 150 m site at 25 mm/px is 8000 × 6000 px, ~190 MB decoded.
+- **Placement**: one SVG `<image>`, centred on world (0,0) unless a start
+  marker moved it, image-up = screen-up (world +x), no rotation, sized
+  `widthM/heightM × view.scale` each render so it pans/zooms with
+  everything else. Held as a `blob:` URL (no base64 copy in state), revoked
+  when replaced or cleared.
+- The grid pattern hides while a plan is loaded (`!mapImage` gate) — the
+  two visually fight otherwise.
+- Over a plan the palette switches for a light background: the bus body
+  goes near-solid navy (`COL.mapBusFill`, was a near-transparent white
+  that vanished) and the body swept area an amber tint (`COL.mapBodyTrail`
+  at 0.35 group opacity — grey blended into asphalt). The body-trail paths
+  carry no fill of their own; they inherit it from the render group, so
+  the cached trail elements don't need rebuilding when a plan loads.
 - Not persisted through Save/Load — re-imported from its own file each
-  session, same reasoning as the bus reference photo not being embedded in
-  the save JSON.
-- **A geo-referenced aerial-photo layer is explicitly future work**, not
-  built now. It would reuse this same placement mechanism, as a raster
-  `<image>` instead of inlined/parsed vector content.
+  session, same reasoning as the bus reference photo.
+- **No in-app click-and-measure calibration or image rotation**, and no
+  geo-referenced basemap (tiles, lat/lon) — the world frame stays plain
+  metres. An aerial photo works today: mark two points of known distance
+  apart in an image editor, or enter its ground width.
+- `src/course.js`'s single-corner course generator (used by the ML
+  pipeline, see "Porting to 3D / C#") is unrelated to this.
+
+`docs/example-site-plans/depot-exit@25mm.png` is a worked example: a depot
+driveway meeting a public road, 70 × 50 m at 25 mm/px (2800 × 2000 px),
+rendered from `depot-exit.svg` (1 unit = 1 mm) with headless Chrome. The
+bus starts at the image centre. `depot-exit-marked.png` is the same image
+with markers: magenta single pixels on the two ends of the 8 m kerb gap
+(enter 8 when prompted), a cyan cross near the foot of the driveway, and a
+yellow pixel up the driveway from it. The other files in
+that folder are SVG/DXF sources from the old vector importer — export them
+to PNG at a known mm/px to use them now.
 
 ## Porting to 3D / C#
 
