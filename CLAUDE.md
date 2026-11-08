@@ -14,8 +14,8 @@ The repo holds three independent sub-projects, not a shared build/workspace:
 - **`TagSimSteer/`** — a working 2D plan-view (top-down) steering geometry
   simulator: a Vite + React app built around one large component
   (`tag-steering-simulator.jsx`, originally a claude.ai artifact) plus
-  supporting modules in `src/` (headless physics, DXF import, wheel/pedal
-  input, and a small ML training sandbox). **Read
+  supporting modules in `src/` (headless physics, wheel/pedal input, and
+  a small ML training sandbox). **Read
   [TagSimSteer/CLAUDE.md](TagSimSteer/CLAUDE.md) before touching it** —
   it documents the coordinate pipeline, wheel-numbering convention, steering
   input resolution, and several deliberate design decisions (and their
