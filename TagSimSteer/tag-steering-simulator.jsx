@@ -18,7 +18,7 @@ const CLOSE_RADIUS_M = 15; // 'B' key: close-up view radius around the bus, see 
 const CLOSE_FORWARD_BIAS = 1 / 3; // how far back from the front bumper (as a fraction of overall length) the close-up centres on
 const MIN_ZOOM = 0.02; // low enough to zoom out to roughly the full 1km² trail-recording area (S/M presets — see TRAIL_SIZE_PRESETS)
 const MAX_ZOOM = 6;
-// Imported site plans (see handleLoadMapImage) are plain raster images (PNG/JPEG/WebP). A raster
+// Imported site plans (see loadSitePlan) are plain raster images (PNG/JPEG/WebP). A raster
 // has no units of its own, so its scale comes from, in order of precedence:
 //   1. Two hand-placed magenta marker pixels (see SITE_MARKERS) on features a known distance
 //      apart — the user is prompted for that distance.
@@ -125,6 +125,18 @@ async function readSitePlanFile(file) {
     bmp.close();
   }
 }
+
+// Site plan library: every image committed under TagSimSteer/site-plans/ is bundled at build time
+// and offered in the header's "Site plan library" dropdown — drop a file in that folder, commit and
+// push, and the next GitHub Pages deploy lists it (a dev server picks it up on reload). Static
+// hosting can't list a directory at runtime, so the build does it: import.meta.glob resolves each
+// file to its (hashed) built URL. Keyed by the original filename, which is what the "@25mm" scale
+// tag is read from — the hashed URL would lose it.
+const SITE_PLAN_LIBRARY = Object.entries(
+  import.meta.glob("./site-plans/*.{png,PNG,jpg,JPG,jpeg,JPEG,webp,WEBP}", { eager: true, query: "?url", import: "default" })
+)
+  .map(([path, url]) => ({ name: path.slice(path.lastIndexOf("/") + 1), url }))
+  .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
 
 // Trail-recording/boundary square half-extent presets (metres) — S/M/L, selectable in Advanced
 // settings. "half" is the same quantity the rest of the file already calls TRAIL_BOUND_HALF; M (500)
@@ -1757,7 +1769,7 @@ export default function BusSteeringSimulator() {
   const skipResetRef = useRef(false);
   const fileInputRef = useRef(null);
   const mapImageInputRef = useRef(null);
-  // Imported site plan (see handleLoadMapImage): { url, widthM, heightM, centerX, centerY,
+  // Imported site plan (see loadSitePlan): { url, widthM, heightM, centerX, centerY,
   // startTheta } — a blob: URL for the image, its real-world size in metres, the world position of
   // the image's centre (0,0 unless a start marker moved it), and the heading the bus starts at (and
   // Recenter returns to). null when none is loaded. Not part of the Save/Load JSON — it's
@@ -1994,7 +2006,27 @@ export default function BusSteeringSimulator() {
   async function handleLoadMapImage(e) {
     const file = e.target.files && e.target.files[0];
     e.target.value = ""; // allow re-selecting the same file next time
-    if (!file) return;
+    if (file) await loadSitePlan(file);
+  }
+  // Library pick (see SITE_PLAN_LIBRARY): fetched into a File under its original name, then run
+  // through exactly the same pipeline as an uploaded file.
+  async function handleLoadLibraryPlan(e) {
+    const entry = SITE_PLAN_LIBRARY.find((p) => p.url === e.target.value);
+    e.target.value = ""; // back to the placeholder, so the same plan can be re-picked
+    if (!entry) return;
+    let file;
+    try {
+      const res = await fetch(entry.url);
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+      file = new File([blob], entry.name, { type: blob.type });
+    } catch {
+      alert(`Couldn't download "${entry.name}" from the site plan library.`);
+      return;
+    }
+    await loadSitePlan(file);
+  }
+  async function loadSitePlan(file) {
     let plan;
     try {
       plan = await readSitePlanFile(file);
@@ -3283,6 +3315,7 @@ export default function BusSteeringSimulator() {
         input[type=range].slider-thumb-lg::-moz-range-thumb{ width:23px; height:23px; }
         .btn{ font-family:'Barlow Condensed',sans-serif; text-transform:uppercase; letter-spacing:0.6px; font-size:15px; padding:8px 12px; border-radius:3px; border:1px solid rgba(200,225,245,0.25); background:rgba(200,225,245,0.04); color:#eaf2f8; cursor:pointer; }
         .btn:active{ transform:translateY(1px); }
+        select.btn option{ background:#14202b; color:#eaf2f8; text-transform:none; }
         .btnOn{ background:#ffb937; color:#0b1c30; border-color:#ffb937; font-weight:600; }
       `}</style>
 
@@ -3303,9 +3336,17 @@ export default function BusSteeringSimulator() {
             Load
           </button>
           <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={handleLoadFile} style={{ display: "none" }} />
-          <button className="btn" onClick={() => mapImageInputRef.current && mapImageInputRef.current.click()} title="Import a site plan image (PNG/JPEG/WebP) to drive over. Scale: two magenta (#FF00FF) marks a known distance apart, else a filename tag like name@25mm.png, else you're asked for its width. Optional start: a cyan (#00FFFF) mark where the bus starts and a yellow (#FFFF00) mark in the direction it faces" style={{ fontSize: 13, padding: "6px 10px" }}>
-            Import Site Plan
+          <button className="btn" onClick={() => mapImageInputRef.current && mapImageInputRef.current.click()} title="Upload a site plan image (PNG/JPEG/WebP) from this computer to drive over. Scale: two magenta (#FF00FF) marks a known distance apart, else a filename tag like name@25mm.png, else you're asked for its width. Optional start: a cyan (#00FFFF) mark where the bus starts and a yellow (#FFFF00) mark in the direction it faces" style={{ fontSize: 13, padding: "6px 10px" }}>
+            Upload Site Plan
           </button>
+          {SITE_PLAN_LIBRARY.length > 0 && (
+            <select className="btn" value="" onChange={handleLoadLibraryPlan} title="Load a site plan from the built-in library (images in TagSimSteer/site-plans/ when the app was built) — scaled and positioned exactly like an imported file" style={{ fontSize: 13, padding: "6px 10px" }}>
+              <option value="" disabled>Site plan library…</option>
+              {SITE_PLAN_LIBRARY.map((p) => (
+                <option key={p.url} value={p.url}>{p.name.replace(/\.[^.]+$/, "")}</option>
+              ))}
+            </select>
+          )}
           {mapImage && (
             <button className="btn" onClick={() => replaceMapImage(null)} title="Remove the imported site plan" style={{ fontSize: 13, padding: "6px 10px" }}>
               Clear Site Plan
@@ -3351,7 +3392,7 @@ export default function BusSteeringSimulator() {
               otherwise visually fight each other. */}
           {!mapImage && <rect x="0" y="0" width={vbSize.w} height={vbSize.h} fill="url(#grid)" />}
 
-          {/* Imported site plan (see handleLoadMapImage): one raster <image>, its centre at world
+          {/* Imported site plan (see loadSitePlan): one raster <image>, its centre at world
               (centerX, centerY) and sized to its real-world width/height, so it pans/zooms with
               everything else on the map. Image-up is world forward (+x), matching toScreen's
               screen-up. */}

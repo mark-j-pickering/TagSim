@@ -418,10 +418,24 @@ branches (circular vs straight-line versions).
 
 ## Imported site plans (map background)
 
-"Import Site Plan" (header toolbar, beside Save/Load) loads a **raster
+"Upload Site Plan" (header toolbar, beside Save/Load) loads a **raster
 image** (PNG/JPEG/WebP) as a scaled background layer under the
 vehicle/trail, so a driver can rehearse against a real site layout (depot
 lanes, a specific junction, etc.) instead of the abstract grid.
+
+**Site plan library**: every image in `TagSimSteer/site-plans/` is also
+offered in a "Site plan library…" dropdown beside it (hidden when the
+folder is empty). To add one, commit a PNG/JPEG/WebP there and push — the
+next Pages deploy lists it; no manifest to edit. Static hosting can't list
+a directory at runtime, so `SITE_PLAN_LIBRARY` uses `import.meta.glob`
+(eager, `?url`) to bundle each file as a hashed asset at build time, keyed
+by its **original filename** (the `@25mm` scale tag is read from that,
+not the hashed URL). A pick is fetched into a `File` and goes through the
+same `loadSitePlan` pipeline as an upload — same markers, prompts and
+start pose. The dropdown label is the filename without extension, so name
+files for humans (`Waverly_Manchester.png`, `depot-exit@25mm.png`). Files
+go into the JS bundle's asset set, so keep them to a sensible size (a few
+MB each).
 
 **This replaced an SVG + DXF vector importer** (inlined SVG markup, plus a
 ~720-line `src/dxfImport.js` handling LINE/ARC/LWPOLYLINE/HATCH, layer
@@ -431,7 +445,7 @@ drawing tool, screenshot or aerial photo can export a PNG, and a high-ish
 resolution raster looks fine at this app's zoom range. Recover it from git
 history if vector import is ever needed again.
 
-- **Scale**, in order of precedence (see `handleLoadMapImage`):
+- **Scale**, in order of precedence (see `loadSitePlan`):
   1. **Marker pixels** painted by hand in an image editor (`SITE_MARKERS`,
      `findSiteMarkers`): exactly two **magenta** `#FF00FF` marks on
      features a known distance apart (kerb-gap ends, a bay length...) —
@@ -486,14 +500,15 @@ history if vector import is ever needed again.
 - `src/course.js`'s single-corner course generator (used by the ML
   pipeline, see "Porting to 3D / C#") is unrelated to this.
 
-`docs/example-site-plans/depot-exit@25mm.png` is a worked example: a depot
+`site-plans/depot-exit@25mm.png` (in the library) is a worked example: a depot
 driveway meeting a public road, 70 × 50 m at 25 mm/px (2800 × 2000 px),
 rendered from `depot-exit.svg` (1 unit = 1 mm) with headless Chrome. The
 bus starts at the image centre. `depot-exit-marked.png` is the same image
 with markers: magenta single pixels on the two ends of the 8 m kerb gap
 (enter 8 when prompted), a cyan cross near the foot of the driveway, and a
-yellow pixel up the driveway from it. The other files in
-that folder are SVG/DXF sources from the old vector importer — export them
+yellow pixel up the driveway from it. Its source `depot-exit.svg` and the
+other files in `docs/example-site-plans/` are SVG/DXF sources from the old
+vector importer — export them
 to PNG at a known mm/px to use them now.
 
 ## Porting to 3D / C#
