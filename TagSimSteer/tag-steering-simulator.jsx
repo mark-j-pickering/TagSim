@@ -59,6 +59,39 @@ const SITE_MARKER_TOLERANCE = 8;
 const SITE_MARKER_JOIN_PX = 3;
 const SITE_SCALE_DISTANCE_KEY = "tagsim.sitePlan.lastScaleDistanceM";
 
+// The last imported site plan is remembered in IndexedDB (the image is often several MB — too big
+// for localStorage) and re-opened on the next page load. One record: { blob, name, placement },
+// placement being the { widthM, heightM, centerX, centerY, startTheta } handleLoadMapImage worked
+// out, so the restore doesn't re-prompt for scale. Every call swallows errors — private windows
+// and blocked storage just mean no restore.
+const SITE_PLAN_DB = "tagsim";
+const SITE_PLAN_STORE = "sitePlan";
+const SITE_PLAN_KEY = "last";
+function openSitePlanDb() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(SITE_PLAN_DB, 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(SITE_PLAN_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function sitePlanDbOp(mode, fn) {
+  try {
+    const db = await openSitePlanDb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(SITE_PLAN_STORE, mode);
+      const req = fn(tx.objectStore(SITE_PLAN_STORE));
+      tx.oncomplete = () => { db.close(); resolve(req.result); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    });
+  } catch {
+    return undefined;
+  }
+}
+const saveLastSitePlan = (record) => sitePlanDbOp("readwrite", (s) => s.put(record, SITE_PLAN_KEY));
+const loadLastSitePlan = () => sitePlanDbOp("readonly", (s) => s.get(SITE_PLAN_KEY));
+const clearLastSitePlan = () => sitePlanDbOp("readwrite", (s) => s.delete(SITE_PLAN_KEY));
+
 // Scans decoded image pixels for SITE_MARKERS. Returns { scale: [{u,v}], start: [...], heading:
 // [...] } — marker centres in image pixel coordinates (u right, v down; a lone pixel at column x
 // has its centre at u = x + 0.5).
@@ -1308,10 +1341,10 @@ const COL = {
   trail: "#4fd1c5",
   bodyTrail: "#8ef2b0",
   // Over a site plan (light aerial/drawing background) the near-transparent body and pale green
-  // trail above vanish, so the bus goes near-solid navy and the body swept area an amber tint —
-  // a hue nothing in an aerial uses (grey asphalt, white markings, green grass/trees).
+  // trail above vanish, so the bus goes near-solid navy and the body swept area chocolate brown —
+  // at 0.7 opacity it reads as a solid tinted band over grey asphalt, white markings and greenery.
   mapBusFill: "rgba(22,50,79,0.9)",
-  mapBodyTrail: "#ff9a3c", // drawn at 0.35 group opacity
+  mapBodyTrail: "#7b3f00", // chocolate brown, drawn at 0.7 group opacity
   wheelTrail: "#3d434a", // swept wheel-pair bands (wheels 1-2 and 3-6), one colour for both — dark asphalt grey
   // Trail wheel lines: one grey per axle, lighter and darker shades of the swept-band grey above.
   wheelTrailFront: "#aab3bd", // wheels 1-2
@@ -1530,11 +1563,11 @@ export default function BusSteeringSimulator() {
   const animating = speed > 0;
   const [showGeom, setShowGeom] = useState(false);
   const [showDims, setShowDims] = useState(false);
-  const [showLookAhead, setShowLookAhead] = useState(true); // trail-mode look-ahead wheel paths (see lookAheads)
+  const [showLookAhead, setShowLookAhead] = useState(false); // trail-mode look-ahead wheel paths (see lookAheads)
   // Trail-mode wheel trail, two independent layers: wheel 1/2/3/6 track lines, and the swept
   // wheel 1-2 / 3-6 bands. The body swept area is always shown.
   const [showWheelLines, setShowWheelLines] = useState(true);
-  const [showWheelSwept, setShowWheelSwept] = useState(false);
+  const [showWheelSwept, setShowWheelSwept] = useState(true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   // Collapsed by default so the always-visible column (radius grid, steering/throttle, bus photo)
   // fits within a single laptop screen height without scrolling — the keyboard shortcut list isn't
@@ -1670,7 +1703,7 @@ export default function BusSteeringSimulator() {
 
   // Trail display mode: paints the corridor the vehicle has actually driven, rather than just the
   // instantaneous turning circle. See docs/trail-display-mode.md for the design.
-  const [trailMode, setTrailMode] = useState(false);
+  const [trailMode, setTrailMode] = useState(true);
   // S/M/L trail-recording/boundary square half-extent (see TRAIL_SIZE_PRESETS), adjustable in
   // Advanced settings. Changing it doesn't retroactively affect an already-recorded trail — only
   // where the boundary itself is drawn and where the governor/auto-steer/sampling cutoff sits.
@@ -2003,6 +2036,20 @@ export default function BusSteeringSimulator() {
     mapImageUrlRef.current = next ? next.url : null;
     setMapImage(next);
   }
+  // On first load, re-open the last imported site plan (see saveLastSitePlan) and put the bus at
+  // its start pose, as if it had just been imported. Skipped if a plan got imported meanwhile.
+  useEffect(() => {
+    let cancelled = false;
+    loadLastSitePlan().then((rec) => {
+      if (cancelled || !rec || !rec.blob || !rec.placement || mapImageUrlRef.current) return;
+      replaceMapImage({ url: URL.createObjectURL(rec.blob), ...rec.placement });
+      const p = { x: 0, y: 0, theta: rec.placement.startTheta || 0 };
+      poseRef.current = p;
+      setPose(p);
+      clearTrail();
+    });
+    return () => { cancelled = true; };
+  }, []);
   async function handleLoadMapImage(e) {
     const file = e.target.files && e.target.files[0];
     e.target.value = ""; // allow re-selecting the same file next time
@@ -2091,15 +2138,16 @@ export default function BusSteeringSimulator() {
       );
     }
 
-    replaceMapImage({
-      url: URL.createObjectURL(file),
+    const placement = {
       widthM: wPx * metresPerPx,
       heightM: hPx * metresPerPx,
       // World position of the image centre: the origin, or shifted so the start marker sits there.
       centerX: start ? -start.pos.x : 0,
       centerY: start ? -start.pos.y : 0,
       startTheta: start ? start.theta : 0,
-    });
+    };
+    replaceMapImage({ url: URL.createObjectURL(file), ...placement });
+    saveLastSitePlan({ blob: file, name: file.name, placement });
     if (start) {
       const p = { x: 0, y: 0, theta: start.theta };
       poseRef.current = p; // drive loop runs continuously — resync it directly, not just the state
@@ -3317,6 +3365,7 @@ export default function BusSteeringSimulator() {
         .btn:active{ transform:translateY(1px); }
         select.btn option{ background:#14202b; color:#eaf2f8; text-transform:none; }
         .btnOn{ background:#ffb937; color:#0b1c30; border-color:#ffb937; font-weight:600; }
+        .btnFloat:not(.btnOn){ background:rgba(11,28,48,0.9); border-color:rgba(200,225,245,0.35); }
       `}</style>
 
       {/* header */}
@@ -3348,7 +3397,7 @@ export default function BusSteeringSimulator() {
             </select>
           )}
           {mapImage && (
-            <button className="btn" onClick={() => replaceMapImage(null)} title="Remove the imported site plan" style={{ fontSize: 13, padding: "6px 10px" }}>
+            <button className="btn" onClick={() => { replaceMapImage(null); clearLastSitePlan(); }} title="Remove the imported site plan" style={{ fontSize: 13, padding: "6px 10px" }}>
               Clear Site Plan
             </button>
           )}
@@ -3511,7 +3560,7 @@ export default function BusSteeringSimulator() {
               under everything else including the off-track band and the vehicle itself, so it
               reads as ground shading rather than competing with what's painted on top later. */}
           {trailCache && (
-            <g transform={trailWorldTransform} fill={mapImage ? COL.mapBodyTrail : COL.bodyTrail} opacity={mapImage ? 0.35 : 0.1}>
+            <g transform={trailWorldTransform} fill={mapImage ? COL.mapBodyTrail : COL.bodyTrail} opacity={mapImage ? 0.7 : 0.1}>
               {trailCache.bodyEls}
               {bodyCapD && <path d={bodyCapD} />}
             </g>
@@ -3782,7 +3831,7 @@ export default function BusSteeringSimulator() {
             style={{
               fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
               padding: "8px 12px", border: "none", cursor: "pointer",
-              background: viewMode === "bus" ? COL.amber : "rgba(200,225,245,0.08)",
+              background: viewMode === "bus" ? COL.amber : "rgba(11,28,48,0.9)",
               color: viewMode === "bus" ? COL.bg : COL.text,
               fontWeight: viewMode === "bus" ? 600 : 400,
             }}
@@ -3794,7 +3843,7 @@ export default function BusSteeringSimulator() {
             style={{
               fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
               padding: "8px 12px", border: "none", cursor: "pointer",
-              background: viewMode === "circle" ? COL.amber : "rgba(200,225,245,0.08)",
+              background: viewMode === "circle" ? COL.amber : "rgba(11,28,48,0.9)",
               color: viewMode === "circle" ? COL.bg : COL.text,
               fontWeight: viewMode === "circle" ? 600 : 400,
             }}
@@ -3814,7 +3863,7 @@ export default function BusSteeringSimulator() {
               style={{
                 fontFamily: "'Barlow Condensed',sans-serif", textTransform: "uppercase", letterSpacing: 0.6, fontSize: 15,
                 padding: "8px 12px", border: "none", cursor: "pointer",
-                background: "rgba(200,225,245,0.08)", color: COL.text, fontWeight: 400,
+                background: "rgba(11,28,48,0.9)", color: COL.text, fontWeight: 400,
               }}
             >
               Recenter
@@ -3829,7 +3878,7 @@ export default function BusSteeringSimulator() {
               position: "absolute", left: 10, bottom: 48,
               fontFamily: "'Space Mono',monospace", fontSize: 12,
               padding: "4px 8px", border: "none", borderRadius: 3, cursor: "pointer",
-              background: "rgba(10,26,44,0.72)", color: COL.textDim,
+              background: "rgba(11,28,48,0.9)", color: COL.textDim,
               boxShadow: "0 2px 8px rgba(0,0,0,0.45)",
             }}
           >
@@ -3840,10 +3889,10 @@ export default function BusSteeringSimulator() {
           {/* Course / ML Autopilot buttons removed for now — see main CLAUDE.md / TagSimSteer
               CLAUDE.md for the ML training pipeline this drives; showCourse/controlMode state and
               the underlying effects are untouched, just not reachable from the UI at the moment. */}
-          <button className={"btn" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
-          <button className={"btn" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
+          <button className={"btn btnFloat" + (showGeom ? " btnOn" : "")} onClick={() => setShowGeom((v) => !v)} style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Construction</button>
+          <button className={"btn btnFloat" + (showDims ? " btnOn" : "")} onClick={() => setShowDims((v) => !v)} style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Dimensions</button>
           <button
-            className={"btn" + (trailMode ? " btnOn" : "")}
+            className={"btn btnFloat" + (trailMode ? " btnOn" : "")}
             onClick={() => {
               setTrailMode((v) => !v);
               if (!trailMode) selectViewMode("bus");
@@ -3854,7 +3903,7 @@ export default function BusSteeringSimulator() {
           </button>
           {trailMode && (
             <button
-              className={"btn" + (showWheelLines ? " btnOn" : "")}
+              className={"btn btnFloat" + (showWheelLines ? " btnOn" : "")}
               onClick={() => setShowWheelLines((v) => !v)}
               title="Show or hide the wheel 1, 2, 3 and 6 track lines"
               style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
@@ -3864,7 +3913,7 @@ export default function BusSteeringSimulator() {
           )}
           {trailMode && (
             <button
-              className={"btn" + (showWheelSwept ? " btnOn" : "")}
+              className={"btn btnFloat" + (showWheelSwept ? " btnOn" : "")}
               onClick={() => setShowWheelSwept((v) => !v)}
               title="Show or hide the filled bands between wheels 1-2 and 3-6"
               style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
@@ -3874,7 +3923,7 @@ export default function BusSteeringSimulator() {
           )}
           {trailMode && (
             <button
-              className={"btn" + (showLookAhead ? " btnOn" : "")}
+              className={"btn btnFloat" + (showLookAhead ? " btnOn" : "")}
               onClick={() => setShowLookAhead((v) => !v)}
               title="Show or hide the look-aheads: wheel paths (1/2, 3/6, outer, tag-inner), tail swing, the centreline and the mow/tail-swing dimension lines."
               style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}
@@ -3883,7 +3932,7 @@ export default function BusSteeringSimulator() {
             </button>
           )}
           {trailMode && (
-            <button onClick={clearTrail} className="btn" title="Clear the recorded trail" style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
+            <button onClick={clearTrail} className="btn btnFloat" title="Clear the recorded trail" style={{ fontSize: 15, padding: "7px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.45)" }}>Clear</button>
           )}
         </div>
         {trailMode && trailPaused && (

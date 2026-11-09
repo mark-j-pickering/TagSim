@@ -487,12 +487,16 @@ history if vector import is ever needed again.
   two visually fight otherwise.
 - Over a plan the palette switches for a light background: the bus body
   goes near-solid navy (`COL.mapBusFill`, was a near-transparent white
-  that vanished) and the body swept area an amber tint (`COL.mapBodyTrail`
-  at 0.35 group opacity — grey blended into asphalt). The body-trail paths
+  that vanished) and the body swept area chocolate brown (`COL.mapBodyTrail`, `#7b3f00`
+  at 0.7 group opacity — grey blended into asphalt, amber at 0.35 was too
+  faint). The body-trail paths
   carry no fill of their own; they inherit it from the render group, so
   the cached trail elements don't need rebuilding when a plan loads.
-- Not persisted through Save/Load — re-imported from its own file each
-  session, same reasoning as the bus reference photo.
+- Not part of Save/Load, but the **last imported plan auto-reopens on page
+  load**: the file blob plus its computed placement (scale, centre, start
+  heading) is kept in IndexedDB (`saveLastSitePlan`/`loadLastSitePlan`, db
+  `tagsim`, store `sitePlan` — too big for localStorage), so no scale
+  re-prompt. The bus is put at the plan's start pose. "Clear Site Plan" forgets it.
 - **No in-app click-and-measure calibration or image rotation**, and no
   geo-referenced basemap (tiles, lat/lon) — the world frame stays plain
   metres. An aerial photo works today: mark two points of known distance
